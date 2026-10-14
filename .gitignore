@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 运行时数据与生成产物(可随时重新生成)
+v2/data/
+v2/out/
+*.db
+*.sqlite3
+
+# 管理台"保存为默认"生成的个人覆盖文件(含个人调参, 不随仓库分发)
+v2/config_override.yaml
+
+# 系统/编辑器
+Thumbs.db
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,124 @@
+# stock_analyze · A股市场情绪评分系统
+
+[![docs](https://img.shields.io/badge/docs-中文-brightgreen)](docs/整体方案.md) [![docs](https://img.shields.io/badge/docs-English-blue)](docs/en/README.md) [![demo](https://img.shields.io/badge/demo-情绪视图-orange)](demo/sentiment_viewer.html)
+
+通过分析 A 股历史与实时行情数据，输出**市场情绪分值（-100 ~ +100）**：-100 极度冰点/恐慌，+100 极度狂热。用于判断市场处于情绪周期的哪个位置（冰点 → 修复 → 发酵 → 高潮 → 退潮）。
+
+> **English documentation**: [docs/en/README.md](docs/en/README.md)
+>
+> ⚠️ 本项目仅供学习研究，情绪分是市场温度计，**不构成投资建议**。
+
+## ✨ 已实现功能
+
+| 模块 | 说明 |
+|---|---|
+| **通达信公式**（[tdx/](tdx/)） | 零依赖副图公式：V1 量价版 + V2.1 广度增强版（涨跌家数跨品种引用、量能非对称方向化、RSI 分位化），附配套涨停生态选股公式 |
+| **Python 评分系统**（[v2/](v2/)） | 15 分量五组加权（涨停结构/量能/动量/位置/波动），250 日滚动分位标准化，EMA 平滑限幅；双数据源直连客户端（同花顺涨停复盘 + 东财/腾讯指数K线自动回退） |
+| **交互式情绪视图**（[v2/viewer.py](v2/viewer.py)） | 自包含 HTML：K线/成交量/情绪分/涨跌停/炸板率接力率五联面板，十字光标联动，右侧实时显示当日**全部构成指标**，滚轮缩放，可离线分发 |
+| **本地管理台**（[v2/admin.py](v2/admin.py)） | 数据状态一览、一键增量更新（实时日志）、可视化权重设置（仅本次/保存为默认）、视图发布到 `out/publish/` |
+| **校验体系**（[v2/backtest.py](v2/backtest.py)） | 极端日锚点回放（8/8 命中）、信息系数 IC、五分组收益单调性 |
+
+## 📺 演示
+
+**[demo/sentiment_viewer.html](demo/sentiment_viewer.html)** —— 克隆仓库后直接双击打开（无需安装任何东西）：
+2026-10-14 收盘数据生成的静态快照，可体验五联面板、十字光标悬停联动构成指标、滚轮缩放等全部交互。
+
+## 🚀 快速开始
+
+```bash
+# 环境要求: Python 3.10+
+git clone <你的仓库地址> stock_analyze
+cd stock_analyze/v2
+pip install -r requirements.txt
+
+# 方式一: 管理台(推荐) —— 打开 http://127.0.0.1:8501
+python admin.py --open
+#   页面操作: 数据状态 → 增量更新数据 → (可选)调权重 → 生成视图
+
+# 方式二: 命令行
+python fetch_daily.py        # 首次回补约240交易日(8~12分钟, 断点续跑)
+python report.py             # 当日情绪日报(文本)
+python viewer.py --open      # 交互式视图
+python backtest.py           # 锚点/IC/分组校验
+```
+
+通达信用户：把 [tdx/QXXF_情绪分V1.txt](tdx/QXXF_情绪分V1.txt) 或 [tdx/QXXF_情绪分V2.txt](tdx/QXXF_情绪分V2.txt) 粘贴进公式管理器即可（见文件头注释）。
+
+## 📁 目录结构
+
+```text
+stock_analyze/
+├── README.md                 # 本文件(中文主文档)
+├── CHANGELOG.md              # 版本历史
+├── LICENSE                   # MIT
+├── .gitignore
+├── demo/                     # 可直接打开的演示产物
+│   └── sentiment_viewer.html
+├── docs/
+│   ├── 整体方案.md           # 设计文档(模型/架构/路线/风险)
+│   ├── 数据说明.md           # 图表口径/分量字典/数据库表/常用SQL
+│   └── en/                   # English documentation
+│       ├── README.md
+│       └── DATA.md
+├── tdx/                      # 通达信公式(零依赖版)
+│   ├── QXXF_情绪分V1.txt     #   V1 量价版(7分量)
+│   ├── QXXF_情绪分V2.txt     #   V2.1 广度增强版(12分量)
+│   ├── QXXF_情绪分V2_说明.md #   V2.1 设计说明
+│   └── QXXF_涨停生态_配套选股公式.txt
+└── v2/                       # Python 评分系统
+    ├── admin.py              #   本地管理台(Flask)
+    ├── viewer.py             #   交互视图生成器
+    ├── fetch_daily.py        #   数据采集(断点续跑/防限流)
+    ├── em_api.py             #   数据源直连客户端(多源回退)
+    ├── metrics.py / score.py #   指标计算 / 分位标准化加权合成
+    ├── report.py / backtest.py
+    ├── db.py / config.yaml / requirements.txt
+    ├── vendor/               #   echarts.min.js(内嵌用, Apache-2.0)
+    ├── data/                 #   SQLite(运行时生成,不入库)
+    └── out/                  #   生成产物(运行时生成,不入库)
+```
+
+## 🧠 评分模型速览
+
+每个分量 → **250 日滚动分位** `（X-最低）/（最高-最低）` → 中心化 ±100 → 加权合成 → EMA(3) → 限幅。
+
+| 分量组 | 内容 | 默认权重 |
+|---|---|---|
+| 涨停结构 | 涨停家数、跌停家数、炸板率、连板高度、接力率（同花顺源） | 20% |
+| 量能 | 两市成交量、量比趋势（**非对称方向化**：放量×方向，缩量恒负） | 20% |
+| 动量 | RSI(分位)、当日涨幅、跳空缺口、K线实体强度 | 28% |
+| 位置 | 20日乖离、60日乖离、250日价格位置 | 20% |
+| 波动 | 振幅×当日方向 | 12% |
+
+分档：≤-80 极度冰点 · ≤-60 冰点 · ≤-30 退潮 · ±10 中性 · ≥30 发酵 · ≥60 狂热 · ≥80 极度狂热。
+历史锚点校验：2024-02-05 微盘危机 -61、2024-09-30/10-08 +81/+85、2015 股灾 -39、8/8 方向命中。详见 [docs/整体方案.md](docs/整体方案.md)。
+
+## 🗺 路线图
+
+**已完成**
+- [x] V1/V2.1 通达信公式（含广度增强、用户版涨停生态选股公式）
+- [x] Python 评分系统 + 双数据源 + 历史锚点校验
+- [x] 交互式情绪视图（五联面板、构成指标联动）
+- [x] 本地管理台（状态/更新/权重/发布）
+- [x] 双语文档 + 演示视图 + 仓库化
+
+**后期计划**
+- [ ] 管理页面更好用美观：任务历史与排队、状态图表化、定时自动更新、深色模式
+- [ ] 基础数据支持从 tushare 载入更完整数据：涨停池更早历史（2019 起）、涨跌家数历史序列、融资融券余额，token 配置化
+- [ ] 完善视图展示：分量开关与自定义面板、多指数对照、情绪分与未来收益叠加分析
+- [ ] 极致视图计算优化：payload 压缩（分块/差分编码）、大数据量分段按需加载、Web Worker 渲染
+- [ ] V3 盘中实时：分钟级刷新 + 阈值告警推送（企业微信/钉钉 webhook）
+
+## 📚 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/整体方案.md](docs/整体方案.md) | 设计文档：模型、架构、数据源、校准方法、风险 |
+| [docs/数据说明.md](docs/数据说明.md) | 图表口径、15 分量字典、数据库表结构与常用 SQL |
+| [CHANGELOG.md](CHANGELOG.md) | 版本历史 |
+| [docs/en/README.md](docs/en/README.md) | English overview & usage |
+| [docs/en/DATA.md](docs/en/DATA.md) | Data dictionary (English) |
+
+## 📄 许可证
+
+[MIT](LICENSE)（内嵌的 ECharts 为 Apache-2.0 许可，见 [v2/vendor/](v2/vendor/)）。
