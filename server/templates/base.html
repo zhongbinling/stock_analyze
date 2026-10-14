@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="{{ theme }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+  <script src="{{ url_for('static', filename='js/theme.js') }}" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="{{ url_for('bp.index') }}">stock_analyze <span class="sub">行情情绪服务</span></a>
+  <nav>
+    <a href="#" class="nav-item disabled" title="S3 提供">行情数据</a>
+    <a href="#" class="nav-item disabled" title="S1 提供">登录</a>
+    <button id="themeToggle" class="nav-item btn-ghost" type="button" aria-label="切换昼夜模式">◐ 主题</button>
+  </nav>
+</header>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <div class="flashes">
+    {% for cat, msg in messages %}<div class="flash flash-{{ cat }}">{{ msg }}</div>{% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+<footer class="foot">
+  stock_analyze · 第一阶段建设中（S0 骨架）· <a href="/healthz">healthz</a>
+</footer>
+</body>
+</html>

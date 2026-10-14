@@ -2,6 +2,18 @@
 
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布] 第一阶段 · 多用户行情服务（开发中）
+
+### S0 架构重构与服务骨架 - 2026-10-15
+- `v2/` 重命名为 `core/`（git 历史保留），文档路径全量更新
+- 新增 `server/` Web 服务骨架：Flask 应用工厂 + Flask-SQLAlchemy / Flask-Login /
+  Flask-Bcrypt / Flask-WTF(CSRF) / Flask-Migrate 五扩展初始化
+- `python -m server`（waitress）启动；首页 + `/healthz` + 主题切换 API
+- 昼/夜双主题（dataviz 参考色板），localStorage + 会话双持久化，CSRF 令牌全站
+- `config/server.yaml` 服务配置拆分；根级全量 `requirements.txt`
+- app.db 首版迁移（users 表雏形，Flask-Bcrypt 密码哈希）
+- 旧 `core/admin.py` 标记过渡期（默认端口改 8599，S2 移除）；`docs/部署手册.md` 草稿
+
 ## [0.5.0] - 2026-10-15
 
 仓库化与文档体系。

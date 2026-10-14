@@ -13,10 +13,10 @@
 | 模块 | 说明 |
 |---|---|
 | **通达信公式**（[tdx/](tdx/)） | 零依赖副图公式：V1 量价版 + V2.1 广度增强版（涨跌家数跨品种引用、量能非对称方向化、RSI 分位化），附配套涨停生态选股公式 |
-| **Python 评分系统**（[v2/](v2/)） | 15 分量五组加权（涨停结构/量能/动量/位置/波动），250 日滚动分位标准化，EMA 平滑限幅；双数据源直连客户端（同花顺涨停复盘 + 东财/腾讯指数K线自动回退） |
-| **交互式情绪视图**（[v2/viewer.py](v2/viewer.py)） | 自包含 HTML：K线/成交量/情绪分/涨跌停/炸板率接力率五联面板，十字光标联动，右侧实时显示当日**全部构成指标**，滚轮缩放，可离线分发 |
-| **本地管理台**（[v2/admin.py](v2/admin.py)） | 数据状态一览、一键增量更新（实时日志）、可视化权重设置（仅本次/保存为默认）、视图发布到 `out/publish/` |
-| **校验体系**（[v2/backtest.py](v2/backtest.py)） | 极端日锚点回放（8/8 命中）、信息系数 IC、五分组收益单调性 |
+| **Python 评分系统**（[core/](core/)） | 15 分量五组加权（涨停结构/量能/动量/位置/波动），250 日滚动分位标准化，EMA 平滑限幅；双数据源直连客户端（同花顺涨停复盘 + 东财/腾讯指数K线自动回退） |
+| **交互式情绪视图**（[core/viewer.py](core/viewer.py)） | 自包含 HTML：K线/成交量/情绪分/涨跌停/炸板率接力率五联面板，十字光标联动，右侧实时显示当日**全部构成指标**，滚轮缩放，可离线分发 |
+| **本地管理台**（[core/admin.py](core/admin.py)） | 数据状态一览、一键增量更新（实时日志）、可视化权重设置（仅本次/保存为默认）、视图发布到 `out/publish/` |
+| **校验体系**（[core/backtest.py](core/backtest.py)） | 极端日锚点回放（8/8 命中）、信息系数 IC、五分组收益单调性 |
 
 ## 📺 演示
 
@@ -30,18 +30,21 @@
 ```bash
 # 环境要求: Python 3.10+
 git clone <你的仓库地址> stock_analyze
-cd stock_analyze/v2
-pip install -r requirements.txt
+cd stock_analyze
+pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引擎)
 
-# 方式一: 管理台(推荐) —— 打开 http://127.0.0.1:8501
-python admin.py --open
-#   页面操作: 数据状态 → 增量更新数据 → (可选)调权重 → 生成视图
+# ★ Web 服务(第一阶段建设中, 当前S0骨架) —— http://127.0.0.1:8501
+python -m server
+#   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
 
-# 方式二: 命令行
+# 评分引擎命令行(core/)
+cd core
 python fetch_daily.py        # 首次回补约240交易日(8~12分钟, 断点续跑)
 python report.py             # 当日情绪日报(文本)
 python viewer.py --open      # 交互式视图
 python backtest.py           # 锚点/IC/分组校验
+
+# 过渡期旧管理台(S2后移除): python admin.py --port 8599
 ```
 
 通达信用户：把 [tdx/QXXF_情绪分V1.txt](tdx/QXXF_情绪分V1.txt) 或 [tdx/QXXF_情绪分V2.txt](tdx/QXXF_情绪分V2.txt) 粘贴进公式管理器即可（见文件头注释）。
@@ -53,31 +56,43 @@ stock_analyze/
 ├── README.md                 # 本文件(中文主文档)
 ├── CHANGELOG.md              # 版本历史
 ├── LICENSE                   # MIT
+├── requirements.txt          # 全量依赖(部署用)
 ├── .gitignore
 ├── demo/                     # 可直接打开的演示产物
 │   └── sentiment_viewer.html
 ├── docs/
 │   ├── 整体方案.md           # 设计文档(模型/架构/路线/风险)
+│   ├── 开发计划-第一阶段.md  # 多用户行情服务开发计划(S0~S4)
 │   ├── 数据说明.md           # 图表口径/分量字典/数据库表/常用SQL
+│   ├── 部署手册.md           # 三平台部署(S4 完善)
 │   └── en/                   # English documentation
 │       ├── README.md
 │       └── DATA.md
+├── config/
+│   └── server.yaml           # 服务配置(端口/绑定/主题/调度)
+├── server/                   # Web 服务(第一阶段)
+│   ├── __init__.py           #   应用工厂(Flask+SQLAlchemy+Login+Bcrypt+WTF+Migrate)
+│   ├── models.py             #   app.db 模型(users...)
+│   ├── routes.py             #   路由(首页/healthz/主题)
+│   ├── __main__.py           #   python -m server → waitress
+│   └── templates/ static/    #   Jinja2 模板 + CSS/JS(昼夜双主题)
+├── migrations/               # Flask-Migrate(Alembic) 数据库迁移
 ├── tdx/                      # 通达信公式(零依赖版)
 │   ├── QXXF_情绪分V1.txt     #   V1 量价版(7分量)
 │   ├── QXXF_情绪分V2.txt     #   V2.1 广度增强版(12分量)
 │   ├── QXXF_情绪分V2_说明.md #   V2.1 设计说明
 │   └── QXXF_涨停生态_配套选股公式.txt
-└── v2/                       # Python 评分系统
-    ├── admin.py              #   本地管理台(Flask)
-    ├── viewer.py             #   交互视图生成器
-    ├── fetch_daily.py        #   数据采集(断点续跑/防限流)
-    ├── em_api.py             #   数据源直连客户端(多源回退)
-    ├── metrics.py / score.py #   指标计算 / 分位标准化加权合成
-    ├── report.py / backtest.py
-    ├── db.py / config.yaml / requirements.txt
-    ├── vendor/               #   echarts.min.js(内嵌用, Apache-2.0)
-    ├── data/                 #   SQLite(运行时生成,不入库)
-    └── out/                  #   生成产物(运行时生成,不入库)
+├── core/                     # 评分引擎库(原 v2/)
+│   ├── viewer.py             #   交互视图生成器
+│   ├── fetch_daily.py        #   数据采集(断点续跑/防限流)
+│   ├── em_api.py             #   数据源直连客户端(多源回退)
+│   ├── metrics.py / score.py #   指标计算 / 分位标准化加权合成
+│   ├── report.py / backtest.py / admin.py(过渡期)
+│   ├── db.py / config.yaml / requirements.txt
+│   ├── vendor/               #   echarts.min.js(内嵌用, Apache-2.0)
+│   ├── data/                 #   行情SQLite(运行时生成,不入库)
+│   └── out/                  #   生成产物(运行时生成,不入库)
+└── data/                     # 服务运行时数据(app.db/secret.key, 不入库)
 ```
 
 ## 🧠 评分模型速览
@@ -105,7 +120,7 @@ stock_analyze/
 - [x] 双语文档 + 演示视图 + 仓库化
 
 **第一阶段：多用户行情服务**（详细计划：[docs/开发计划-第一阶段.md](docs/开发计划-第一阶段.md)）
-- [ ] S0 架构重构与服务骨架（core/server 拆分、主题、健康检查）
+- [x] S0 架构重构与服务骨架（core/server 拆分、主题、健康检查）✅ 2026-10-15
 - [ ] S1 账号与权限（登录/注册/匿名、9 级权限矩阵、账号管理、设置）
 - [ ] S2 数据管理 + 生成任务（数据集总览、更新策略、定时任务链、生成规则与历史）
 - [ ] S3 视图管理 + 用户行情页（发布/下线/自动发布、/mkt 行情访问）
@@ -131,4 +146,4 @@ stock_analyze/
 
 ## 📄 许可证
 
-[MIT](LICENSE)（内嵌的 ECharts 为 Apache-2.0 许可，见 [v2/vendor/](v2/vendor/)）。
+[MIT](LICENSE)（内嵌的 ECharts 为 Apache-2.0 许可，见 [core/vendor/](core/vendor/)）。

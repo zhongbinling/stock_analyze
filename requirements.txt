@@ -1,0 +1,17 @@
+# stock_analyze 全量依赖 (部署脚本使用; 引擎单独安装见 core/requirements.txt)
+
+# Web 服务 (第一阶段)
+flask
+flask-sqlalchemy
+flask-login
+flask-bcrypt
+flask-wtf
+flask-migrate
+waitress
+apscheduler
+
+# 评分引擎 (core/)
+requests
+pandas
+pyyaml
+matplotlib

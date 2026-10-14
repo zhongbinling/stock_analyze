@@ -1,0 +1,21 @@
+# ============================================================
+# stock_analyze 服务配置 (第一阶段)
+# 修改后重启服务生效: python -m server  或 scripts/service.* restart
+# ============================================================
+
+server:
+  host: "127.0.0.1"     # 局域网访问改为 0.0.0.0 (建议自行加HTTPS反代)
+  port: 8501
+
+app:
+  theme_default: "light"   # light | dark (用户可在设置页覆盖)
+  locale: "zh"             # 预留: 中/英
+
+data:
+  # 相对仓库根目录; app.db 由 Flask-Migrate 管理
+  app_db: "data/app.db"
+  secret_key_file: "data/secret.key"
+
+scheduler:
+  enabled: false          # S2 接入任务调度后默认 true
+  timezone: "Asia/Shanghai"

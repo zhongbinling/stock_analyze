@@ -1,0 +1,70 @@
+/* stock_analyze 服务样式 —— dataviz 参考色板(浅/深双主题) */
+:root[data-theme="light"] {
+  --surface: #fcfcfb; --page: #f9f9f7; --ink: #0b0b0b; --ink2: #52514e;
+  --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+  --blue: #2a78d6; --red: #e34948; --aqua: #1baf7a;
+  --ok-bg: rgba(27, 175, 122, 0.12);
+}
+:root[data-theme="dark"] {
+  --surface: #1a1a19; --page: #0d0d0d; --ink: #f0efec; --ink2: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+  --blue: #3987e5; --red: #e66767; --aqua: #199e70;
+  --ok-bg: rgba(25, 158, 112, 0.18);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.7 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 22px; background: var(--surface); border-bottom: 1px solid var(--grid);
+}
+.brand { font-weight: 700; color: var(--ink); font-size: 16px; }
+.brand .sub { font-weight: 400; color: var(--ink2); font-size: 12px; margin-left: 6px; }
+.topbar nav { display: flex; gap: 6px; align-items: center; }
+.nav-item {
+  padding: 6px 12px; border-radius: 8px; color: var(--ink2); font-size: 13px;
+}
+.nav-item:hover { background: var(--grid); color: var(--ink); text-decoration: none; }
+.nav-item.disabled { color: var(--muted); cursor: not-allowed; opacity: .6; }
+.btn-ghost { border: 1px solid var(--axis); background: transparent; cursor: pointer; }
+
+main { max-width: 1080px; margin: 0 auto; padding: 22px 22px 60px; }
+.card {
+  background: var(--surface); border: 1px solid var(--grid);
+  border-radius: 12px; padding: 18px 22px; margin-bottom: 18px;
+}
+.card h1 { font-size: 20px; margin: 0 0 10px; }
+.card h2 { font-size: 15px; color: var(--ink2); margin: 0 0 8px; }
+
+.table { border-collapse: collapse; width: 100%; }
+.table th, .table td {
+  padding: 7px 10px; border-bottom: 1px solid var(--grid); text-align: left; font-size: 13px;
+}
+.table th { color: var(--muted); font-weight: 500; }
+
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 11px;
+  font-size: 12px; background: var(--grid); color: var(--ink2);
+}
+.badge-ok { background: var(--ok-bg); color: var(--aqua); font-weight: 600; }
+
+.flashes { max-width: 1080px; margin: 12px auto 0; padding: 0 22px; }
+.flash {
+  border-radius: 8px; padding: 9px 14px; margin-bottom: 8px; font-size: 13px;
+  background: var(--surface); border: 1px solid var(--axis);
+}
+.flash-error { border-color: var(--red); color: var(--red); }
+
+.foot {
+  text-align: center; color: var(--muted); font-size: 12px;
+  padding: 18px; border-top: 1px solid var(--grid);
+}
+code {
+  background: var(--grid); border-radius: 5px; padding: 1px 6px;
+  font: 12px/1.5 Consolas, monospace;
+}

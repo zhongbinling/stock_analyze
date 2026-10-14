@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ app_name }} · 服务首页{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>服务已就绪 <span class="badge badge-ok">S0</span></h1>
+  <p>这是第一阶段的服务骨架页。按 <a href="https://github.com/zhongbinling/stock_analyze/blob/main/docs/%E5%BC%80%E5%8F%91%E8%AE%A1%E5%88%92-%E7%AC%AC%E4%B8%80%E9%98%B6%E6%AE%B5.md">开发计划</a> 依次交付：</p>
+  <table class="table">
+    <tr><th>阶段</th><th>内容</th><th>状态</th></tr>
+    <tr><td>S0</td><td>架构重构与服务骨架（core/server 拆分、主题、健康检查）</td><td><span class="badge badge-ok">✓ 本版本</span></td></tr>
+    <tr><td>S1</td><td>账号与权限（登录/注册/匿名、9 级权限、账号管理、设置）</td><td><span class="badge">待开发</span></td></tr>
+    <tr><td>S2</td><td>数据管理 + 生成任务（数据集总览、更新策略、定时任务链）</td><td><span class="badge">待开发</span></td></tr>
+    <tr><td>S3</td><td>视图管理 + 用户行情页</td><td><span class="badge">待开发</span></td></tr>
+    <tr><td>S4</td><td>三平台服务化与一键部署</td><td><span class="badge">待开发</span></td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>当前可用入口</h2>
+  <ul>
+    <li>评分引擎 CLI：<code>python core/fetch_daily.py</code> / <code>core/score.py</code> / <code>core/viewer.py</code>（目录已从 v2/ 迁至 core/）</li>
+    <li>旧管理台（过渡期）：<code>python core/admin.py --port 8599</code>，S2 被 server 数据管理替代后移除</li>
+    <li>服务配置：<code>config/server.yaml</code>（端口/绑定/主题）</li>
+  </ul>
+</section>
+{% endblock %}
