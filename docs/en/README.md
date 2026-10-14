@@ -20,7 +20,8 @@ Analyzes A-share (China stock market) historical and live market data and produc
 
 ## 📺 Demo
 
-Open **[../../demo/sentiment_viewer.html](../../demo/sentiment_viewer.html)** directly in any browser after cloning — no installation needed. It is a static snapshot generated from data through 2026-10-14 with all interactions available.
+- **Live demo**: <https://zhongbinling.github.io/stock_analyze/> — open directly in the browser, no clone needed (GitHub Pages, auto-deployed from the `gh-pages` branch).
+- **In-repo snapshot**: [../../demo/sentiment_viewer.html](../../demo/sentiment_viewer.html) — generated from data through 2026-10-14; double-click to open offline after cloning.
 
 ## 🚀 Quick Start
 

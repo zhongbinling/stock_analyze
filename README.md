@@ -1,6 +1,6 @@
 # stock_analyze · A股市场情绪评分系统
 
-[![docs](https://img.shields.io/badge/docs-中文-brightgreen)](docs/整体方案.md) [![docs](https://img.shields.io/badge/docs-English-blue)](docs/en/README.md) [![demo](https://img.shields.io/badge/demo-情绪视图-orange)](demo/sentiment_viewer.html)
+[![docs](https://img.shields.io/badge/docs-中文-brightgreen)](docs/整体方案.md) [![docs](https://img.shields.io/badge/docs-English-blue)](docs/en/README.md) [![demo](https://img.shields.io/badge/demo-在线演示-orange)](https://zhongbinling.github.io/stock_analyze/)
 
 通过分析 A 股历史与实时行情数据，输出**市场情绪分值（-100 ~ +100）**：-100 极度冰点/恐慌，+100 极度狂热。用于判断市场处于情绪周期的哪个位置（冰点 → 修复 → 发酵 → 高潮 → 退潮）。
 
@@ -20,8 +20,10 @@
 
 ## 📺 演示
 
-**[demo/sentiment_viewer.html](demo/sentiment_viewer.html)** —— 克隆仓库后直接双击打开（无需安装任何东西）：
-2026-10-14 收盘数据生成的静态快照，可体验五联面板、十字光标悬停联动构成指标、滚轮缩放等全部交互。
+- **在线演示**：<https://zhongbinling.github.io/stock_analyze/> —— 浏览器直接打开，无需克隆（GitHub Pages，gh-pages 分支自动部署）
+- **仓库内快照**：[demo/sentiment_viewer.html](demo/sentiment_viewer.html) —— 2026-10-14 收盘数据、默认权重生成，双击即可离线体验
+
+可体验的交互：五联面板十字光标联动、右侧面板悬停显示当日全部构成指标、滚轮缩放、区间滑块。
 
 ## 🚀 快速开始
 
