@@ -14,12 +14,13 @@ from pathlib import Path
 import yaml
 from flask import Flask
 from flask_bcrypt import Bcrypt
-from flask_login import LoginManager
+from flask_login import AnonymousUserMixin, LoginManager
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import CSRFProtect
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_CFG = ROOT / "config" / "server.yaml"
@@ -29,6 +30,14 @@ migrate = Migrate()
 login_manager = LoginManager()
 bcrypt = Bcrypt()
 csrf = CSRFProtect()
+
+
+class AnonymousUser(AnonymousUserMixin):
+    """匿名访客: 权限等级1(可看已发布行情数据)"""
+    id = None
+    username = "anonymous"
+    nickname = "游客"
+    level = 1
 
 
 def load_server_cfg() -> dict:
@@ -65,7 +74,7 @@ def create_app() -> Flask:
     csrf.init_app(app)
     login_manager.init_app(app)
     login_manager.login_view = "bp.login"          # S1 实现路由
-    login_manager.anonymous_user = lambda: None    # S1 换成 AnonymousUser(等级1)
+    login_manager.anonymous_user = AnonymousUser
 
     from server.models import User  # noqa: F401  (确保模型在迁移前已注册)
 

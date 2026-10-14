@@ -28,17 +28,20 @@ Analyzes A-share (China stock market) historical and live market data and produc
 ```bash
 # Python 3.10+
 git clone <your-repo-url> stock_analyze
-cd stock_analyze/v2
+cd stock_analyze
 pip install -r requirements.txt
 
-# Option A: admin console (recommended) — http://127.0.0.1:8501
-python admin.py --open
+# Web service (Phase 1, S0 skeleton) — http://127.0.0.1:8501
+python -m server
 
-# Option B: CLI
+# Scoring engine CLI (core/)
+cd core
 python fetch_daily.py        # first backfill ≈240 trading days (8-12 min, resumable)
 python report.py             # daily text report
 python viewer.py --open      # interactive viewer
 python backtest.py           # anchor / IC / quintile checks
+
+# Transitional admin console (removed in S2): python admin.py --port 8599
 ```
 
 TDX users: paste [../../tdx/QXXF_情绪分V1.txt](../../tdx/QXXF_情绪分V1.txt) or the V2.1 formula into the TDX formula manager (usage notes in the file header).

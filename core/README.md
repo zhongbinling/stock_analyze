@@ -10,11 +10,12 @@
 ## 快速开始
 
 ```bash
-cd v2
+cd core
 pip install -r requirements.txt
 
-# ★ 推荐: 管理台(状态一览 + 一键更新 + 权重设置 + 视图发布)
-python admin.py --open       # http://127.0.0.1:8501
+# ★ Web服务: 回仓库根目录 python -m server  → http://127.0.0.1:8501
+# 过渡期旧管理台(S2后移除, 端口8599):
+python admin.py --open       # http://127.0.0.1:8599
 ```
 
 管理台之外，各命令也可单独使用：
