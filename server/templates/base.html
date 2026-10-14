@@ -12,8 +12,18 @@
 <header class="topbar">
   <a class="brand" href="{{ url_for('bp.index') }}">stock_analyze <span class="sub">行情情绪服务</span></a>
   <nav>
-    <a href="#" class="nav-item disabled" title="S3 提供">行情数据</a>
-    <a href="#" class="nav-item disabled" title="S1 提供">登录</a>
+    <a class="nav-item" href="{{ url_for('bp.mkt') }}">行情数据</a>
+    {% if current_user.is_authenticated %}
+      {% if current_user.level >= 5 %}
+        <a class="nav-item" href="{{ url_for('admin.dashboard') }}">管理</a>
+      {% endif %}
+      <a class="nav-item" href="{{ url_for('bp.me') }}">账号信息</a>
+      <a class="nav-item" href="{{ url_for('bp.settings') }}">设置</a>
+      <a class="nav-item" href="{{ url_for('bp.logout') }}">{{ current_user.nickname or current_user.username }} · 登出</a>
+    {% else %}
+      <a class="nav-item" href="{{ url_for('bp.login') }}">登录</a>
+      <a class="nav-item" href="{{ url_for('bp.register') }}">注册</a>
+    {% endif %}
     <button id="themeToggle" class="nav-item btn-ghost" type="button" aria-label="切换昼夜模式">◐ 主题</button>
   </nav>
 </header>
@@ -31,7 +41,7 @@
 </main>
 
 <footer class="foot">
-  stock_analyze · 第一阶段建设中（S0 骨架）· <a href="/healthz">healthz</a>
+  stock_analyze · 第一阶段 S1 账号与权限 · <a href="/healthz">healthz</a>
 </footer>
 </body>
 </html>

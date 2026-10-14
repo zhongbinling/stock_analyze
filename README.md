@@ -33,9 +33,12 @@ git clone <你的仓库地址> stock_analyze
 cd stock_analyze
 pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引擎)
 
-# ★ Web 服务(第一阶段建设中, 当前S0骨架) —— http://127.0.0.1:8501
+# ★ Web 服务(第一阶段建设中, 当前S1账号权限已可用) —— http://127.0.0.1:8501
 python -m server
 #   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
+#   首次使用先建超管: printf "密码
+密码
+" | python -m server.bootstrap --username admin
 
 # 评分引擎命令行(core/)
 cd core
@@ -121,7 +124,7 @@ stock_analyze/
 
 **第一阶段：多用户行情服务**（详细计划：[docs/开发计划-第一阶段.md](docs/开发计划-第一阶段.md)）
 - [x] S0 架构重构与服务骨架（core/server 拆分、主题、健康检查）✅ 2026-10-15
-- [ ] S1 账号与权限（登录/注册/匿名、9 级权限矩阵、账号管理、设置）
+- [x] S1 账号与权限（登录/注册/匿名、9 级权限矩阵、账号管理、设置）✅ 2026-10-15
 - [ ] S2 数据管理 + 生成任务（数据集总览、更新策略、定时任务链、生成规则与历史）
 - [ ] S3 视图管理 + 用户行情页（发布/下线/自动发布、/mkt 行情访问）
 - [ ] S4 服务化与部署（win/mac/linux 启停与一键部署脚本、部署手册）

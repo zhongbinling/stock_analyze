@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}管理工作台 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>管理工作台 <span class="badge badge-ok">{{ level_name(current_user.level) }}</span></h1>
+  <div class="grid-cards">
+    <div class="mini-card">
+      <h3>数据管理</h3><p class="hint">数据集总览 · 更新策略 · api_key</p>
+      <span class="badge">S2 交付</span>
+    </div>
+    <div class="mini-card">
+      <h3>数据生成</h3><p class="hint">生成规则 · 权重/因子 · 定时生成</p>
+      <span class="badge">S2 交付</span>
+    </div>
+    <div class="mini-card">
+      <h3>视图管理</h3><p class="hint">历史视图 · 发布/下线 · 自动发布</p>
+      <span class="badge">S3 交付</span>
+    </div>
+    {% if current_user.level >= 9 %}
+    <a class="mini-card link" href="{{ url_for('admin.accounts') }}">
+      <h3>账号管理</h3><p class="hint">管理员与用户账号 · 审计日志</p>
+      <span class="badge badge-ok">可用</span>
+    </a>
+    {% endif %}
+  </div>
+  <p class="hint">当前账号数: {{ users_n }}</p>
+</section>
+
+<section class="card">
+  <h2>最近操作</h2>
+  <table class="table">
+    <tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>说明</th></tr>
+    {% for l in logs %}
+    <tr>
+      <td>{{ l.at.strftime("%m-%d %H:%M") if l.at else "--" }}</td>
+      <td>{{ l.actor or "--" }}</td><td>{{ l.action }}</td>
+      <td>{{ l.target or "--" }}</td><td>{{ l.detail or "" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="hint">暂无记录</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

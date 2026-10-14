@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}设置 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>设置</h1>
+  <form method="post" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="field">
+      <label>界面主题</label>
+      {{ form.theme(class="input") }}
+    </div>
+    {{ form.submit(class="btn primary") }}
+  </form>
+  <p class="hint">白天/黑夜即时切换请用右上角 ◐ 按钮; 此处保存为账号默认{% if not current_user.is_authenticated %}(匿名访问仅保存在本机){% endif %}</p>
+</section>
+{% endblock %}

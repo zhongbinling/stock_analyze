@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}账号信息 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>账号信息</h1>
+  <table class="table kv-table">
+    <tr><th>账号名</th><td>{{ current_user.username }}</td></tr>
+    <tr><th>昵称</th><td>{{ current_user.nickname or "--" }}</td></tr>
+    <tr><th>权限等级</th><td>{{ current_user.level }} · {{ level_name(current_user.level) }}
+      <span class="hint">(1 匿名 / 2 注册 / 5 运营 / 7 管理 / 9 超管)</span></td></tr>
+    <tr><th>上次登录</th><td>{{ prev_login or "本次为首次登录" }}</td></tr>
+    <tr><th>注册时间</th><td>{{ current_user.created_at.strftime("%Y-%m-%d %H:%M") if current_user.created_at else "--" }}</td></tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>修改昵称</h2>
+  <form method="post" class="inline-form" novalidate>
+    {{ nick_form.hidden_tag() }}
+    {{ nick_form.nickname(class="input", placeholder="新昵称") }}
+    {{ nick_form.submit(class="btn primary") }}
+  </form>
+</section>
+
+<section class="card">
+  <h2>修改密码</h2>
+  <form method="post" novalidate>
+    {{ pw_form.hidden_tag() }}
+    <div class="field"><label>当前密码</label>{{ pw_form.old(class="input") }}{% for e in pw_form.errors.get("new", []) + pw_form.errors.get("confirm", []) + pw_form.errors.get("old", []) %}<span class="ferr">{{ e }}</span>{% endfor %}</div>
+    <div class="field"><label>新密码(≥8位)</label>{{ pw_form.new(class="input") }}</div>
+    <div class="field"><label>确认新密码</label>{{ pw_form.confirm(class="input") }}</div>
+    {{ pw_form.submit(class="btn primary") }}
+  </form>
+</section>
+{% endblock %}

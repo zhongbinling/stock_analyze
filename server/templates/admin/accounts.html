@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}账号管理 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>账号管理 <span class="badge">超级管理员专属</span></h1>
+  <table class="table">
+    <tr><th>账号</th><th>昵称</th><th>等级</th><th>状态</th><th>注册时间</th><th>最后登录</th><th>操作</th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}{% if u.id == current_user.id %} <span class="badge badge-ok">我</span>{% endif %}</td>
+      <td>{{ u.nickname or "--" }}</td>
+      <td>{{ u.level }} · {{ level_name(u.level) }}</td>
+      <td>{% if u.enabled %}<span class="ok">启用</span>{% else %}<span class="bad">停用</span>{% endif %}</td>
+      <td>{{ u.created_at.strftime("%Y-%m-%d") if u.created_at else "--" }}</td>
+      <td>{{ u.last_login_at.strftime("%m-%d %H:%M") if u.last_login_at else "从未" }}</td>
+      <td class="ops">
+        {% if u.id != current_user.id %}
+        <form method="post" action="{{ url_for('admin.account_toggle', uid=u.id) }}" class="inline">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn small" type="submit">{{ "停用" if u.enabled else "启用" }}</button>
+        </form>
+        <form method="post" action="{{ url_for('admin.account_delete', uid=u.id) }}" class="inline"
+              onsubmit="return confirm('删除账号 {{ u.username }}?(软删除, 可审计)')">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button class="btn small danger" type="submit">删除</button>
+        </form>
+        {% else %}
+        <span class="hint">--</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section class="card">
+  <h2>重置密码</h2>
+  <form method="post" class="inline-form" novalidate
+        action="{{ url_for('admin.account_resetpw', uid=0) }}"
+        id="resetForm" onsubmit="return fillResetUid(this)">
+    {{ reset_form.hidden_tag() }}
+    <select id="resetUid" class="input" required>
+      {% for u in users %}{% if u.id != current_user.id %}
+      <option value="{{ u.id }}">{{ u.username }}</option>
+      {% endif %}{% endfor %}
+    </select>
+    {{ reset_form.new(class="input", placeholder="新密码(≥8位)") }}
+    {{ reset_form.confirm(class="input", placeholder="确认新密码") }}
+    {{ reset_form.submit(class="btn primary") }}
+  </form>
+  <script>
+    function fillResetUid(f) {
+      var uid = document.getElementById('resetUid').value;
+      f.action = f.action.replace(/\/0$/, '/' + uid);
+      return true;
+    }
+  </script>
+</section>
+
+<section class="card">
+  <h2>添加账号</h2>
+  <form method="post" novalidate>
+    {{ form.hidden_tag() }}
+    <div class="field"><label>账号</label>{{ form.username(class="input") }}</div>
+    <div class="field"><label>昵称(可选)</label>{{ form.nickname(class="input") }}</div>
+    <div class="field"><label>初始密码(≥8位)</label>{{ form.password(class="input") }}</div>
+    <div class="field"><label>权限等级</label>{{ form.level(class="input") }}</div>
+    {% if form.errors %}{% for f, es in form.errors.items() %}{% for e in es %}<span class="ferr">{{ e }}</span>{% endfor %}{% endfor %}{% endif %}
+    {{ form.submit(class="btn primary") }}
+  </form>
+</section>
+
+<section class="card">
+  <h2>审计日志(最近20条)</h2>
+  <table class="table">
+    <tr><th>时间</th><th>操作者</th><th>动作</th><th>对象</th><th>说明</th></tr>
+    {% for l in logs %}
+    <tr>
+      <td>{{ l.at.strftime("%m-%d %H:%M:%S") if l.at else "--" }}</td>
+      <td>{{ l.actor or "--" }}</td><td>{{ l.action }}</td>
+      <td>{{ l.target or "--" }}</td><td>{{ l.detail or "" }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="hint">暂无记录</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}

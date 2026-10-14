@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}行情数据 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>行情数据</h1>
+  <p>视图类型:</p>
+  <div class="tabs">
+    <span class="tab active">情绪视图</span>
+    <span class="tab disabled" title="后续版本">更多类型(规划中)</span>
+  </div>
+  <div class="empty-state">
+    <p><b>S3 交付</b>：此处将展示最新已发布的产线情绪视图。</p>
+    <p class="hint">管理员可通过 数据生成 → 视图管理 发布视图; 当前请先使用
+      <a href="{{ url_for('admin.dashboard') if current_user.is_authenticated and current_user.level >= 5 else url_for('bp.index') }}">管理端</a>或命令行 <code>python core/viewer.py</code> 查看本机视图。</p>
+  </div>
+</section>
+{% endblock %}

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from flask import Flask
+from flask import Flask, render_template
 from flask_bcrypt import Bcrypt
 from flask_login import AnonymousUserMixin, LoginManager
 from flask_migrate import Migrate
@@ -83,12 +83,20 @@ def create_app() -> Flask:
         return db.session.get(User, int(user_id))
 
     from server.routes import bp
+    from server.routes_admin import bp_admin
     app.register_blueprint(bp)
+    app.register_blueprint(bp_admin)
+
+    @app.errorhandler(403)
+    def forbidden(e):
+        return render_template("errors/403.html"), 403
 
     @app.context_processor
     def inject_globals():
         from flask import session
+        from server.auth import level_name
         return {"theme": session.get("theme", app.config["THEME_DEFAULT"]),
-                "app_name": "stock_analyze"}
+                "app_name": "stock_analyze",
+                "level_name": level_name}
 
     return app

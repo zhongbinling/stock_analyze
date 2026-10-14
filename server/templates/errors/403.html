@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}403 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>403 · 权限不足</h1>
+  <p>当前身份：<b>{{ level_name(current_user.level) }}</b>（等级 {{ current_user.level }}），无权访问该页面。</p>
+  <p class="hint">权限说明：1 匿名访客(行情数据) · 2 注册用户(+账号信息/历史视图) · 5 运营(+视图管理) · 7 管理员(+数据/生成) · 9 超级管理员(+账号管理)</p>
+  <a class="btn primary" href="{{ url_for('bp.mkt') }}">返回行情数据</a>
+</section>
+{% endblock %}
