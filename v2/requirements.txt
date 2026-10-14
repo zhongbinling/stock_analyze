@@ -1,0 +1,7 @@
+requests
+pandas
+pyyaml
+matplotlib
+flask
+# 可选: 仅"当日涨跌家数"功能使用(未安装则自动跳过该功能)
+# akshare
