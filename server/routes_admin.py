@@ -88,13 +88,15 @@ def account_toggle(uid):
     return redirect(url_for("admin.accounts"))
 
 
-@bp_admin.post("/accounts/<int:uid>/resetpw")
+@bp_admin.post("/accounts/resetpw")
 @require_level(9)
-def account_resetpw(uid):
-    u = _get_user(uid)
+def account_resetpw():
+    """uid 由表单下拉选择提交(无JS依赖)"""
+    uid = request.form.get("uid", type=int)
+    u = _get_user(uid) if uid else None
     form = ResetPwForm(prefix="rst")
     if not u:
-        flash("账号不存在", "error")
+        flash("请选择要重置密码的账号", "error")
     elif form.validate_on_submit():
         u.set_password(form.new.data)
         u.enabled = 1                     # 重置密码同时解除停用, 便于解救误操作
@@ -116,13 +118,17 @@ def account_delete(uid):
     if not _guard_self(uid):
         return redirect(url_for("admin.accounts"))
     n_root = User.query.filter_by(deleted_at=None, enabled=1).filter(User.level >= 9).count()
-    if u.level >= 9 and n_root <= 1:
+    # 目标本身是"当前可用的9级"且仅剩这一个时才拦截; 已停用的9级可安全删除
+    if u.enabled and u.level >= 9 and n_root <= 1:
         flash("系统至少需要保留一个可用的超级管理员", "error")
         return redirect(url_for("admin.accounts"))
     from datetime import datetime, timezone
+    original = u.username
     u.deleted_at = datetime.now(timezone.utc)
     u.enabled = 0
+    # 软删除后释放用户名(改写为带标记的唯一形式), 允许后续注册/新建同名账号
+    u.username = f"{original}~del{u.id}"
     db.session.commit()
-    audit("user_delete", target=u.username, detail=level_name(u.level))
-    flash(f"已删除账号 {u.username}(软删除, 保留审计)", "ok")
+    audit("user_delete", target=original, detail=f"{level_name(u.level)}(原名)")
+    flash(f"已删除账号 {original}(软删除, 保留审计)", "ok")
     return redirect(url_for("admin.accounts"))

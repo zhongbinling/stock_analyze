@@ -27,7 +27,7 @@ class RegisterForm(FlaskForm):
 
     def validate_username(self, field):
         from server.models import User
-        if User.query.filter_by(username=field.data, deleted_at=None).first():
+        if User.query.filter_by(username=field.data).first():
             raise ValidationError("该账号已被使用")
 
 
@@ -67,7 +67,7 @@ class UserAddForm(FlaskForm):
 
     def validate_username(self, field):
         from server.models import User
-        if User.query.filter_by(username=field.data, deleted_at=None).first():
+        if User.query.filter_by(username=field.data).first():
             raise ValidationError("该账号已存在")
 
 

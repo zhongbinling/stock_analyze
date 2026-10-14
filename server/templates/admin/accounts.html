@@ -35,26 +35,18 @@
 
 <section class="card">
   <h2>重置密码</h2>
-  <form method="post" class="inline-form" novalidate
-        action="{{ url_for('admin.account_resetpw', uid=0) }}"
-        id="resetForm" onsubmit="return fillResetUid(this)">
+  <form method="post" class="inline-form" novalidate action="{{ url_for('admin.account_resetpw') }}">
     {{ reset_form.hidden_tag() }}
-    <select id="resetUid" class="input" required>
+    <select name="uid" class="input" required>
+      <option value="" disabled selected>选择账号</option>
       {% for u in users %}{% if u.id != current_user.id %}
-      <option value="{{ u.id }}">{{ u.username }}</option>
+      <option value="{{ u.id }}">{{ u.username }}{% if not u.enabled %}(停用){% endif %}</option>
       {% endif %}{% endfor %}
     </select>
     {{ reset_form.new(class="input", placeholder="新密码(≥8位)") }}
     {{ reset_form.confirm(class="input", placeholder="确认新密码") }}
     {{ reset_form.submit(class="btn primary") }}
   </form>
-  <script>
-    function fillResetUid(f) {
-      var uid = document.getElementById('resetUid').value;
-      f.action = f.action.replace(/\/0$/, '/' + uid);
-      return true;
-    }
-  </script>
 </section>
 
 <section class="card">

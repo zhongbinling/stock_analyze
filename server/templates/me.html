@@ -18,6 +18,7 @@
   <form method="post" class="inline-form" novalidate>
     {{ nick_form.hidden_tag() }}
     {{ nick_form.nickname(class="input", placeholder="新昵称") }}
+    {% for e in nick_form.nickname.errors %}<span class="ferr">{{ e }}</span>{% endfor %}
     {{ nick_form.submit(class="btn primary") }}
   </form>
 </section>

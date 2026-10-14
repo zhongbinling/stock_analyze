@@ -49,6 +49,8 @@ def _do_login(form: LoginForm, admin_mode: bool):
     user = User.query.filter_by(username=username, deleted_at=None, enabled=1).first()
     if user and user.check_password(form.password.data):
         if admin_mode and user.level < 5:
+            audit("admin_login_denied", target=user.username,
+                  detail=f"等级{user.level}尝试管理登录")
             flash("该账号无管理权限", "error")
             return None
         prev = user.last_login_at
@@ -74,7 +76,10 @@ def login():
     if form.validate_on_submit():
         user = _do_login(form, admin_mode=False)
         if user:
-            nxt = request.args.get("next") or url_for("bp.mkt")
+            nxt = request.args.get("next")
+            # 仅允许站内相对路径, 防开放重定向
+            if not nxt or not nxt.startswith("/") or nxt.startswith("//"):
+                nxt = url_for("bp.mkt")
             return redirect(nxt)
     return render_template("login.html", form=form, admin_mode=False)
 
