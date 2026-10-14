@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""本地管理台: 数据状态一览 / 一键更新 / 权重调整 / 情绪视图发布
+"""本地管理台(过渡期工具): 数据状态一览 / 一键更新 / 权重调整 / 情绪视图发布
+
+⚠ 过渡期说明: 第一阶段 S2 交付 server 数据管理/生成/视图管理页面后, 本文件将被移除。
+  新的正式服务: python -m server (端口 8501); 本工具默认端口已改为 8599。
 
 用法:
-  python admin.py            # 启动后浏览器打开 http://127.0.0.1:8501
-  python admin.py --port 8501 --open
+  python admin.py            # http://127.0.0.1:8599
+  python admin.py --open
 
 功能:
   1) 数据状态: 指数K线/涨停池/情绪分 各自的最新日期、行数、缺失天数
@@ -419,7 +422,7 @@ def index():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=8501)
+    ap.add_argument("--port", type=int, default=8599)  # 8501 已让给 server 服务
     ap.add_argument("--open", action="store_true")
     args = ap.parse_args()
     url = f"http://127.0.0.1:{args.port}"

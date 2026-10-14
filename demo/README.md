@@ -11,7 +11,7 @@
 
 说明：
 - 2025-10-15 之前下方面板（涨停结构）无数据属正常——免费数据源只保留约一年滚动历史
-- 要生成最新数据的视图请运行 `v2/viewer.py`，或在管理台 `python v2/admin.py` 中点"生成视图"
+- 要生成最新数据的视图请运行 `core/viewer.py`，或在管理台 `python core/admin.py` 中点"生成视图"
 
 ## 更新线上演示（GitHub Pages）
 
@@ -19,10 +19,10 @@
 想用最新数据刷新线上演示时：
 
 ```bash
-cd v2 && python fetch_daily.py && python viewer.py   # 生成最新视图到 out/sentiment_viewer.html
+cd core && python fetch_daily.py && python viewer.py   # 生成最新视图到 out/sentiment_viewer.html
 cd ..
 git checkout gh-pages
-cp v2/out/sentiment_viewer.html index.html
+cp core/out/sentiment_viewer.html index.html
 git commit -am "deploy: 更新演示快照" && git push
 git checkout main
 ```

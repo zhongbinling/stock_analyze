@@ -13,7 +13,7 @@ Analyzes A-share (China stock market) historical and live market data and produc
 | Module | Description |
 |---|---|
 | **TDX formulas** ([../../tdx/](../../tdx/)) | Zero-dependency TongDaXin sub-chart formulas: V1 (price/volume) and V2.1 (breadth-enhanced: cross-symbol advance/decline reference, asymmetric volume direction, percentile RSI), plus a companion limit-up ecosystem stock screener |
-| **Python scoring engine** ([../../v2/](../../v2/)) | 15 components in 5 groups (limit-up structure / volume / momentum / position / volatility), 250-day rolling percentile normalization, weighted sum + EMA smoothing; direct multi-source data client (THS limit-up review + EastMoney/Tencent index kline with automatic fallback) |
+| **Python scoring engine** ([../../core/](../../core/)) | 15 components in 5 groups (limit-up structure / volume / momentum / position / volatility), 250-day rolling percentile normalization, weighted sum + EMA smoothing; direct multi-source data client (THS limit-up review + EastMoney/Tencent index kline with automatic fallback) |
 | **Interactive viewer** | Self-contained HTML: 5 synchronized panels (candlestick, volume, sentiment score, limit-up/down counts, open-board/relay rates), crosshair with a side panel showing the **full component breakdown** for the hovered day, wheel zoom, works offline |
 | **Local admin console** | Data status dashboard, one-click incremental update with live logs, visual weight editing (per-run or save-as-default), publish generated views to `out/publish/` |
 | **Validation** | Extreme-day anchor replay (8/8 hits), information coefficient (IC), quintile forward-return monotonicity |
@@ -72,4 +72,4 @@ Anchor validation: 2024-02-05 micro-cap crash -61, 2024-09-30/10-08 +81/+85, 201
 
 ## 📄 License
 
-[MIT](../../LICENSE). Bundled ECharts is Apache-2.0 ([../../v2/vendor/](../../v2/vendor/)).
+[MIT](../../LICENSE). Bundled ECharts is Apache-2.0 ([../../core/vendor/](../../core/vendor/)).

@@ -38,7 +38,7 @@ Side panel columns: **raw value** (actual number of the day) · **percentile sco
 
 Composite: percentile → center to ±100 → weighted sum → EMA(3) → clamp ±100.
 
-## Database (v2/data/sentiment.db, SQLite)
+## Database (core/data/sentiment.db, SQLite)
 
 Open with **DB Browser for SQLite**, a VS Code SQLite extension, or `python -m sqlite3`.
 
@@ -55,5 +55,5 @@ SELECT date, zt_count, lb_max, jl_rate FROM mood_raw ORDER BY zt_count DESC LIMI
 
 ## Generated artifacts (git-ignored)
 
-`v2/out/sentiment_viewer.html` (interactive viewer) · `v2/out/publish/` (timestamped publishable views + `index.html`) · `v2/out/sentiment.csv` · `v2/out/sentiment_history.png`.
-`v2/config.yaml` = defaults; `v2/config_override.yaml` = admin-console "save as default" overrides (delete to reset).
+`core/out/sentiment_viewer.html` (interactive viewer) · `core/out/publish/` (timestamped publishable views + `index.html`) · `core/out/sentiment.csv` · `core/out/sentiment_history.png`.
+`core/config.yaml` = defaults; `core/config_override.yaml` = admin-console "save as default" overrides (delete to reset).
