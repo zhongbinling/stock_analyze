@@ -1,0 +1,56 @@
+{================================================================}
+{ 情绪分V1 · 指数基础版  公式名建议: QXXF                          }
+{ 用途: 大盘情绪温度计, -100(极度冰点/恐慌) ~ +100(极度狂热)        }
+{ 挂法: 日线副图, 建议品种 999999上证指数(或880003平均股价)         }
+{ 原理: 7个分量各自做N日滚动分位标准化后加权合成, EMA3平滑, 限幅    }
+{ 调参: N=250(一年,标准) / 120(半年,更敏感) / 500(两年,更平滑)     }
+{ 注意: 盘中分数随当日行情实时跳动, 收盘后定稿                      }
+{================================================================}
+N:=250;
+EPS:=0.000001;
+
+{— 1. 动量: 14日RSI (权重20%) —}
+LC:=REF(CLOSE,1);
+R14:=SMA(MAX(CLOSE-LC,0),14,1)/(SMA(ABS(CLOSE-LC),14,1)+EPS)*100;
+S1:=(R14-50)*2;
+
+{— 2. 当日涨跌幅 分位 (15%) —}
+CHG:=(CLOSE/REF(CLOSE,1)-1)*100;
+S2:=(CHG-LLV(CHG,N))/(HHV(CHG,N)-LLV(CHG,N)+EPS)*200-100;
+
+{— 3. 20日乖离率 分位 (15%) —}
+B20:=(CLOSE-MA(CLOSE,20))/MA(CLOSE,20)*100;
+S3:=(B20-LLV(B20,N))/(HHV(B20,N)-LLV(B20,N)+EPS)*200-100;
+
+{— 4. 量能水平 分位 (15%) —}
+S4:=(VOL-LLV(VOL,N))/(HHV(VOL,N)-LLV(VOL,N)+EPS)*200-100;
+
+{— 5. 量能趋势: 5/20日均量比 分位 (10%) —}
+VR:=MA(VOL,5)/(MA(VOL,20)+EPS);
+S5:=(VR-LLV(VR,N))/(HHV(VR,N)-LLV(VR,N)+EPS)*200-100;
+
+{— 6. N日价格位置 (10%) —}
+S6:=(CLOSE-LLV(CLOSE,N))/(HHV(CLOSE,N)-LLV(CLOSE,N)+EPS)*200-100;
+
+{— 7. 波动放大×方向 (15%) —}
+AMP:=(HIGH-LOW)/(REF(CLOSE,1)+EPS)*100;
+AP:=(AMP-LLV(AMP,N))/(HHV(AMP,N)-LLV(AMP,N)+EPS)*200-100;
+S7:=AP*IF(CHG>=0,1,-1);
+
+{— 加权合成 + 平滑 + 限幅 —}
+RAW:=S1*0.20+S2*0.15+S3*0.15+S4*0.15+S5*0.10+S6*0.10+S7*0.15;
+OK:=BARSCOUNT(CLOSE)>N+30;
+SCORE:=IF(OK,MAX(-100,MIN(100,EMA(RAW,3))),DRAWNULL);
+
+{— 绘制: 红绿柱 + 参考线 + 黄色主线 + 情绪周期信号 —}
+STICKLINE(SCORE>=0,0,SCORE,0.8,0),COLORRED;
+STICKLINE(SCORE<0,0,SCORE,0.8,0),COLORGREEN;
+狂热:80,COLORGRAY;
+高热:60,COLORGRAY;
+恐慌:-60,COLORGRAY;
+冰点:-80,COLORGRAY;
+情绪分:SCORE,COLORYELLOW,LINETHICK2;
+DRAWTEXT(OK AND CROSS(SCORE,60),72,'狂热'),COLORRED;
+DRAWTEXT(OK AND CROSS(60,SCORE),72,'退潮'),COLORYELLOW;
+DRAWTEXT(OK AND CROSS(-60,SCORE),-72,'冰点'),COLORGREEN;
+DRAWTEXT(OK AND CROSS(SCORE,-60),-72,'修复'),COLORWHITE;
