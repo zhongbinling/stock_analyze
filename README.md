@@ -36,9 +36,7 @@ pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引�
 # ★ Web 服务(第一阶段建设中, 当前S1账号权限已可用) —— http://127.0.0.1:8501
 python -m server
 #   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
-#   首次使用先建超管: printf "密码
-密码
-" | python -m server.bootstrap --username admin
+#   首次使用先建超管: python -m server.bootstrap --username admin (交互输入密码)
 
 # 评分引擎命令行(core/)
 cd core
