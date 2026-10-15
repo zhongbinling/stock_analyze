@@ -5,7 +5,10 @@
 """
 import argparse
 import getpass
+import os
 import sys
+
+os.environ.setdefault("SA_NO_JOBS", "1")  # CLI无需任务系统
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

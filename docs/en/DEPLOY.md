@@ -42,7 +42,7 @@ The script: checks Python → creates `.venv` → installs dependencies → runs
 
 - `start` runs an idempotent DB migration first, then launches in the background; a running instance is detected via `/healthz` and not double-started
 - Runtime log: `data/service.log`; PID file: `data/service.pid`
-- Auto-start: Windows = Task Scheduler (on logon), Linux = systemd unit (sudo), macOS = launchd (user-level)
+- Auto-start: Windows = HKCU registry Run key (on logon, user-level, no admin rights), Linux = systemd unit (sudo), macOS = launchd (user-level)
 - Scripts prefer the `.venv` interpreter and fall back to system Python
 
 ## 4. Post-deploy setup

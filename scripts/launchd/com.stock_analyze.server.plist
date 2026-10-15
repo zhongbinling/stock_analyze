@@ -14,8 +14,9 @@
     <string>{REPO}</string>
     <key>RunAtLoad</key>
     <true/>
+    <!-- 手动stop不被拉起; 需崩溃自愈可改回true -->
     <key>KeepAlive</key>
-    <true/>
+    <false/>
     <key>StandardOutPath</key>
     <string>{REPO}/data/service.log</string>
     <key>StandardErrorPath</key>

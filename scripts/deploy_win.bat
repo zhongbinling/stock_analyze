@@ -5,7 +5,7 @@ REM stock_analyze 一键部署 (Windows)
 REM 用法: 双击或 cmd 运行 scripts\deploy_win.bat
 REM 流程: 检查Python → 建.venv → 装依赖 → 迁移 → 超管(如无) → 询问自启 → 启动 → 健康检查
 REM ============================================================
-setlocal enabledelayedexpansion
+setlocal
 cd /d "%~dp0.."
 
 echo [1/7] 检查 Python (需 3.10+)…
@@ -33,6 +33,8 @@ set "SA_NO_JOBS=1"
 set "FLASK_APP=server:create_app()"
 "%PY%" -m flask db upgrade || (echo   ✗ 迁移失败 & exit /b 1)
 echo   ✓ 数据库就绪
+set "SA_NO_JOBS="
+set "FLASK_APP="
 
 echo [5/7] 检查管理员账号…
 "%PY%" scripts\check_admin.py && (

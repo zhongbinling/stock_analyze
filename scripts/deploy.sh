@@ -38,7 +38,7 @@ fi
 
 echo "[6/7] 开机自启(可选)…"
 printf "    注册开机自启? (y/N): "
-read AUTO
+read AUTO || true
 if [ "$AUTO" = "y" ] || [ "$AUTO" = "Y" ]; then
     sh scripts/service.sh install || echo "  ⚠ 自启安装失败, 可稍后手动执行 scripts/service.sh install"
 fi

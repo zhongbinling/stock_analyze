@@ -101,8 +101,9 @@ def cmd_start():
     if r.returncode != 0:
         log("✗ 迁移失败:\n" + (r.stdout or "") + (r.stderr or ""))
         return 1
-    # 2) 后台启动
-    kw = {}
+    # 2) 后台启动 (剥离 CLI 专用环境变量, 保证服务进程带完整任务系统)
+    env = {k: v for k, v in os.environ.items() if k not in ("SA_NO_JOBS", "FLASK_APP")}
+    kw = {"env": env}
     if IS_WIN:
         kw["creationflags"] = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     else:
@@ -167,9 +168,11 @@ def find_pid_by_port():
             out = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True,
                                  text=True).stdout
             for line in out.splitlines():
-                if f"127.0.0.1:{port}" in line or f"0.0.0.0:{port}" in line:
-                    if "LISTENING" in line.upper():
-                        return int(line.split()[-1])
+                cols = line.split()
+                # 精确匹配本地地址列, 避免端口前缀误配(如8501匹配到85010)
+                if len(cols) >= 5 and cols[3].upper() == "LISTENING":
+                    if cols[1] in (f"127.0.0.1:{port}", f"0.0.0.0:{port}", f"[::]:{port}"):
+                        return int(cols[4])
         else:
             out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
                                  capture_output=True, text=True).stdout
