@@ -80,7 +80,7 @@ async function loadDefs() {
           <button class="btn small primary" onclick="runDef(${v.id})">生成</button>
           <button class="btn small" onclick="editDef(${v.id})">编辑</button>
           <button class="btn small" onclick="toggleDef(${v.id})">${v.enabled ? '停用' : '启用'}</button>
-          <button class="btn small danger" onclick="delDef(${v.id}, '${esc(v.name)}')">删除</button>
+          <button class="btn small danger" onclick="delDef(${v.id})">删除</button>
         </td></tr>`).join('') || '<tr><td colspan="8" class="hint">暂无规则, 点下方新建</td></tr>';
     if (!$('btnNew')) {
       const b = document.createElement('button');
@@ -142,8 +142,9 @@ $('btnSave').onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 async function toggleDef(id) { try { await api(`/admin/api/defs/${id}/toggle`, {method: 'POST'}); loadDefs(); } catch (e) { alert(e.message); } }
-async function delDef(id, name) {
-  if (!confirm(`删除规则 ${name}?(生成历史保留)`)) return;
+async function delDef(id) {
+  const v = defsCache.find(x => x.id === id);
+  if (!confirm(`删除规则 ${v ? v.name : id}?(生成历史保留)`)) return;
   try { await api(`/admin/api/defs/${id}/delete`, {method: 'POST'}); loadDefs(); loadRuns(); } catch (e) { alert(e.message); }
 }
 async function runDef(id) {

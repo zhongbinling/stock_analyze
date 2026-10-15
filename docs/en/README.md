@@ -41,7 +41,7 @@ python report.py             # daily text report
 python viewer.py --open      # interactive viewer
 python backtest.py           # anchor / IC / quintile checks
 
-# Transitional admin console (removed in S2): python admin.py --port 8599
+# View generation & data management live in the admin console: /admin/data, /admin/generate
 ```
 
 TDX users: paste [../../tdx/QXXF_情绪分V1.txt](../../tdx/QXXF_情绪分V1.txt) or the V2.1 formula into the TDX formula manager (usage notes in the file header).

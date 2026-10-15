@@ -14,11 +14,10 @@ cd core
 pip install -r requirements.txt
 
 # ★ Web服务: 回仓库根目录 python -m server  → http://127.0.0.1:8501
-# 过渡期旧管理台(S2后移除, 端口8599):
-python admin.py --open       # http://127.0.0.1:8599
+#    数据管理/数据生成在管理端 /admin/data 与 /admin/generate (≥7级)
 ```
 
-管理台之外，各命令也可单独使用：
+服务端之外，引擎命令也可单独使用：
 
 ```bash
 # 1) 采集数据(首次回补约240交易日, 需8~12分钟, 支持断点续跑)
@@ -49,9 +48,8 @@ python report.py
 
 | 文件 | 职责 |
 |---|---|
-| admin.py | **本地管理台**(http://127.0.0.1:8501): 数据状态/一键增量更新/权重设置/视图发布到 out/publish/ |
 | config.yaml | 指数代码 / 回补起始 / 分量权重 / 窗口 / 阈值 |
-| config_override.yaml | 管理台"保存为默认"生成的覆盖文件(优先级更高, 删除即恢复) |
+| config_override.yaml | 权重覆盖文件(优先级更高, 删除即恢复; 服务端生成走 SENTIMENT_OVERRIDE 临时文件) |
 | em_api.py | 东财+腾讯接口直连客户端(K线多源回退, 涨停四池) |
 | db.py | SQLite 表结构(index_daily / mood_raw / sentiment) |
 | fetch_daily.py | 指数日线 + 四池聚合统计 + 当日涨跌家数采集 |

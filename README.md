@@ -15,7 +15,7 @@
 | **通达信公式**（[tdx/](tdx/)） | 零依赖副图公式：V1 量价版 + V2.1 广度增强版（涨跌家数跨品种引用、量能非对称方向化、RSI 分位化），附配套涨停生态选股公式 |
 | **Python 评分系统**（[core/](core/)） | 15 分量五组加权（涨停结构/量能/动量/位置/波动），250 日滚动分位标准化，EMA 平滑限幅；双数据源直连客户端（同花顺涨停复盘 + 东财/腾讯指数K线自动回退） |
 | **交互式情绪视图**（[core/viewer.py](core/viewer.py)） | 自包含 HTML：K线/成交量/情绪分/涨跌停/炸板率接力率五联面板，十字光标联动，右侧实时显示当日**全部构成指标**，滚轮缩放，可离线分发 |
-| **本地管理台**（[core/admin.py](core/admin.py)） | 数据状态一览、一键增量更新（实时日志）、可视化权重设置（仅本次/保存为默认）、视图发布到 `out/publish/` |
+| **Web 管理端**（`/admin`） | 账号与 9 级权限（S1）；数据管理：数据集总览/一键更新/更新策略/数据源（S2）；数据生成：规则 CRUD/权重编辑/定时生成/历史与预览（S2） |
 | **校验体系**（[core/backtest.py](core/backtest.py)） | 极端日锚点回放（8/8 命中）、信息系数 IC、五分组收益单调性 |
 
 ## 📺 演示
@@ -33,7 +33,7 @@ git clone <你的仓库地址> stock_analyze
 cd stock_analyze
 pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引擎)
 
-# ★ Web 服务(第一阶段建设中, 当前S1账号权限已可用) —— http://127.0.0.1:8501
+# ★ Web 服务(第一阶段建设中, 当前S2数据管理与生成已可用) —— http://127.0.0.1:8501
 python -m server
 #   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
 #   首次使用先建超管: python -m server.bootstrap --username admin (交互输入密码)

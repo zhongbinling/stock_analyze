@@ -11,7 +11,7 @@
 
 说明：
 - 2025-10-15 之前下方面板（涨停结构）无数据属正常——免费数据源只保留约一年滚动历史
-- 要生成最新数据的视图请运行 `core/viewer.py`，或在管理台 `python core/admin.py` 中点"生成视图"
+- 要生成最新数据的视图请运行 `core/viewer.py`，或在服务端管理页 `/admin/generate` 点"生成"
 
 ## 更新线上演示（GitHub Pages）
 

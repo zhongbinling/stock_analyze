@@ -322,6 +322,8 @@ def api_def_create():
         return jsonify({"ok": False, "msg": "名称需2~32字"}), 400
     if env not in ("test", "prod"):
         return jsonify({"ok": False, "msg": "环境需为 test/prod"}), 400
+    if ViewDef.query.filter_by(name=name).first():
+        return jsonify({"ok": False, "msg": f"规则名 {name} 已存在, 请换名"}), 400
     params, err = _validate_params(d, {c[0] for c in component_meta()})
     if err:
         return jsonify({"ok": False, "msg": err}), 400
@@ -346,6 +348,9 @@ def api_def_update(vid):
         name = str(d.get("name", "")).strip()
         if not (2 <= len(name) <= 32):
             return jsonify({"ok": False, "msg": "名称需2~32字"}), 400
+        dup = ViewDef.query.filter_by(name=name).first()
+        if dup and dup.id != vd.id:
+            return jsonify({"ok": False, "msg": f"规则名 {name} 已存在, 请换名"}), 400
         vd.name = name
     if "env" in d:
         if d["env"] not in ("test", "prod"):
