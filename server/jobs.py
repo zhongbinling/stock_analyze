@@ -244,7 +244,8 @@ def task_generate(def_id, scheduled=False):
             return 1
 
         params = json.loads(vd.params_json or "{}")
-        run = ViewRun(def_id=vd.id, def_name=vd.name, status="running", data_date=data_date)
+        run = ViewRun(def_id=vd.id, def_name=vd.name, env=vd.env,
+                      vtype=vd.type or "sentiment", status="running", data_date=data_date)
         db.session.add(run)
         db.session.commit()
         t0 = time.time()

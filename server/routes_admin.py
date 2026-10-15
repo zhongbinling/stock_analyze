@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""管理端路由: 管理登录 / 工作台 / 账号管理 (≥5/≥9) + S2 数据管理与数据生成 (≥7)"""
+"""管理端路由: 管理登录 / 工作台 / 账号管理 (≥5/≥9) + S2 数据管理与数据生成 (≥7) + S3 视图管理 (≥5)"""
 import json
 import re
+from datetime import datetime
 
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, send_file, url_for)
@@ -439,3 +440,128 @@ def run_file(rid):
     if store not in p.parents or not p.is_file():
         abort(404)
     return send_file(p, mimetype="text/html")
+
+
+# ================================================= S3: 视图管理 (≥5) + 用户行情页 (≥1)
+
+def _safe_run_file(run):
+    """返回视图文件绝对路径; 不在 views_store 内或不存在返回 None"""
+    if not run or not run.file_path:
+        return None
+    p = (ROOT / run.file_path).resolve()
+    store = (ROOT / "views_store").resolve()
+    if store not in p.parents or not p.is_file():
+        return None
+    return p
+
+
+@bp_admin.get("/views")
+@require_level(5)
+def views_page():
+    return render_template("admin/views.html")
+
+
+@bp_admin.get("/api/views")
+@require_level(5)
+def api_views():
+    """生成记录列表: 筛选 环境/发布状态/数据日期/规则名"""
+    q = ViewRun.query
+    env = request.args.get("env", "")
+    if env in ("test", "prod"):
+        q = q.filter_by(env=env)
+    status = request.args.get("status", "")
+    if status == "published":
+        q = q.filter_by(published=1)
+    elif status == "unpublished":
+        q = q.filter_by(published=0)
+    d1, d2 = request.args.get("from", "").strip(), request.args.get("to", "").strip()
+    if d1:
+        q = q.filter(ViewRun.data_date >= d1)
+    if d2:
+        q = q.filter(ViewRun.data_date <= d2)
+    kw = request.args.get("q", "").strip()
+    if kw:
+        q = q.filter(ViewRun.def_name.like(f"%{kw}%"))
+    runs = q.order_by(ViewRun.id.desc()).limit(100).all()
+
+    defs = {d.id: d for d in ViewDef.query.all()}
+    rows = []
+    for r in runs:
+        d = defs.get(r.def_id)
+        rows.append({"id": r.id, "def_id": r.def_id, "def_name": r.def_name or "--",
+                     "env": r.env or "test", "vtype": r.vtype or "sentiment",
+                     "status": r.status, "data_date": r.data_date or "--",
+                     "size_kb": r.size_kb or 0, "duration": r.duration_s,
+                     "published": bool(r.published),
+                     "auto": bool(r.published and d and d.auto_publish and r.env == "prod"),
+                     "publishable": bool(r.env == "prod" and r.status == "done" and r.file_path),
+                     "at": r.generated_at.strftime("%m-%d %H:%M") if r.generated_at else "",
+                     "pub_at": r.published_at.strftime("%m-%d %H:%M") if r.published_at else "",
+                     "preview_url": url_for("admin.run_file", rid=r.id) if r.file_path else ""})
+    def_cards = [{"id": d.id, "name": d.name, "env": d.env,
+                  "auto_publish": bool(d.auto_publish), "enabled": bool(d.enabled)}
+                 for d in ViewDef.query.filter_by(env="prod").order_by(ViewDef.id).all()]
+    return jsonify({"runs": rows, "prod_defs": def_cards})
+
+
+@bp_admin.post("/api/views/<int:rid>/publish")
+@require_level(5)
+def api_view_publish(rid):
+    run = db.session.get(ViewRun, rid)
+    if not run:
+        return jsonify({"ok": False, "msg": "记录不存在"}), 404
+    if run.env != "prod":
+        return jsonify({"ok": False, "msg": "仅产线(prod)环境视图可发布"}), 400
+    if run.status != "done" or not run.file_path or not _safe_run_file(run):
+        return jsonify({"ok": False, "msg": "该记录无有效产物文件"}), 400
+    run.published = 1
+    run.published_at = datetime.now()
+    db.session.commit()
+    audit("view_publish", target=f"run#{rid}", detail=f"{run.def_name} 数据日期{run.data_date}")
+    return jsonify({"ok": True, "msg": "已发布"})
+
+
+@bp_admin.post("/api/views/<int:rid>/unpublish")
+@require_level(5)
+def api_view_unpublish(rid):
+    run = db.session.get(ViewRun, rid)
+    if not run:
+        return jsonify({"ok": False, "msg": "记录不存在"}), 404
+    run.published = 0
+    db.session.commit()
+    audit("view_unpublish", target=f"run#{rid}", detail=run.def_name or "")
+    return jsonify({"ok": True, "msg": "已下线"})
+
+
+@bp_admin.post("/api/views/<int:rid>/delete")
+@require_level(5)
+def api_view_delete(rid):
+    run = db.session.get(ViewRun, rid)
+    if not run:
+        return jsonify({"ok": False, "msg": "记录不存在"}), 404
+    p = _safe_run_file(run)
+    if p:
+        try:
+            p.unlink()
+        except OSError as e:
+            return jsonify({"ok": False, "msg": f"文件删除失败: {e}"}), 500
+    name, was_pub = run.def_name, bool(run.published)
+    db.session.delete(run)
+    db.session.commit()
+    audit("view_delete", target=f"run#{rid}", detail=f"{name}{'(曾已发布)' if was_pub else ''}")
+    return jsonify({"ok": True, "msg": f"已删除记录与文件{name and ''}"})
+
+
+@bp_admin.post("/api/defs/<int:vid>/autopublish")
+@require_level(5)
+def api_def_autopublish(vid):
+    """产线规则自动发布开关(运营≥5专用, 与数据生成页≥7分权)"""
+    vd = db.session.get(ViewDef, vid)
+    if not vd:
+        return jsonify({"ok": False, "msg": "规则不存在"}), 404
+    if vd.env != "prod":
+        return jsonify({"ok": False, "msg": "仅产线规则有自动发布"}), 400
+    vd.auto_publish = 0 if vd.auto_publish else 1
+    db.session.commit()
+    audit("def_autopublish", target=vd.name, detail="开启" if vd.auto_publish else "关闭")
+    return jsonify({"ok": True, "auto_publish": bool(vd.auto_publish)})

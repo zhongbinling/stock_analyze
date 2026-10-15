@@ -2,16 +2,80 @@
 {% block title %}行情数据 · {{ app_name }}{% endblock %}
 {% block content %}
 <section class="card">
-  <h1>行情数据</h1>
-  <p>视图类型:</p>
-  <div class="tabs">
-    <span class="tab active">情绪视图</span>
-    <span class="tab disabled" title="后续版本">更多类型(规划中)</span>
+  <div class="row-flex spread">
+    <div class="tabs" style="margin:0">
+      <span class="tab active">情绪视图</span>
+      <span class="tab disabled" title="后续版本">更多类型(规划中)</span>
+    </div>
+    <div class="row-flex" style="margin:0">
+      <span class="hint" id="vInfo">加载中…</span>
+      {% if current_user.is_authenticated and current_user.level >= 2 %}
+      <button class="btn small" id="btnHistory">历史视图</button>
+      {% endif %}
+    </div>
   </div>
-  <div class="empty-state">
-    <p><b>S3 交付</b>：此处将展示最新已发布的产线情绪视图。</p>
-    <p class="hint">管理员可通过 数据生成 → 视图管理 发布视图; 当前请先使用
-      <a href="{{ url_for('admin.dashboard') if current_user.is_authenticated and current_user.level >= 5 else url_for('bp.index') }}">管理端</a>或命令行 <code>python core/viewer.py</code> 查看本机视图。</p>
+
+  <div id="historyPanel" style="display:none" class="history-panel">
+    <table class="table"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  </div>
+
+  <div id="viewWrap" style="display:none">
+    <iframe id="viewFrame" class="view-frame" src="about:blank" title="情绪视图"></iframe>
+  </div>
+
+  <div class="empty-state" id="emptyState" style="display:none">
+    <p><b>暂无已发布的视图</b></p>
+    <p class="hint">管理员在数据生成页生成"产线+自动发布"的视图，或在视图管理页手动发布后，此处即可展示。</p>
+    {% if current_user.is_authenticated and current_user.level >= 5 %}
+    <a class="btn primary" href="{{ url_for('admin.views_page') }}">去视图管理</a>
+    {% endif %}
   </div>
 </section>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const url = new URL(location.href);
+let curRid = url.searchParams.get('rid') ? parseInt(url.searchParams.get('rid')) : null;
+
+async function loadView(rid) {
+  try {
+    const d = await fetch('/mkt/api/latest' + (rid ? '?rid=' + rid : '')).then(r => r.json());
+    if (d.view) {
+      curRid = d.view.rid;
+      $('vInfo').innerHTML = `数据日期 <b>${esc(d.view.data_date)}</b> · ${esc(d.view.def_name)} · 发布于 ${esc(d.view.published_at)}`;
+      $('viewFrame').src = '/mkt/view/' + d.view.rid;
+      $('viewWrap').style.display = 'block';
+      $('emptyState').style.display = 'none';
+    } else {
+      $('vInfo').textContent = '';
+      $('emptyState').style.display = 'block';
+    }
+  } catch (e) { $('vInfo').textContent = '加载失败: ' + e.message; }
+}
+
+async function toggleHistory() {
+  const p = $('historyPanel');
+  if (p.style.display !== 'none') { p.style.display = 'none'; return; }
+  p.style.display = 'block';
+  try {
+    const d = await fetch('/mkt/api/views').then(r => r.json());
+    p.querySelector('tbody').innerHTML = d.views.length
+      ? d.views.map(v => `<tr class="hist-row" data-rid="${v.rid}">
+          <td>${esc(v.data_date)}</td><td>${esc(v.def_name)}</td>
+          <td class="hint">${esc(v.published_at)}</td>
+          <td>${v.rid === curRid ? '<span class="badge badge-ok">当前</span>' : ''}</td></tr>`).join('')
+      : '<tr><td class="hint">暂无历史视图</td></tr>';
+    p.querySelectorAll('.hist-row').forEach(tr => tr.onclick = () => {
+      loadView(parseInt(tr.dataset.rid));
+      history.replaceState(null, '', '/mkt?rid=' + tr.dataset.rid);
+      p.style.display = 'none';
+    });
+  } catch (e) { p.querySelector('tbody').innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
+}
+const bh = $('btnHistory');
+if (bh) bh.onclick = toggleHistory;
+
+loadView(curRid);
+</script>
 {% endblock %}

@@ -4,6 +4,16 @@
 
 ## [未发布] 第一阶段 · 多用户行情服务（开发中）
 
+### S3 视图管理 + 用户行情页 - 2026-10-15
+- 视图管理页 /admin/views(≥5运营)：环境/发布状态/数据日期/规则名筛选，预览/发布/下线/删除，
+  产线规则自动发布开关(与数据生成页≥7分权)
+- 用户行情页 /mkt(≥1)：默认最新已发布产线情绪视图(iframe+头栏信息)，?rid=指定，
+  历史视图列表(≥2)，空态引导
+- /mkt/view/<rid> 仅服务 published 产物(路径安全校验)；发布语义: 仅prod可发布，test/失败/无文件拒绝
+- view_runs 增加 env/vtype 快照列(存量回填)；生成时写入
+- 修复 require_level 的API判定(含/admin/api/*前缀, 越权返回JSON而非HTML)
+- 审计: view_publish/view_unpublish/view_delete/def_autopublish
+
 ### S2 数据管理 + 生成任务 - 2026-10-15
 - 任务系统 server/jobs.py：单工作线程队列(上限20) + 子进程调用 core CLI + APScheduler 定时(策略热更新)
 - 数据管理页 /admin/data：数据集总览(5类, 含缺失天数健康度)、手动增量更新(实时日志)、

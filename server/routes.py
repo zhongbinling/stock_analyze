@@ -2,7 +2,7 @@
 """公共路由: 首页/健康检查/主题/登录注册/账号信息/设置/行情数据(S3前占位)"""
 from datetime import datetime, timezone
 
-from flask import (Blueprint, flash, jsonify, redirect, render_template,
+from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
                    request, session, url_for)
 from flask_login import current_user, login_user, logout_user
 
@@ -155,5 +155,53 @@ def settings():
 @bp.get("/mkt")
 @require_level(1)
 def mkt():
-    """行情数据(S3 接入已发布视图, 当前占位)"""
+    """行情数据: 默认最新已发布产线情绪视图, ?rid= 指定, 空态引导"""
     return render_template("mkt.html")
+
+
+@bp.get("/mkt/api/latest")
+@require_level(1)
+def mkt_latest():
+    from server.models import ViewRun
+    q = (ViewRun.query.filter_by(published=1, env="prod", vtype="sentiment", status="done")
+         .filter(ViewRun.file_path.isnot(None)))
+    rid = request.args.get("rid", type=int)
+    r = q.filter_by(id=rid).first() if rid else q.order_by(ViewRun.id.desc()).first()
+    if not r:
+        return jsonify({"view": None})
+    return jsonify({"view": {"rid": r.id, "def_name": r.def_name or "",
+                             "data_date": r.data_date or "",
+                             "published_at": r.published_at.strftime("%Y-%m-%d %H:%M") if r.published_at else ""}})
+
+
+@bp.get("/mkt/api/views")
+@require_level(2)
+def mkt_views():
+    """历史视图列表(≥2): 已发布产线视图"""
+    from server.models import ViewRun
+    vtype = request.args.get("type", "sentiment")
+    runs = (ViewRun.query.filter_by(published=1, env="prod", status="done")
+            .filter(ViewRun.vtype == vtype, ViewRun.file_path.isnot(None))
+            .order_by(ViewRun.id.desc()).limit(60).all())
+    return jsonify({"views": [{"rid": r.id, "def_name": r.def_name or "",
+                               "data_date": r.data_date or "",
+                               "published_at": r.published_at.strftime("%Y-%m-%d %H:%M") if r.published_at else ""}
+                              for r in runs]})
+
+
+@bp.get("/mkt/view/<int:rid>")
+@require_level(1)
+def mkt_view(rid):
+    """用户侧视图文件: 仅已发布的产线产物"""
+    from pathlib import Path
+    from server import ROOT as _ROOT
+    from server.models import ViewRun
+    r = db.session.get(ViewRun, rid)
+    if not r or not r.published or not r.file_path:
+        abort(404)
+    p = (Path(_ROOT) / r.file_path).resolve()
+    store = (Path(_ROOT) / "views_store").resolve()
+    if store not in p.parents or not p.is_file():
+        abort(404)
+    from flask import send_file as _send
+    return _send(p, mimetype="text/html")

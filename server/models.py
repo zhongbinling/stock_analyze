@@ -83,12 +83,14 @@ class ViewDef(db.Model):
 
 
 class ViewRun(db.Model):
-    """视图生成记录 (规则删除后仍保留, 冗余规则名)"""
+    """视图生成记录 (规则删除后仍保留, 冗余规则名/环境/类型快照)"""
     __tablename__ = "view_runs"
 
     id = db.Column(db.Integer, primary_key=True)
     def_id = db.Column(db.Integer)
     def_name = db.Column(db.String(64))
+    env = db.Column(db.String(8))                         # test | prod (快照)
+    vtype = db.Column(db.String(16))                      # 视图类型快照(当前sentiment)
     status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
     data_date = db.Column(db.String(10))                   # 行情数据日期
     file_path = db.Column(db.Text)                         # 相对仓库根, views_store/...

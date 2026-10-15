@@ -57,7 +57,7 @@ def require_level(level: int):
             if current_user.is_authenticated:
                 if current_user.level >= level:
                     return fn(*args, **kwargs)
-                if request.path.startswith("/api/"):
+                if "/api/" in request.path:       # 含 /admin/api/* 前缀的接口
                     return jsonify({"error": "forbidden", "need_level": level}), 403
                 abort(403)
             if level <= 1:                      # 匿名(等级1)可访问

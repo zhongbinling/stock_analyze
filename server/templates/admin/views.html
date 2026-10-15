@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}视图管理 · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('admin.dashboard') }}">← 工作台</a></p>
+
+<section class="card">
+  <div class="row-flex spread">
+    <h1>视图管理</h1>
+    <button class="btn small" id="btnRefresh">刷新</button>
+  </div>
+  <div class="row-flex">
+    <span>环境
+      <select class="input narrow" id="fEnv"><option value="">全部</option><option value="prod">prod</option><option value="test">test</option></select>
+    </span>
+    <span>状态
+      <select class="input narrow" id="fStatus"><option value="">全部</option><option value="published">已发布</option><option value="unpublished">未发布</option></select>
+    </span>
+    <span>数据日期 <input class="input narrow" id="fFrom" type="date"> ~ <input class="input narrow" id="fTo" type="date"></span>
+    <span><input class="input" id="fQ" placeholder="规则名关键字"></span>
+    <button class="btn" id="btnFilter">筛选</button>
+  </div>
+  <table class="table" id="runTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <p class="hint">发布规则：仅 <b>prod 产线</b>环境且有产物文件的视图可发布；发布后用户侧 /mkt 即可见。test 环境视图仅供管理端预览调试。</p>
+</section>
+
+<section class="card">
+  <h2>产线规则 · 自动发布开关</h2>
+  <table class="table" id="defTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <p class="hint">开启后：每个交易日 17:00 定时生成成功即自动发布（数据更新失败/节假日自动跳过）。</p>
+</section>
+
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})
+  }));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function load() {
+  const qs = new URLSearchParams();
+  if ($('fEnv').value) qs.set('env', $('fEnv').value);
+  if ($('fStatus').value) qs.set('status', $('fStatus').value);
+  if ($('fFrom').value) qs.set('from', $('fFrom').value);
+  if ($('fTo').value) qs.set('to', $('fTo').value);
+  if ($('fQ').value.trim()) qs.set('q', $('fQ').value.trim());
+  try {
+    const d = await api('/admin/api/views?' + qs.toString());
+    $('runTable').innerHTML = '<tr><th>ID</th><th>规则</th><th>环境</th><th>数据日期</th><th>生成时间</th><th>大小</th><th>发布</th><th>操作</th></tr>' +
+      (d.runs.length ? d.runs.map(v => `<tr>
+        <td>${v.id}</td><td><b>${esc(v.def_name)}</b></td>
+        <td>${v.env === 'prod' ? '<span class="badge badge-ok">prod</span>' : '<span class="badge">test</span>'}</td>
+        <td>${esc(v.data_date)}</td><td class="hint">${esc(v.at)}</td><td>${v.size_kb}KB</td>
+        <td>${v.status !== 'done' ? `<span class="bad">${v.status === 'fail' ? '生成失败' : '运行中'}</span>`
+            : v.published ? `<span class="ok">已发布${v.auto ? ' · 自动' : ''}</span><div class="hint">${esc(v.pub_at)}</div>`
+            : '--'}</td>
+        <td class="ops">
+          ${v.preview_url ? `<a class="btn small" href="${v.preview_url}" target="_blank">预览</a>` : ''}
+          ${v.publishable && !v.published ? `<button class="btn small primary" onclick="pub(${v.id})">发布</button>` : ''}
+          ${v.published ? `<button class="btn small" onclick="unpub(${v.id})">下线</button>` : ''}
+          <button class="btn small danger" onclick="delRun(${v.id})">删除</button>
+        </td></tr>`).join('')
+        : '<tr><td colspan="8" class="hint">无匹配记录</td></tr>');
+    $('defTable').innerHTML = '<tr><th>产线规则</th><th>启用</th><th>自动发布</th><th>操作</th></tr>' +
+      (d.prod_defs.length ? d.prod_defs.map(x => `<tr>
+        <td><b>${esc(x.name)}</b></td>
+        <td class="${x.enabled ? 'ok' : 'bad'}">${x.enabled ? '启用' : '停用'}</td>
+        <td class="${x.auto_publish ? 'ok' : ''}">${x.auto_publish ? '开启' : '关闭'}</td>
+        <td><button class="btn small" onclick="toggleAuto(${x.id})">${x.auto_publish ? '关闭自动发布' : '开启自动发布'}</button></td>
+        </tr>`).join('')
+        : '<tr><td colspan="4" class="hint">暂无产线规则</td></tr>');
+  } catch (e) { $('runTable').innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
+}
+
+async function pub(id) { try { await api(`/admin/api/views/${id}/publish`, {method:'POST'}); load(); } catch (e) { alert(e.message); } }
+async function unpub(id) { try { await api(`/admin/api/views/${id}/unpublish`, {method:'POST'}); load(); } catch (e) { alert(e.message); } }
+async function delRun(id) {
+  if (!confirm(`删除记录 #${id} 及其文件?(不可恢复)`)) return;
+  try { await api(`/admin/api/views/${id}/delete`, {method:'POST'}); load(); } catch (e) { alert(e.message); }
+}
+async function toggleAuto(id) { try { await api(`/admin/api/defs/${id}/autopublish`, {method:'POST'}); load(); } catch (e) { alert(e.message); } }
+
+$('btnFilter').onclick = load;
+$('btnRefresh').onclick = load;
+['fEnv','fStatus'].forEach(i => $(i).addEventListener('change', load));
+$('fQ').addEventListener('keydown', e => { if (e.key === 'Enter') load(); });
+load();
+</script>
+{% endblock %}

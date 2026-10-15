@@ -12,10 +12,10 @@
       <h3>数据生成</h3><p class="hint">生成规则 · 权重/因子 · 定时生成</p>
       <span class="badge badge-ok">可用</span>
     </a>
-    <div class="mini-card">
+    <a class="mini-card link" href="{{ url_for('admin.views_page') }}">
       <h3>视图管理</h3><p class="hint">历史视图 · 发布/下线 · 自动发布</p>
-      <span class="badge">S3 交付</span>
-    </div>
+      <span class="badge badge-ok">可用</span>
+    </a>
     {% if current_user.level >= 9 %}
     <a class="mini-card link" href="{{ url_for('admin.accounts') }}">
       <h3>账号管理</h3><p class="hint">管理员与用户账号 · 审计日志</p>
