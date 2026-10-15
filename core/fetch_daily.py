@@ -108,6 +108,15 @@ def fetch_breadth_today():
         print(f"[breadth] 失败(不影响主流程, 未安装akshare也会跳过): {type(e).__name__}")
 
 
+def fetch_sectors():
+    """板块数据底座(S5): 清单/增量日线/资金流/当日涨停行业聚合; 首次自动全量回补"""
+    try:
+        import sectors
+        sectors.update_daily()
+    except Exception as e:  # noqa: BLE001
+        print(f"[sectors] 失败(不阻塞主链): {type(e).__name__}: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=None, help="池回补起始日 YYYYMMDD (默认取 config pool_start)")
@@ -115,6 +124,7 @@ def main():
     ap.add_argument("--index-start", default=None, help="指数起始日 (默认取 config index_start)")
     ap.add_argument("--force", action="store_true", help="忽略断点重新抓池")
     ap.add_argument("--no-breadth", action="store_true", help="跳过当日涨跌家数")
+    ap.add_argument("--no-sectors", action="store_true", help="跳过板块数据(S5)")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -129,6 +139,8 @@ def main():
     fetch_pools(cfg, dates, force=args.force)
     if not args.no_breadth:
         fetch_breadth_today()
+    if not args.no_sectors:
+        fetch_sectors()
 
 
 if __name__ == "__main__":

@@ -112,6 +112,36 @@ def datasets() -> list:
                     "rows": rows or 0, "first": None, "last": last,
                     "health": "ok",
                     "note": "仅最新一天可得, 不参与评分历史分量"})
+
+        # ---- S5: 板块数据底座 ----
+        try:
+            n_ind, n_con = con.execute(
+                "SELECT SUM(kind='industry'), SUM(kind='concept') FROM sectors").fetchone()
+            out.append({"code": "sectors", "name": "板块清单(东财BK)", "source": "东财clist",
+                        "rows": (n_ind or 0) + (n_con or 0), "first": None,
+                        "last": con.execute("SELECT MAX(updated_at) FROM sectors").fetchone()[0],
+                        "health": "ok" if (n_ind or 0) >= 100 else "warn",
+                        "note": f"行业{n_ind or 0}(启用) + 概念{n_con or 0}(停用)"})
+            rows, codes, first, last = con.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT code), MIN(date), MAX(date) FROM sector_daily").fetchone()
+            out.append({"code": "sector_daily", "name": "板块日线", "source": "东财push2his",
+                        "rows": rows or 0, "first": first, "last": last,
+                        "health": "ok" if _stale_days(last) <= 4 else "warn",
+                        "note": f"{codes} 板块; 涨跌家数采集日起积累"})
+            rows, last = con.execute(
+                "SELECT COUNT(*), MAX(date) FROM sector_pool_stat").fetchone()
+            out.append({"code": "sector_pool", "name": "板块涨停聚合(THS行业)", "source": "同花顺",
+                        "rows": rows or 0, "first": None, "last": last,
+                        "health": "ok" if _stale_days(last) <= 4 else "warn",
+                        "note": "东财池口径·历史约1个月起逐日积累"})
+            rows, codes, last = con.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT code), MAX(date) FROM sector_fundflow").fetchone()
+            out.append({"code": "sector_fflow", "name": "板块资金流", "source": "东财fflow",
+                        "rows": rows or 0, "first": None, "last": last,
+                        "health": "ok" if _stale_days(last) <= 7 else "warn",
+                        "note": f"{codes or 0} 板块·约最近120日·周频刷新"})
+        except sqlite3.Error:
+            pass                    # 板块表未建(旧库)时跳过该组
         return out
     except sqlite3.Error as e:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,

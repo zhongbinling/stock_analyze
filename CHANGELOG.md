@@ -2,6 +2,21 @@
 
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布] 第二阶段 · 板块温度计（开发中）
+
+### S5 板块数据底座 - 2026-10-16
+- 新表×6: sectors(行业~500细分到三级+概念~500默认停用)/sector_daily/sector_pool_stat/
+  sector_fundflow/sector_alias；core/sectors.py 采集编排(清单/增量K线/资金流周频/涨停行业聚合)
+- em_api: 板块清单(clist+编号镜像轮换)/板块K线(90.BKxxxx)/资金流历史(fflow)；
+  ths_pool_stats 支持 with_industry(东财三池 hybk+lbc 口径)；_get 增加 curl 子进程兜底
+  (东财WAF按TLS指纹封锁requests时, curl指纹可用)
+- @行业名 优雅降级落库 + remap_pending 自动重映射(清单可用后)；回补/刷新带连续失败熔断
+- fetch_daily 主链集成(--no-sectors 可跳过)；数据管理页新增板块数据组(4数据集)
+- 采集期遇东财 IP/TLS指纹封锁(push2/push2his): 池聚合719行(近30天,107行业)已回补;
+  板块清单/日线/资金流待封锁解除后 `cd core && python sectors.py daily` 一次完成(自动回补+重映射)
+- 口径修正: 行业板块实为~500个(细分到三级, 原估86)；涨停结构分量历史=东财池约1个月起积累
+  (行业字段hybk仅东财池携带, 10jqka池无), 其余78%权重量价分量多年历史不受影响
+
 ## [1.0.0] - 2026-10-15 · 第一阶段完整交付
 
 ### S4 服务化与部署

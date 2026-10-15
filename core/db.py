@@ -33,6 +33,35 @@ CREATE TABLE IF NOT EXISTS sentiment(
   score REAL, stage TEXT,
   components TEXT,      -- JSON: 各分量分位分
   weights TEXT);        -- JSON: 实际生效权重(归一化后)
+
+-- ---------------- 第二阶段: 板块温度计数据底座 (S5) ----------------
+
+CREATE TABLE IF NOT EXISTS sectors(            -- 板块字典(东财BK)
+  code TEXT PRIMARY KEY,                       -- BKxxxx
+  name TEXT, kind TEXT,                        -- industry | concept
+  enabled INTEGER DEFAULT 1,                   -- 概念板块默认0, 启用后才抓日线
+  first_date TEXT, last_date TEXT, updated_at TEXT);
+
+CREATE TABLE IF NOT EXISTS sector_daily(       -- 板块日行情
+  code TEXT, date TEXT,
+  open REAL, close REAL, high REAL, low REAL,
+  amount REAL,                                -- 成交额(元)
+  up_count INTEGER, down_count INTEGER,        -- 板块涨跌家数(清单快照, 采集日起积累)
+  PRIMARY KEY(code, date));
+
+CREATE TABLE IF NOT EXISTS sector_pool_stat(   -- 板块级涨停结构(THS hybk聚合)
+  date TEXT, code TEXT,
+  zt_count INTEGER, dt_count INTEGER, zb_count INTEGER,
+  lb_max INTEGER, lb2_count INTEGER,
+  PRIMARY KEY(date, code));
+
+CREATE TABLE IF NOT EXISTS sector_fundflow(    -- 板块资金流历史(约最近100日)
+  code TEXT, date TEXT,
+  main_net REAL, super_net REAL, large_net REAL,
+  PRIMARY KEY(code, date));
+
+CREATE TABLE IF NOT EXISTS sector_alias(       -- THS行业名 → BK码 别名
+  name TEXT PRIMARY KEY, code TEXT);
 """
 
 

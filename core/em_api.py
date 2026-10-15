@@ -35,6 +35,22 @@ POOL_URLS = {
 _UT = "7eea3edcaed734bea9cbfc24409ed989"
 
 
+def _curl_get(url, params, timeout=12):
+    """curl 子进程兜底: 东财WAF按TLS指纹封锁 python-requests 时, curl 指纹仍可用"""
+    import json as _json
+    import subprocess
+    from urllib.parse import urlencode
+    full = f"{url}?{urlencode(params)}"
+    cmd = ["curl", "-s", "-m", str(timeout), "-H",
+           "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124",
+           "-H", "Referer: https://quote.eastmoney.com/", full]
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
+    if r.returncode == 0 and r.stdout.strip():
+        return _json.loads(r.stdout)
+    raise RuntimeError(f"curl rc={r.returncode}")
+
+
 def _get(url, params, retries=3, headers=None, backoff=1.5):
     last = None
     for i in range(retries):
@@ -44,6 +60,10 @@ def _get(url, params, retries=3, headers=None, backoff=1.5):
             return r.json()
         except Exception as e:  # noqa: BLE001
             last = e
+            try:                 # requests 失败立即试 curl(指纹不同, 常见WAF场景)
+                return _curl_get(url, params)
+            except Exception:  # noqa: BLE001
+                pass
             time.sleep(backoff + i + random.random())
     raise last
 
@@ -123,6 +143,79 @@ def _tx_kline(txcode: str, beg: str) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------- 板块(S5)
+
+FFLOW_URL = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+
+
+def sector_list(kind: str = "industry") -> list:
+    """东财板块清单+当日涨跌家数。kind: industry(约500,细分到三级)|concept(约500)
+    主域被限流时自动切编号镜像(80.push2)"""
+    fs = "m:90+t:2" if kind == "industry" else "m:90+t:3"
+    params = {"pz": "500", "po": "1", "np": "1",
+              "fltt": "2", "invt": "2", "fid": "f3", "fs": fs,
+              "fields": "f12,f14,f3,f104,f105"}
+    out, page = [], 1
+    while True:
+        params["pn"] = str(page)
+        j = None
+        for host in ("push2", "80.push2"):
+            try:
+                j = _get(f"https://{host}.eastmoney.com/api/qt/clist/get", params, retries=2)
+                break
+            except Exception:  # noqa: BLE001
+                continue
+        if j is None:
+            break
+        d = j.get("data") or {}
+        diff = d.get("diff") or []
+        if not diff:
+            break
+        out.extend(diff)
+        if len(out) >= int(d.get("total") or 0):
+            break
+        page += 1
+        time.sleep(0.3)
+    return out
+
+
+def sector_kline(code: str, beg: str = "19900101") -> pd.DataFrame:
+    """板块日K(90.BKxxxx)。返回: date,open,close,high,low,volume,amount"""
+    j = _get(EM_KLINE_URL, {
+        "secid": f"90.{code}", "ut": _UT,
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57",
+        "klt": "101", "fqt": "0", "beg": beg, "end": "20500000"}, retries=2, backoff=2.0)
+    kl = (j.get("data") or {}).get("klines") or []
+    if not kl:
+        return pd.DataFrame()
+    df = pd.DataFrame([k.split(",") for k in kl],
+                      columns=["date", "open", "close", "high", "low", "volume", "amount"])
+    for c in df.columns[1:]:
+        df[c] = pd.to_numeric(df[c])
+    return df
+
+
+def sector_fundflow(code: str) -> pd.DataFrame:
+    """板块资金流历史(约最近120日)。列: date,main_net,large_net,super_net"""
+    j = _get(FFLOW_URL, {
+        "lmt": "0", "klt": "101", "secid": f"90.{code}",
+        "fields1": "f1,f2,f3,f7",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65"},
+        retries=2, backoff=2.0)
+    kl = (j.get("data") or {}).get("klines") or []
+    rows = []
+    for k in kl:
+        p = k.split(",")
+        try:                       # date,主力,小单,中单,大单,超大单,...
+            rows.append((p[0], float(p[1]), float(p[4]), float(p[5])))
+        except (ValueError, IndexError):
+            continue
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows, columns=["date", "main_net", "large_net", "super_net"])
+
+
 # ---------------------------------------------------------------- 涨停专题池
 # 主源: 同花顺涨停复盘(历史约一年滚动, 沪深主板+创业板+科创板口径)
 # 兜底: 东财涨停专题(仅最近约一个月, 不含ST与科创板口径)
@@ -145,7 +238,36 @@ def _lb_from_str(s):
     return int(m.group(1)) if m else 1
 
 
-def ths_pool_stats(date: str) -> dict:
+def _agg_industry(date: str) -> dict:
+    """按行业聚合东财三池明细(zt/dt/zb 均带 hybk, 连板数为数字 lbc):
+    {行业名: {zt,dt,zb,lb_max,lb2}}。注意东财池历史仅约最近一个月, 更早日期返回空。"""
+    ind = {}
+
+    def bucket(name):
+        return ind.setdefault(name, {"zt": 0, "dt": 0, "zb": 0, "lb_max": 0, "lb2": 0})
+
+    for x in topic_pool("zt", date):
+        hy = x.get("hybk")
+        if not hy:
+            continue
+        lb = int(x.get("lbc") or 0)
+        b = bucket(hy)
+        b["zt"] += 1
+        b["lb_max"] = max(b["lb_max"], lb)
+        if lb >= 2:
+            b["lb2"] += 1
+    for x in topic_pool("dt", date):
+        hy = x.get("hybk")
+        if hy:
+            bucket(hy)["dt"] += 1
+    for x in topic_pool("zb", date):
+        hy = x.get("hybk")
+        if hy:
+            bucket(hy)["zb"] += 1
+    return ind
+
+
+def ths_pool_stats(date: str, with_industry: bool = False) -> dict:
     """同花顺涨停复盘统计。date: YYYYMMDD。
     一次接口同时返回: 涨停/跌停家数、封板率(炸板率=1-封板率)、连板结构。
     非交易日/无数据返回 {}。"""
@@ -186,9 +308,12 @@ def ths_pool_stats(date: str) -> dict:
     lb2 = sum(1 for v in lbs if v >= 2)
     # 接力率: 昨日涨停股中今日继续涨停(≥2板)的比例, 赚钱效应代理
     jl = round(lb2 / yzt * 100, 1) if yzt else None
-    return {"zt_count": zt, "dt_count": dt_, "zb_rate": zb_rate,
-            "lb_max": lb_max, "lb2_count": lb2, "jl_rate": jl,
-            "yzt_count": yzt}
+    out = {"zt_count": zt, "dt_count": dt_, "zb_rate": zb_rate,
+           "lb_max": lb_max, "lb2_count": lb2, "jl_rate": jl,
+           "yzt_count": yzt}
+    if with_industry:
+        out["ind"] = _agg_industry(date)   # 东财三池口径(10jqka池无行业字段)
+    return out
 
 
 def topic_pool(kind: str, date: str) -> list:
