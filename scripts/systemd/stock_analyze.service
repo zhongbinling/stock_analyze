@@ -1,0 +1,14 @@
+[Unit]
+Description=stock_analyze market sentiment server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={REPO}
+ExecStart={PY} -m server
+Restart=on-failure
+RestartSec=5
+User={USER}
+
+[Install]
+WantedBy=multi-user.target

@@ -22,7 +22,9 @@ def index():
 
 @bp.get("/healthz")
 def healthz():
-    return jsonify({"status": "ok", "service": "stock_analyze", "stage": "S1"})
+    from server import __version__
+    return jsonify({"status": "ok", "service": "stock_analyze",
+                    "version": __version__, "stage": "S4"})
 
 
 @bp.post("/api/theme")

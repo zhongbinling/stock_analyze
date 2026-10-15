@@ -33,8 +33,10 @@ git clone <你的仓库地址> stock_analyze
 cd stock_analyze
 pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引擎)
 
-# ★ Web 服务(第一阶段建设中, S1~S3已可用: 账号权限/数据管理生成/视图管理与行情页) —— http://127.0.0.1:8501
-python -m server
+# ★ 一键部署(推荐, 自动建venv+迁移+建超管+启动): Windows: scripts\deploy_win.bat / mac·linux: ./scripts/deploy.sh
+# 服务管理(三平台一致): scripts\service.bat start|stop|status|restart  (sh版同理)
+
+# 或直接运行(依赖已装时): python -m server  → http://127.0.0.1:8501
 #   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
 #   首次使用先建超管: python -m server.bootstrap --username admin (交互输入密码)
 
@@ -125,7 +127,7 @@ stock_analyze/
 - [x] S1 账号与权限（登录/注册/匿名、9 级权限矩阵、账号管理、设置）✅ 2026-10-15
 - [ ] S2 数据管理 + 生成任务（数据集总览、更新策略、定时任务链、生成规则与历史）
 - [x] S3 视图管理 + 用户行情页（发布/下线/自动发布、/mkt 行情访问）✅ 2026-10-15
-- [ ] S4 服务化与部署（win/mac/linux 启停与一键部署脚本、部署手册）
+- [x] S4 服务化与部署（win/mac/linux 启停与一键部署脚本、部署手册）✅ 2026-10-15 **第一阶段完成，v1.0.0**
 
 **其他计划**
 - [ ] 管理页面更好用美观：任务历史与排队、状态图表化、定时自动更新、深色模式

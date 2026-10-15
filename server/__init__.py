@@ -25,6 +25,8 @@ if hasattr(sys.stdout, "reconfigure"):
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_CFG = ROOT / "config" / "server.yaml"
 
+__version__ = "1.0.0"
+
 db = SQLAlchemy()
 migrate = Migrate()
 login_manager = LoginManager()

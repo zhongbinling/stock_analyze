@@ -2,7 +2,20 @@
 
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [未发布] 第一阶段 · 多用户行情服务（开发中）
+## [1.0.0] - 2026-10-15 · 第一阶段完整交付
+
+### S4 服务化与部署
+- scripts/svc.py 服务管理器(一份逻辑三平台): start(幂等迁移+后台启动+健康等待)/stop/status/restart/
+  install/uninstall(开机自启: win=HKCU Run键 / linux=systemd / mac=launchd)
+- service.bat / service.sh 薄包装; deploy_win.bat 与 deploy.sh(deploy_mac/linux.sh入口) 一键部署
+  (检查Python→venv→依赖→迁移→无超管时交互创建→询问自启→启动→健康检查)
+- 部署手册中文全量重写 + docs/en/DEPLOY.md 英文版
+- healthz 增加 version; server.__version__=1.0.0
+- Windows 本机全流程验收: service start/status/浏览器匿名/mkt/restart/stop + deploy 真跑(venv)
+  + 自启真装真卸; sh 脚本 bash -n 语法校验
+- 修复: bat 需 CRLF 行尾(LF+中文注释会解析错乱)+chcp 65001; svc.py 输出 UTF-8;
+  schtasks ONLOGON 需管理员 → 改 HKCU Run 键; deploy set /p 中文提示管道兼容
+
 
 ### S3 视图管理 + 用户行情页 - 2026-10-15
 - 视图管理页 /admin/views(≥5运营)：环境/发布状态/数据日期/规则名筛选，预览/发布/下线/删除，
