@@ -126,7 +126,7 @@ def account_delete(uid):
     if u.enabled and u.level >= 9 and n_root <= 1:
         flash("系统至少需要保留一个可用的超级管理员", "error")
         return redirect(url_for("admin.accounts"))
-    from datetime import datetime, timezone
+    from datetime import timezone
     original = u.username
     u.deleted_at = datetime.now(timezone.utc)
     u.enabled = 0
@@ -433,11 +433,8 @@ def api_runs():
 def run_file(rid):
     """视图文件预览: 仅允许 views_store 内文件(路径穿越防护)"""
     run = db.session.get(ViewRun, rid)
-    if not run or not run.file_path:
-        abort(404)
-    p = (ROOT / run.file_path).resolve()
-    store = (ROOT / "views_store").resolve()
-    if store not in p.parents or not p.is_file():
+    p = _safe_run_file(run)
+    if not p:
         abort(404)
     return send_file(p, mimetype="text/html")
 
@@ -549,7 +546,7 @@ def api_view_delete(rid):
     db.session.delete(run)
     db.session.commit()
     audit("view_delete", target=f"run#{rid}", detail=f"{name}{'(曾已发布)' if was_pub else ''}")
-    return jsonify({"ok": True, "msg": f"已删除记录与文件{name and ''}"})
+    return jsonify({"ok": True, "msg": "已删除记录与文件"})
 
 
 @bp_admin.post("/api/defs/<int:vid>/autopublish")

@@ -193,15 +193,14 @@ def mkt_views():
 @require_level(1)
 def mkt_view(rid):
     """用户侧视图文件: 仅已发布的产线产物"""
-    from pathlib import Path
-    from server import ROOT as _ROOT
+    from flask import send_file as _send
+    from server.routes_admin import _safe_run_file
     from server.models import ViewRun
     r = db.session.get(ViewRun, rid)
-    if not r or not r.published or not r.file_path:
+    # 防御性双检: 发布语义仅限prod(API层已强制), 此处兜底
+    if not r or not r.published or r.env != "prod" or not r.file_path:
         abort(404)
-    p = (Path(_ROOT) / r.file_path).resolve()
-    store = (Path(_ROOT) / "views_store").resolve()
-    if store not in p.parents or not p.is_file():
+    p = _safe_run_file(r)
+    if not p:
         abort(404)
-    from flask import send_file as _send
     return _send(p, mimetype="text/html")
