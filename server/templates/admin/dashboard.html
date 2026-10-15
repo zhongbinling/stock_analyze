@@ -4,14 +4,14 @@
 <section class="card">
   <h1>管理工作台 <span class="badge badge-ok">{{ level_name(current_user.level) }}</span></h1>
   <div class="grid-cards">
-    <div class="mini-card">
+    <a class="mini-card link" href="{{ url_for('admin.data_page') }}">
       <h3>数据管理</h3><p class="hint">数据集总览 · 更新策略 · api_key</p>
-      <span class="badge">S2 交付</span>
-    </div>
-    <div class="mini-card">
+      <span class="badge badge-ok">可用</span>
+    </a>
+    <a class="mini-card link" href="{{ url_for('admin.generate_page') }}">
       <h3>数据生成</h3><p class="hint">生成规则 · 权重/因子 · 定时生成</p>
-      <span class="badge">S2 交付</span>
-    </div>
+      <span class="badge badge-ok">可用</span>
+    </a>
     <div class="mini-card">
       <h3>视图管理</h3><p class="hint">历史视图 · 发布/下线 · 自动发布</p>
       <span class="badge">S3 交付</span>

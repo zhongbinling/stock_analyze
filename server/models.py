@@ -46,3 +46,75 @@ class AdminLog(db.Model):
     target = db.Column(db.String(64))
     detail = db.Column(db.String(255))
     at = db.Column(db.DateTime, default=_now, index=True)
+
+
+# ================= S2: 任务 / 生成规则 / 数据源 / 设置 =================
+
+class Job(db.Model):
+    """任务历史: 数据更新 / 视图生成 (单工作线程串行执行)"""
+    __tablename__ = "jobs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    kind = db.Column(db.String(16), nullable=False)      # update | generate
+    target = db.Column(db.String(64))                    # 生成规则名等
+    trigger = db.Column(db.String(8), default="manual")  # manual | schedule
+    status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
+    rc = db.Column(db.Integer)
+    log = db.Column(db.Text)                             # 截断保留最近400行
+    started_at = db.Column(db.DateTime)                  # 本地时间, 便于直读
+    finished_at = db.Column(db.DateTime)
+    duration_s = db.Column(db.Float)
+
+
+class ViewDef(db.Model):
+    """视图生成规则"""
+    __tablename__ = "view_defs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(64), nullable=False)
+    type = db.Column(db.String(16), default="sentiment")   # 视图类型
+    env = db.Column(db.String(8), default="test", nullable=False)  # test | prod
+    params_json = db.Column(db.Text)                       # weights/window/pool_min_periods/years
+    auto_publish = db.Column(db.Integer, default=0, nullable=False)
+    enabled = db.Column(db.Integer, default=1, nullable=False)
+    cron = db.Column(db.String(32))                        # 预留: 规则级独立调度
+    created_at = db.Column(db.DateTime, default=_now)
+    updated_at = db.Column(db.DateTime, default=_now, onupdate=_now)
+
+
+class ViewRun(db.Model):
+    """视图生成记录 (规则删除后仍保留, 冗余规则名)"""
+    __tablename__ = "view_runs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    def_id = db.Column(db.Integer)
+    def_name = db.Column(db.String(64))
+    status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
+    data_date = db.Column(db.String(10))                   # 行情数据日期
+    file_path = db.Column(db.Text)                         # 相对仓库根, views_store/...
+    size_kb = db.Column(db.Integer)
+    generated_at = db.Column(db.DateTime)
+    duration_s = db.Column(db.Float)
+    published = db.Column(db.Integer, default=0, nullable=False)
+    published_at = db.Column(db.DateTime)
+
+
+class DataSource(db.Model):
+    """数据源注册: 启停与 api_key(tushare 预留)"""
+    __tablename__ = "data_sources"
+
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(16), unique=True, nullable=False)
+    name = db.Column(db.String(32), nullable=False)
+    kind = db.Column(db.String(16))                        # pool | kline | breadth | reserve
+    enabled = db.Column(db.Integer, default=1, nullable=False)
+    api_key = db.Column(db.String(128))
+    note = db.Column(db.String(128))
+
+
+class AppSetting(db.Model):
+    """调度策略等键值设置"""
+    __tablename__ = "app_settings"
+
+    skey = db.Column(db.String(32), primary_key=True)
+    value = db.Column(db.String(64), nullable=False)

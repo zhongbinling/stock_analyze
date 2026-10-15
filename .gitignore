@@ -22,3 +22,6 @@ Thumbs.db
 
 # 服务运行时数据(app.db/secret.key)
 /data/
+
+# 生成的视图文件(发布产物)
+/views_store/

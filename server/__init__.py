@@ -87,6 +87,12 @@ def create_app() -> Flask:
     app.register_blueprint(bp)
     app.register_blueprint(bp_admin)
 
+    # 任务系统: 种子数据 + 工作线程 + 调度器(测试模式/SA_NO_JOBS跳过)
+    import os as _os
+    if not app.config.get("TESTING") and not _os.environ.get("SA_NO_JOBS"):
+        from server import jobs as _jobs
+        _jobs.ensure_started(app)
+
     @app.errorhandler(403)
     def forbidden(e):
         return render_template("errors/403.html"), 403

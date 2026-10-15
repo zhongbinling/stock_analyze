@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}数据生成 · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('admin.dashboard') }}">← 工作台</a></p>
+
+<section class="card">
+  <div class="row-flex spread">
+    <h1>数据生成</h1>
+    <button class="btn small" id="btnRefresh">刷新</button>
+  </div>
+  <table class="table" id="defTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <p class="hint">环境说明：<b>prod</b>(产线)＋自动发布 → 生成即发布(用户侧 S3 可见)；<b>test</b>(测试) 永不发布。权重和≠1 时评分自动归一化；缺数据的分量当日权重自动重分配。</p>
+</section>
+
+<section class="card" id="editorCard" style="display:none">
+  <h2 id="editorTitle">新建生成规则</h2>
+  <form id="defForm" onsubmit="return false">
+    <div class="row-flex">
+      <span>名称 <input class="input" id="fName" placeholder="如 情绪视图·保守版"></span>
+      <span>环境
+        <select class="input" id="fEnv"><option value="test">test 测试</option><option value="prod">prod 产线</option></select>
+      </span>
+      <span>窗口N <input class="input narrow" id="fWindow" type="number" value="250"></span>
+      <span>池起步窗口 <input class="input narrow" id="fPmp" type="number" value="60"></span>
+      <span>年限(空=全部) <input class="input narrow" id="fYears" type="number" placeholder="全部"></span>
+      <label class="chk"><input type="checkbox" id="fPublish"> 自动发布(仅产线生效)</label>
+      <label class="chk"><input type="checkbox" id="fEnabled" checked> 启用</label>
+    </div>
+    <h3 class="sub-h">分量权重</h3>
+    <div class="wgrid" id="wGrid"></div>
+    <div class="row-flex">
+      <span class="hint">权重和 <b id="wSum">--</b></span>
+      <button class="btn" id="btnDefaults">填入默认权重</button>
+      <button class="btn primary" id="btnSave">保存规则</button>
+      <button class="btn ghost" id="btnCancel">取消</button>
+    </div>
+  </form>
+</section>
+
+<section class="card">
+  <h2>生成历史</h2>
+  <table class="table" id="runTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
+  <h2>任务日志</h2>
+  <div class="row-flex"><span class="hint" id="jobState"></span></div>
+  <pre id="log" class="logpre" style="display:none"></pre>
+</section>
+
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})
+  }));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let COMPONENTS = [], editingId = null;
+
+async function loadDefs() {
+  try {
+    const d = await api('/admin/api/defs');
+    defsCache = d.defs;
+    COMPONENTS = d.components;
+    $('defTable').innerHTML = '<tr><th>规则</th><th>环境</th><th>算法</th><th>权重摘要</th><th>窗口/年限</th><th>发布</th><th>状态</th><th>操作</th></tr>' +
+      d.defs.map(v => `<tr>
+        <td><b>${esc(v.name)}</b></td>
+        <td>${v.env === 'prod' ? '<span class="badge badge-ok">prod</span>' : '<span class="badge">test</span>'}</td>
+        <td class="hint">加权分位</td>
+        <td class="hint">${esc(v.wtop)} (和${v.wsum})</td>
+        <td class="hint">N=${v.params.window}${v.params.years ? ' / ' + v.params.years + '年' : ''}</td>
+        <td>${v.auto_publish ? '自动' : '--'}</td>
+        <td class="${v.enabled ? 'ok' : 'bad'}">${v.enabled ? '启用' : '停用'}</td>
+        <td class="ops">
+          <button class="btn small primary" onclick="runDef(${v.id})">生成</button>
+          <button class="btn small" onclick="editDef(${v.id})">编辑</button>
+          <button class="btn small" onclick="toggleDef(${v.id})">${v.enabled ? '停用' : '启用'}</button>
+          <button class="btn small danger" onclick="delDef(${v.id}, '${esc(v.name)}')">删除</button>
+        </td></tr>`).join('') || '<tr><td colspan="8" class="hint">暂无规则, 点下方新建</td></tr>';
+    if (!$('btnNew')) {
+      const b = document.createElement('button');
+      b.className = 'btn'; b.id = 'btnNew'; b.textContent = '＋ 新建规则';
+      b.onclick = () => openEditor(null);
+      $('defTable').parentElement.querySelector('.row-flex').appendChild(b);
+    }
+  } catch (e) { $('defTable').innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
+}
+
+function buildWGrid(weights) {
+  $('wGrid').innerHTML = COMPONENTS.map(c =>
+    `<label class="witem"><span>${esc(c.label)}</span>
+     <input type="number" step="0.01" min="0" max="1" data-w="${c.key}" value="${weights && weights[c.key] !== undefined ? weights[c.key] : c.default}">
+     </label>`).join('');
+  $('wGrid').querySelectorAll('input').forEach(i => i.addEventListener('input', updateSum));
+  updateSum();
+}
+function collectWeights() {
+  const w = {};
+  document.querySelectorAll('#wGrid input[data-w]').forEach(i => { if (i.value !== '') w[i.dataset.w] = parseFloat(i.value); });
+  return w;
+}
+function updateSum() {
+  let s = 0; document.querySelectorAll('#wGrid input[data-w]').forEach(i => s += parseFloat(i.value) || 0);
+  $('wSum').textContent = s.toFixed(2);
+}
+function openEditor(v) {
+  editingId = v ? v.id : null;
+  $('editorTitle').textContent = v ? `编辑规则: ${v.name}` : '新建生成规则';
+  $('fName').value = v ? v.name : '';
+  $('fEnv').value = v ? v.env : 'test';
+  $('fWindow').value = v ? v.params.window : 250;
+  $('fPmp').value = v ? v.params.pool_min_periods : 60;
+  $('fYears').value = v && v.params.years ? v.params.years : '';
+  $('fPublish').checked = v ? v.auto_publish : false;
+  $('fEnabled').checked = v ? v.enabled : true;
+  buildWGrid(v ? v.params.weights : null);
+  $('editorCard').style.display = 'block';
+  $('editorCard').scrollIntoView({behavior: 'smooth'});
+}
+let defsCache = [];
+async function editDef(id) { const v = defsCache.find(x => x.id === id); if (v) openEditor(v); }
+$('btnCancel').onclick = () => { $('editorCard').style.display = 'none'; };
+$('btnDefaults').onclick = () => buildWGrid(null);
+$('btnSave').onclick = async () => {
+  const body = {
+    name: $('fName').value.trim(), env: $('fEnv').value,
+    weights: collectWeights(), window: parseInt($('fWindow').value) || 250,
+    pool_min_periods: parseInt($('fPmp').value) || 60,
+    years: $('fYears').value ? parseInt($('fYears').value) : null,
+    auto_publish: $('fPublish').checked, enabled: $('fEnabled').checked,
+  };
+  try {
+    const r = await api(editingId ? `/admin/api/defs/${editingId}` : '/admin/api/defs',
+      {method: 'POST', body: JSON.stringify(body)});
+    $('editorCard').style.display = 'none';
+    loadDefs();
+  } catch (e) { alert(e.message); }
+};
+async function toggleDef(id) { try { await api(`/admin/api/defs/${id}/toggle`, {method: 'POST'}); loadDefs(); } catch (e) { alert(e.message); } }
+async function delDef(id, name) {
+  if (!confirm(`删除规则 ${name}?(生成历史保留)`)) return;
+  try { await api(`/admin/api/defs/${id}/delete`, {method: 'POST'}); loadDefs(); loadRuns(); } catch (e) { alert(e.message); }
+}
+async function runDef(id) {
+  try {
+    const r = await api(`/admin/api/defs/${id}/run`, {method: 'POST'});
+    if (!r.ok) { alert(r.msg); return; }
+    poll(true);
+  } catch (e) { alert(e.message); }
+}
+
+async function loadRuns() {
+  try {
+    const d = await api('/admin/api/runs');
+    $('runTable').innerHTML = '<tr><th>ID</th><th>规则</th><th>状态</th><th>数据日期</th><th>大小</th><th>耗时</th><th>发布</th><th>生成时间</th><th>文件</th></tr>' +
+      (d.runs.length ? d.runs.map(r => `<tr>
+        <td>${r.id}</td><td>${esc(r.def_name)}</td>
+        <td class="${r.status === 'done' ? 'ok' : r.status === 'fail' ? 'bad' : ''}">${r.status === 'done' ? '✓' : r.status === 'fail' ? '✗ 失败' : '运行中'}</td>
+        <td>${esc(r.data_date || '--')}</td><td>${r.size_kb || 0}KB</td><td>${r.duration ?? ''}s</td>
+        <td>${r.published ? '<span class="badge badge-ok">已发布</span>' : '--'}</td>
+        <td class="hint">${esc(r.at)}</td>
+        <td>${r.has_file ? `<a href="${r.file_url}" target="_blank">预览</a>` : '--'}</td></tr>`).join('')
+        : '<tr><td colspan="9" class="hint">暂无生成记录</td></tr>');
+  } catch (e) { $('runTable').innerHTML = `<tr><td class="bad">${esc(e.message)}</td></tr>`; }
+}
+
+let pollTimer = null;
+async function poll(quick) {
+  let j;
+  try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
+  if (j.running) {
+    $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})` + (j.queued ? ` · 排队×${j.queued}` : '');
+    $('log').style.display = 'block';
+    $('log').textContent = j.running.log || '(等待输出…)';
+  } else { $('jobState').textContent = j.queued ? `排队中 ×${j.queued}` : '空闲'; }
+  clearTimeout(pollTimer);
+  const busy = j.running || j.queued > 0;
+  pollTimer = setTimeout(() => poll(), busy ? 2500 : 15000);
+  if (!busy) loadRuns();
+}
+
+$('btnRefresh').onclick = () => { loadDefs(); loadRuns(); poll(true); };
+loadDefs(); loadRuns(); poll(true);
+</script>
+{% endblock %}

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}数据管理 · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('admin.dashboard') }}">← 工作台</a></p>
+
+<section class="card">
+  <div class="row-flex spread">
+    <h1>数据管理</h1>
+    <button class="btn small" id="btnRefresh">刷新</button>
+  </div>
+  <table class="table" id="dsTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
+  <h2>更新策略</h2>
+  <div class="row-flex">
+    <label class="chk"><input type="checkbox" id="autoUpdate"> 自动更新数据</label>
+    <span>时间 <input class="input narrow" id="updateCron" placeholder="16:35"></span>
+    <label class="chk"><input type="checkbox" id="autoGenerate"> 自动生成视图</label>
+    <span>时间 <input class="input narrow" id="generateCron" placeholder="17:00"></span>
+    <button class="btn primary" id="btnStrategy">保存策略</button>
+    <span class="hint" id="schedState"></span>
+  </div>
+  <p class="hint">交易日(周一至五)自动执行；生成前校验当日行情已入库，节假日/更新失败自动跳过留日志。立即执行请用下方按钮。</p>
+</section>
+
+<section class="card">
+  <h2>数据源</h2>
+  <table class="table" id="srcTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <div class="row-flex">
+    <button class="btn primary" id="btnSources">保存数据源</button>
+    <span class="hint">api_key 仅存本地库且页面只显示"已配置"；tushare 为预留源，保存 token 即可，拉数能力后续版本接入</span>
+  </div>
+</section>
+
+<section class="card">
+  <h2>手动更新</h2>
+  <div class="row-flex">
+    <button class="btn primary" id="btnUpdate">增量更新数据（抓取＋重算评分）</button>
+    <span class="hint" id="jobState"></span>
+  </div>
+  <pre id="log" class="logpre" style="display:none"></pre>
+</section>
+
+<section class="card">
+  <h2>任务历史</h2>
+  <table class="table" id="jobTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})
+  }));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function loadDatasets() {
+  try {
+    const d = await api('/admin/api/datasets');
+    $('dsTable').innerHTML = '<tr><th>数据集</th><th>来源</th><th>行数</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
+      d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
+        <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
+        <td class="${t.health === 'ok' ? 'ok' : t.health === 'warn' ? 'bad' : 'bad'}">${t.health === 'ok' ? '正常' : '注意'}</td>
+        <td class="hint">${esc(t.note || '')}</td></tr>`).join('');
+  } catch (e) { $('dsTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
+}
+
+async function loadStrategy() {
+  try {
+    const s = await api('/admin/api/strategy');
+    $('autoUpdate').checked = s.auto_update === '1';
+    $('autoGenerate').checked = s.auto_generate === '1';
+    $('updateCron').value = s.update_cron;
+    $('generateCron').value = s.generate_cron;
+  } catch (e) {}
+}
+$('btnStrategy').onclick = async () => {
+  try {
+    const r = await api('/admin/api/strategy', {method: 'POST', body: JSON.stringify({
+      auto_update: $('autoUpdate').checked ? '1' : '0',
+      auto_generate: $('autoGenerate').checked ? '1' : '0',
+      update_cron: $('updateCron').value.trim(),
+      generate_cron: $('generateCron').value.trim(),
+    })});
+    $('schedState').textContent = r.msg;
+  } catch (e) { $('schedState').textContent = e.message; }
+};
+
+async function loadSources() {
+  try {
+    const d = await api('/admin/api/sources');
+    $('srcTable').innerHTML = '<tr><th>数据源</th><th>类型</th><th>启用</th><th>api_key</th><th>说明</th></tr>' +
+      d.sources.map(s => `<tr><td>${esc(s.name)} <code>${esc(s.code)}</code></td><td>${esc(s.kind)}</td>
+        <td><input type="checkbox" data-code="${esc(s.code)}" ${s.enabled ? 'checked' : ''}></td>
+        <td>${s.code === 'tushare'
+          ? `<input class="input narrow" data-key="${esc(s.code)}" type="password" placeholder="${s.has_key ? '已配置(留空不改)' : 'token'}">`
+          : `<span class="hint">${s.has_key ? '已配置' : '--'}</span>`}</td>
+        <td class="hint">${esc(s.note)}</td></tr>`).join('');
+  } catch (e) { $('srcTable').innerHTML = `<tr><td class="bad">加载失败</td></tr>`; }
+}
+$('btnSources').onclick = async () => {
+  const payload = {};
+  document.querySelectorAll('#srcTable input[type=checkbox]').forEach(i =>
+    payload[i.dataset.code] = Object.assign(payload[i.dataset.code] || {}, {enabled: i.checked}));
+  document.querySelectorAll('#srcTable input[data-key]').forEach(i => {
+    if (i.value.trim()) payload[i.dataset.key] = Object.assign(payload[i.dataset.key] || {}, {api_key: i.value.trim()});
+  });
+  try { const r = await api('/admin/api/sources', {method: 'POST', body: JSON.stringify(payload)});
+    alert_ok('srcTableMsg', r.msg); loadSources();
+  } catch (e) { alert(e.message); }
+};
+function alert_ok(id, msg) { $('schedState').textContent = msg || '已保存'; }
+
+$('btnUpdate').onclick = async () => {
+  try {
+    const r = await api('/admin/api/update', {method: 'POST'});
+    if (!r.ok) { alert(r.msg); return; }
+    poll(true);
+  } catch (e) { alert(e.message); }
+};
+
+let pollTimer = null;
+async function poll(quick) {
+  let j;
+  try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
+  $('schedState').textContent = '调度器: ' + j.scheduler;
+  if (j.running) {
+    $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})`;
+    $('log').style.display = 'block';
+    $('log').textContent = j.running.log || '(等待输出…)';
+  } else if (j.queued > 0) {
+    $('jobState').textContent = `排队中 ×${j.queued}`;
+    $('log').style.display = 'block';
+  } else {
+    $('jobState').textContent = '空闲';
+  }
+  $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th></tr>' +
+    (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(t.target)}</td>
+      <td class="hint">${esc(t.trigger)}</td>
+      <td class="${t.status === 'done' ? 'ok' : 'bad'}">${t.status === 'done' ? '✓ 成功' : '✗ 失败'}</td>
+      <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td></tr>`).join('')
+      : '<tr><td colspan="7" class="hint">暂无任务</td></tr>');
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(() => poll(), (j.running || j.queued > 0) ? 2500 : 15000);
+}
+
+$('btnRefresh').onclick = () => { loadDatasets(); poll(true); };
+loadDatasets(); loadStrategy(); loadSources(); poll(true);
+</script>
+{% endblock %}

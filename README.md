@@ -45,7 +45,6 @@ python report.py             # 当日情绪日报(文本)
 python viewer.py --open      # 交互式视图
 python backtest.py           # 锚点/IC/分组校验
 
-# 过渡期旧管理台(S2后移除): python admin.py --port 8599
 ```
 
 通达信用户：把 [tdx/QXXF_情绪分V1.txt](tdx/QXXF_情绪分V1.txt) 或 [tdx/QXXF_情绪分V2.txt](tdx/QXXF_情绪分V2.txt) 粘贴进公式管理器即可（见文件头注释）。
@@ -78,6 +77,7 @@ stock_analyze/
 │   ├── __main__.py           #   python -m server → waitress
 │   └── templates/ static/    #   Jinja2 模板 + CSS/JS(昼夜双主题)
 ├── migrations/               # Flask-Migrate(Alembic) 数据库迁移
+├── views_store/             # 生成的视图文件(test/prod, 运行时生成,不入库)
 ├── tdx/                      # 通达信公式(零依赖版)
 │   ├── QXXF_情绪分V1.txt     #   V1 量价版(7分量)
 │   ├── QXXF_情绪分V2.txt     #   V2.1 广度增强版(12分量)

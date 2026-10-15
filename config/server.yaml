@@ -17,5 +17,5 @@ data:
   secret_key_file: "data/secret.key"
 
 scheduler:
-  enabled: false          # S2 接入任务调度后默认 true
+  enabled: true           # 定时更新/生成(策略可在数据管理页调整)
   timezone: "Asia/Shanghai"

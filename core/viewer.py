@@ -386,7 +386,7 @@ def generate_html(cfg=None, years=None, out=None):
         html = html.replace("/*cdn*/", "").replace("<script>/*cdn*/", echarts_tag + "<script>")
 
     out = Path(out) if out else (BASE / "out" / "sentiment_viewer.html")
-    out.parent.mkdir(exist_ok=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
     print(f"[viewer] {out}  ({out.stat().st_size / 1e6:.2f} MB, "
           f"{payload['n']} 交易日, {payload['dates'][0]} ~ {payload['dates'][-1]})")
