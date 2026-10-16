@@ -148,10 +148,13 @@ def calc_all(conn=None):
             pd.MultiIndex.from_frame(daily[["date", "code"]])).values
 
     out = []
-    for i, (code, g) in enumerate(daily.groupby("code", sort=True), 1):
+    comp_keep_days = 260           # components 明细仅保留近窗口日数(控制库体积)
+    for code, g in daily.groupby("code", sort=True):
         g = g.sort_values("date").reset_index(drop=True)
         g["mkt"] = g["date"].map(mkt.set_index("date")["zt_count"])
         res = calc_one(g, None, g["mkt"], weights, window)
+        if len(res) > comp_keep_days:
+            res.loc[:len(res) - comp_keep_days - 1, "components"] = None
         out.append(res)
     allsc = pd.concat(out, ignore_index=True)
     allsc["rank_pct"] = allsc.groupby("date")["score"].rank(pct=True) * 100
@@ -163,8 +166,10 @@ def calc_all(conn=None):
         "VALUES(?,?,?,?,?,?)",
         [(r["date"], r["code"], float(r["score"]),
           None if pd.isna(r["rank_pct"]) else round(float(r["rank_pct"]), 1),
-          r["stage"], r["components"]) for _, r in allsc.iterrows()])
+          r["stage"], r["components"] if r["components"] else None)
+         for _, r in allsc.iterrows()])
     conn.commit()
+    conn.execute("VACUUM")         # 回收历史components空间
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "
           f"({time.time()-t0:.1f}s, 最新 {allsc['date'].max()})")
     return allsc
@@ -228,8 +233,8 @@ def report(conn=None, date=None, top=15, code=None):
 
 
 ANCHORS = [
-    ("2024-10-08", "券商", +60), ("2024-10-08", "半导体", +60),
-    ("2024-09-30", "券商", +60), ("2024-02-05", "软件", -30),
+    ("2024-10-08", "证券", +60), ("2024-10-08", "半导体", +60),
+    ("2024-09-30", "证券", +60), ("2024-02-05", "软件", -30),
     ("2024-02-05", "传媒", -30),
 ]
 
