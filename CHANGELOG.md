@@ -4,6 +4,12 @@
 
 ## [未发布] 第二阶段 · 板块温度计（开发中）
 
+### S2.1-C 内容扩展 - 2026-10-17 · 第2.1阶段完成
+- 概念板块默认启用(519个): 次日采集+温度计算自动包含, 排行可搜"AI""机器人"等主题
+- 申万一级聚合: core/sw1_map.py(成分股投票+人工映射, 73个BK→28个SW L1) + sector.py calc_sw1
+- SW1聚合温度写入sector_scores(code='SW1_名称'), sector_viewer自动展示
+- 锚点11/11保持
+
 ### S2.1-A 排版优化 - 2026-10-16
 - sector_viewer 两行布局: 上行信息聚合(Top5热冷卡片+大盘sparkline) + 下行分析(排行+多板块曲线≤5条)
 - viewer 两列面板布局; /mkt iframe自适应+全屏; 修复side div被clear()删除

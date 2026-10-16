@@ -82,6 +82,35 @@ def load_frames(conn):
 
 # ---------------------------------------------------------------- 单板块计算
 
+def _calc_sw1(conn, allsc):
+    """S2.1-C: 按申万一级聚合板块温度 → 写入 sector_scores (code='SW1_'+名称)"""
+    sw1 = conn.execute("SELECT bk_code, sw1_name FROM sw1_map").fetchall()
+    if not sw1:
+        print("[sector] sw1_map 为空, 跳过申万聚合")
+        return
+    code2sw = dict(sw1)
+    mapped = allsc[allsc["code"].isin(code2sw)].copy()
+    if mapped.empty:
+        return
+    mapped["sw1"] = mapped["code"].map(code2sw)
+    agg = mapped.groupby(["date", "sw1"]).agg(
+        score=("score", "mean"), n=("code", "count")).reset_index()
+    agg["score"] = agg["score"].round(1)
+    agg["code"] = "SW1_" + agg["sw1"]
+    agg["stage"] = agg["score"].apply(stage_of)
+    agg["rank_pct"] = None
+    agg["components"] = None
+    conn.executemany(
+        "INSERT OR REPLACE INTO sector_scores(date,code,score,rank_pct,stage,components) "
+        "VALUES(?,?,?,?,?,?)",
+        [(r["date"], r["code"], float(r["score"]), None, r["stage"], None)
+         for _, r in agg.iterrows()])
+    conn.commit()
+    latest = agg[agg["date"] == agg["date"].max()]
+    print(f"[sector] 申万一级聚合: {agg['sw1'].nunique()} 个 × {agg['date'].nunique()} 日"
+          f" (最新 {agg['date'].max()}, {len(latest)} 行)")
+
+
 def calc_one(df: pd.DataFrame, pool: pd.DataFrame, mkt_zt: pd.Series,
              weights: dict, window=250, pool_mp=60) -> pd.DataFrame:
     """单板块: 输入合并后的日线+涨停, 输出含 score 的明细"""
@@ -179,6 +208,7 @@ def calc_all(conn=None):
           r["stage"], r["components"] if r["components"] else None)
          for _, r in allsc.iterrows()])
     conn.commit()
+    _calc_sw1(conn, allsc)
     conn.execute("VACUUM")         # 回收历史components空间
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "
           f"({time.time()-t0:.1f}s, 最新 {allsc['date'].max()})")
