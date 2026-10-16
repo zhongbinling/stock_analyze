@@ -109,7 +109,7 @@ def fetch_breadth_today():
 
 
 def breadth_from_tushare(start="20180102"):
-    """S2.1-B: 从 tushare daily_basic 回补涨跌家数历史(2018起)
+    """S2.1-B: 从 tushare daily 回补涨跌家数历史(2018起)
     每日全市场~5000股的 pct_chg → 统计 >0(上涨)/<0(下跌)家数"""
     import tushare_api
     if not tushare_api.has_token():
@@ -154,7 +154,7 @@ def breadth_from_tushare(start="20180102"):
 
 
 def fetch_breadth_today_from_tushare():
-    """S2.1-B: 主链增量——当日涨跌家数(tushare daily_basic, 1请求/日)"""
+    """S2.1-B: 主链增量——当日涨跌家数(tushare daily, 1请求/日)"""
     try:
         import tushare_api
         if not tushare_api.has_token():
