@@ -575,3 +575,26 @@ def api_def_autopublish(vid):
     db.session.commit()
     audit("def_autopublish", target=vd.name, detail="开启" if vd.auto_publish else "关闭")
     return jsonify({"ok": True, "auto_publish": bool(vd.auto_publish)})
+
+
+# ---------------- S8: 概念板块开关 / 板块导出 ----------------
+
+@bp_admin.post("/api/sectors/concept-toggle")
+@require_level(7)
+def api_concept_toggle():
+    """概念板块批量启停(开启后次日采集扩展至概念, 温度排行自动包含)"""
+    from server.models import DataSource  # noqa: F401 (确认表存在)
+    from server import ROOT as _R
+    import sqlite3 as _sq
+    db_path = _R / "core" / "data" / "sentiment.db"
+    con = _sq.connect(str(db_path))
+    cur = con.execute("SELECT enabled FROM sectors WHERE kind='concept' LIMIT 1")
+    row = cur.fetchone()
+    new_val = 0 if (row and row[0]) else 1
+    n = con.execute("UPDATE sectors SET enabled=? WHERE kind='concept'", (new_val,)).rowcount
+    con.commit()
+    con.close()
+    audit("concept_toggle", detail=f"概念板块{'启用' if new_val else '停用'}({n}个)")
+    return jsonify({"ok": True, "enabled": bool(new_val), "count": n,
+                    "msg": f"概念板块已{'启用' if new_val else '停用'}({n}个), "
+                           f"次日采集与温度计算将{'包含' if new_val else '不包含'}概念板块"})

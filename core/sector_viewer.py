@@ -26,9 +26,10 @@ C = {"surface": "#fcfcfb", "page": "#f9f9f7", "ink": "#0b0b0b", "ink2": "#52514e
 CLABELS = {"rsi": "RSI", "chg": "当日涨幅", "gap": "跳空缺口", "kr": "K线实体",
            "vol_dir": "量能×方向", "vr": "量比趋势", "bias20": "20日乖离",
            "bias60": "60日乖离", "pos": "价格位置", "amp": "振幅×方向",
-           "zt": "板块涨停", "zt_share": "涨停占比", "ud_ratio": "涨跌家数比"}
+           "zt": "板块涨停", "zt_share": "涨停占比", "ud_ratio": "涨跌家数比",
+           "fflow": "主力净流入"}
 CORDER = ["rsi", "chg", "gap", "kr", "vol_dir", "vr", "bias20", "bias60",
-          "pos", "amp", "zt", "zt_share", "ud_ratio"]
+          "pos", "amp", "zt", "zt_share", "ud_ratio", "fflow"]
 
 
 def build_payload(years=2):

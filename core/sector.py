@@ -28,6 +28,9 @@ from db import connect  # noqa: E402
 STAGES = [(-80, "极度冰点"), (-60, "冰点/恐慌"), (-30, "偏冷/退潮"), (-10, "中性偏弱"),
           (10, "中性"), (30, "中性偏强"), (60, "偏热/发酵"), (80, "狂热/高潮")]
 
+CORDER = ["rsi", "chg", "gap", "kr", "vol_dir", "vr", "bias20", "bias60",
+          "pos", "amp", "zt", "zt_share", "ud_ratio", "fflow"]
+
 
 def stage_of(s):
     for th, name in STAGES:
@@ -65,13 +68,16 @@ def load_frames(conn):
     pool = pd.read_sql(
         "SELECT date,code,zt_count,dt_count,lb_max,lb2_count FROM sector_pool_stat "
         "WHERE code LIKE 'BK%'", conn, parse_dates=["date"])
+    fflow = pd.read_sql(
+        "SELECT date,code,main_net FROM sector_fundflow", conn, parse_dates=["date"])
     mkt = pd.read_sql(
         "SELECT date,zt_count FROM mood_raw WHERE zt_count IS NOT NULL",
         conn, parse_dates=["date"])
     daily["date"] = daily["date"].dt.strftime("%Y-%m-%d")
     pool["date"] = pool["date"].dt.strftime("%Y-%m-%d")
+    fflow["date"] = fflow["date"].dt.strftime("%Y-%m-%d")
     mkt["date"] = mkt["date"].dt.strftime("%Y-%m-%d")
-    return daily, pool, mkt
+    return daily, pool, fflow, mkt
 
 
 # ---------------------------------------------------------------- 单板块计算
@@ -114,6 +120,8 @@ def calc_one(df: pd.DataFrame, pool: pd.DataFrame, mkt_zt: pd.Series,
     comp["zt"] = _pct(df["zt_count"], window, pool_mp) * 200 - 100
     comp["zt_share"] = _pct(zt_share, window, pool_mp) * 200 - 100
     comp["ud_ratio"] = _pct(ud_ratio, window, 20) * 200 - 100
+    if "main_net" in df.columns:
+        comp["fflow"] = _pct(df["main_net"], 60, 30) * 200 - 100
 
     w = pd.Series({k: float(v) for k, v in weights.items()})
     cdf = pd.DataFrame(comp, index=df.index)
@@ -139,13 +147,15 @@ def calc_all(conn=None):
     cfg = load_cfg()
     weights = cfg.get("sector_weights", {})
     window = cfg.get("window", 250)
-    daily, pool, mkt = load_frames(conn)
+    daily, pool, fflow, mkt = load_frames(conn)
     mkt_zt = daily[["date"]].merge(mkt, on="date", how="left")["zt_count"]
     daily["zt_count"] = pool.groupby(["date", "code"])["zt_count"].sum().reindex(
         pd.MultiIndex.from_frame(daily[["date", "code"]])).values
     for col in ("lb_max", "lb2_count", "dt_count"):
         daily[col] = pool.groupby(["date", "code"])[col].max().reindex(
             pd.MultiIndex.from_frame(daily[["date", "code"]])).values
+    daily["main_net"] = fflow.groupby(["date", "code"])["main_net"].sum().reindex(
+        pd.MultiIndex.from_frame(daily[["date", "code"]])).values
 
     out = []
     comp_keep_days = 260           # components 明细仅保留近窗口日数(控制库体积)
@@ -266,9 +276,35 @@ def anchors(conn=None):
           f"({'✓ 有效' if top > bot else '✗ 无效'})  锚点 {ok}/{tot}")
 
 
+def export(conn=None, date=None, top=30):
+    """导出当日板块温度 TopN 为 CSV(含分量明细), 可与 tdx 涨停生态公式对照"""
+    conn = conn or connect()
+    date = date or conn.execute("SELECT MAX(date) FROM sector_scores").fetchone()[0]
+    rows = conn.execute(
+        "SELECT sc.code, s2.name, sc.score, sc.rank_pct, sc.stage, sc.components "
+        "FROM sector_scores sc JOIN sectors s2 ON sc.code=s2.code "
+        "WHERE sc.date=? ORDER BY sc.score DESC", (date,)).fetchall()
+    if not rows:
+        print("无数据")
+        return
+    import csv
+    out = BASE / "out" / f"sector_top_{date.replace('-', '')}.csv"
+    out.parent.mkdir(exist_ok=True)
+    with open(out, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["排名", "代码", "板块名", "温度", "排名百分位", "阶段",
+                    "RSI", "涨幅", "跳空", "实体", "量能", "量比", "乖离20", "乖离60",
+                    "位置", "振幅", "涨停", "涨停占比", "涨跌比", "主力净流入"])
+        for i, r in enumerate(rows[:top], 1):
+            c = json.loads(r[5]) if r[5] else {}
+            w.writerow([i, r[0], r[1], r[2], r[3], r[4]] +
+                       [c.get(k, "") for k in CORDER])
+    print(f"[sector] 导出: {out} (Top {min(top, len(rows))}, {date})")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["calc", "report", "anchors", "remap"])
+    ap.add_argument("cmd", choices=["calc", "report", "anchors", "remap", "export"])
     ap.add_argument("--date", default=None)
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--code", default=None)
@@ -280,6 +316,8 @@ def main():
         report(conn, args.date, args.top, args.code)
     elif args.cmd == "anchors":
         anchors(conn)
+    elif args.cmd == "export":
+        export(conn, args.date, args.top)
     else:
         auto_alias(conn)
 
