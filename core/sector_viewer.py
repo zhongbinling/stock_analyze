@@ -448,8 +448,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=None)
     ap.add_argument("--years", type=int, default=2)
+    ap.add_argument("--open", action="store_true", help="生成后用浏览器打开")
     args = ap.parse_args()
-    generate_html(years=args.years, out=args.out)
+    out = generate_html(years=args.years, out=args.out)
+    if args.open:
+        import webbrowser
+        webbrowser.open(out.resolve().as_uri())
 
 
 if __name__ == "__main__":
