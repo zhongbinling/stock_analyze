@@ -108,6 +108,71 @@ def fetch_breadth_today():
         print(f"[breadth] 失败(不影响主流程, 未安装akshare也会跳过): {type(e).__name__}")
 
 
+def breadth_from_tushare(start="20180102"):
+    """S2.1-B: 从 tushare daily_basic 回补涨跌家数历史(2018起)
+    每日全市场~5000股的 pct_chg → 统计 >0(上涨)/<0(下跌)家数"""
+    import tushare_api
+    if not tushare_api.has_token():
+        print("[breadth-ts] 无 token, 跳过")
+        return
+    conn = connect()
+    s = str(start)
+    iso_start = s if "-" in s else f"{s[:4]}-{s[4:6]}-{s[6:8]}"   # YYYYMMDD→ISO
+    dates = trading_dates(conn, load_cfg()["index"]["primary"], start=iso_start)
+    have = {r[0] for r in conn.execute(
+        "SELECT date FROM mood_raw WHERE up_count IS NOT NULL")}
+    todo = [d for d in dates if d not in have]
+    if not todo:
+        print("[breadth-ts] 无缺失日期")
+        return
+    print(f"[breadth-ts] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo)*0.7/60:.0f} 分钟")
+    t0, empty = time.time(), 0
+    for i, d in enumerate(todo, 1):
+        try:
+            df = tushare_api.call("daily", "ts_code,pct_chg",
+                             trade_date=d.replace("-", ""))
+            if df.empty:
+                empty += 1
+                if empty >= 5:
+                    print("  ✗✗ 连续空数据, 中断")
+                    break
+                continue
+            empty = 0
+            pct = df["pct_chg"]
+            up = int((pct > 0).sum())
+            down = int((pct < 0).sum())
+            if up > 0 or down > 0:
+                upsert_mood(conn, d, up_count=up, down_count=down)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ {d}: {e}")
+            time.sleep(2)
+        if i % 50 == 0:
+            conn.commit()
+            print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")
+    conn.commit()
+    print(f"[breadth-ts] 完成 {time.time()-t0:.0f}s (空{empty})")
+
+
+def fetch_breadth_today_from_tushare():
+    """S2.1-B: 主链增量——当日涨跌家数(tushare daily_basic, 1请求/日)"""
+    try:
+        import tushare_api
+        if not tushare_api.has_token():
+            return
+        d = time.strftime("%Y%m%d")
+        df = tushare_api.call("daily", "ts_code,pct_chg", trade_date=d)
+        if df.empty:
+            return
+        pct = df["pct_chg"]
+        up, down = int((pct > 0).sum()), int((pct < 0).sum())
+        if up > 0 or down > 0:
+            conn = connect()
+            upsert_mood(conn, time.strftime("%Y-%m-%d"), up_count=up, down_count=down)
+            print(f"[breadth-ts] 当日: 上涨{up} 下跌{down}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[breadth-ts] 当日失败(不影响主流程): {type(e).__name__}")
+
+
 def fetch_sectors():
     """板块数据底座(S5): 清单/增量日线/资金流/当日涨停行业聚合; 首次自动全量回补"""
     try:
@@ -337,6 +402,8 @@ def main():
     ap.add_argument("--no-sectors", action="store_true", help="跳过板块数据(S5)")
     ap.add_argument("--ts-backfill", nargs="?", const="20200102", metavar="START",
                     help="tushare历史回补(涨跌停→mood_raw+板块聚合), 默认20200102起")
+    ap.add_argument("--breadth-backfill", nargs="?", const="20180102", metavar="START",
+                    help="涨跌家数历史回补(tushare daily_basic), 默认20180102起")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -351,6 +418,7 @@ def main():
     fetch_pools(cfg, dates, force=args.force)
     if not args.no_breadth:
         fetch_breadth_today()
+        fetch_breadth_today_from_tushare()
     if not args.no_sectors:
         fetch_sectors()
     fetch_calendar()
@@ -358,6 +426,8 @@ def main():
     fetch_tushare_mood_today()
     if args.ts_backfill:
         backfill_tushare(args.ts_backfill)
+    if args.breadth_backfill:
+        breadth_from_tushare(args.breadth_backfill)
 
 
 if __name__ == "__main__":

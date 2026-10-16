@@ -61,25 +61,31 @@ def build_payload(cfg, years=None):
     else:
         i0 = 0
 
+    # S2.1-B: 全量日期为统一轴; 主图数据(K线/情绪分)在 years 窗口外填 null
+    # 附图数据(涨停/涨跌/炸板/接力)全量——拖动 dataZoom 可看全历史
     keys = [k for k in cfg["weights"] if k in comp.columns]
     payload = {
-        "dates": [d.strftime("%Y-%m-%d") for d in df["date"][i0:]],
+        "dates": [d.strftime("%Y-%m-%d") for d in df["date"]],  # 统一用全量日期
         "k": [[_j(r["open"]), _j(r["close"]), _j(r["low"]), _j(r["high"])]
-              for _, r in df.iloc[i0:].iterrows()],
-        "vol": [_j(v / 1e8) for v in df["vol_total"][i0:]],
-        "pct": [_j(v) for v in df["chg"][i0:]],
-        "score": [_j(v) for v in score_df["score"][i0:]],
-        "v1": [_j(v) for v in score_df["v1_score"][i0:]],
-        "stage": list(score_df["stage"][i0:]),
-        "zt": [_j(v) for v in df["zt_count"][i0:]],
-        "dt": [_j(-v) for v in df["dt_count"][i0:]],
-        "zb": [_j(v) for v in df["zb_rate"][i0:]],
-        "jl": [_j(v) for v in df["jl_rate"][i0:]],
-        "raw": {k: [_j(v) for v in df[k][i0:]] for k in keys},
-        "cs": {k: [_j(v) for v in comp[k][i0:]] for k in keys},
+              if i >= i0 else [None, None, None, None]
+              for i, (_, r) in enumerate(df.iterrows())],
+        "vol": [_j(v / 1e8) if i >= i0 else None
+                for i, v in enumerate(df["vol_total"])],
+        "pct": [_j(v) if i >= i0 else None for i, v in enumerate(df["chg"])],
+        "score": [_j(v) if i >= i0 else None for i, v in enumerate(score_df["score"])],
+        "v1": [_j(v) if i >= i0 else None for i, v in enumerate(score_df["v1_score"])],
+        "stage": list(score_df["stage"]),
+        "zt": [_j(v) for v in df["zt_count"]],
+        "dt": [_j(-v) for v in df["dt_count"]],
+        "zb": [_j(v) for v in df["zb_rate"]],
+        "jl": [_j(v) for v in df["jl_rate"]],
+        "raw": {k: [_j(v) if i >= i0 else None
+                    for i, v in enumerate(df[k])] for k in keys},
+        "cs": {k: [_j(v) if i >= i0 else None
+                   for i, v in enumerate(comp[k])] for k in keys},
         "labels": {k: LABELS.get(k, k) for k in keys},
         "weights": {k: cfg["weights"][k] for k in keys},
-        "n": n - i0,
+        "n": n,
     }
     return payload
 
@@ -254,7 +260,8 @@ chart.setOption({
     { type: "inside", xAxisIndex: [0, 1, 2, 3, 4] },
     { type: "slider", xAxisIndex: [0, 1, 2, 3, 4], bottom: 4, height: 20,
       borderColor: C.grid, fillerColor: "rgba(42,120,214,0.10)",
-      handleStyle: { color: C.blue }, textStyle: { color: C.muted } },
+      handleStyle: { color: C.blue }, textStyle: { color: C.muted },
+      start: Math.max(0, 100 - (500 / D.n) * 100) },  // S2.1-B: 默认展示近~2年窗口
   ],
   series: [
     { name: "上证指数", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0,
