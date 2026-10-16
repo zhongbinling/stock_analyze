@@ -87,7 +87,7 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.executescript(SCHEMA)
     # 老库迁移: 新增列
-    for col_def in ("jl_rate REAL", "yzt_count INTEGER"):
+    for col_def in ("jl_rate REAL", "yzt_count INTEGER", "zt_source TEXT"):
         try:
             conn.execute(f"ALTER TABLE mood_raw ADD COLUMN {col_def}")
         except sqlite3.OperationalError:

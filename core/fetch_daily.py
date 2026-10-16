@@ -90,6 +90,60 @@ def fetch_pools(cfg, dates, force=False):
     print(f"[pools] 完成, 成功 {ok} 天")
 
 
+def _est_zt_count(df):
+    """从 daily(pct_chg) 估算涨停/跌停家数(按板块规则)"""
+    import pandas as pd
+    codes = df["ts_code"].astype(str)
+    pct = pd.to_numeric(df["pct_chg"], errors="coerce")
+    main = codes.str.startswith(("60", "00")) & ~codes.str.startswith(("68", "8", "4"))
+    cyb = codes.str.startswith("30")
+    kcb = codes.str.startswith("68")
+    zt = (main & (pct >= 9.8)) | (cyb & (pct >= 19.8)) | (kcb & (pct >= 19.8))
+    dt = (main & (pct <= -9.8)) | (cyb & (pct <= -19.8)) | (kcb & (pct <= -19.8))
+    return int(zt.sum()), int(dt.sum())
+
+
+def backfill_zt_est(start="20120101"):
+    """S2.2-B: 从 tushare daily 估算涨停/跌停家数(2012~2019, 不覆盖已有tushare数据)"""
+    import tushare_api
+    if not tushare_api.has_token():
+        print("[zt-est] 无 token, 跳过")
+        return
+    conn = connect()
+    s = str(start)
+    iso_start = s if "-" in s else f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    dates = trading_dates(conn, load_cfg()["index"]["primary"], start=iso_start)
+    have = {r[0] for r in conn.execute(
+        "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL")}
+    todo = [d for d in dates if d not in have]
+    if not todo:
+        print("[zt-est] 无缺失日期")
+        return
+    print(f"[zt-est] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo)*0.7/60:.0f} 分钟")
+    t0, empty = time.time(), 0
+    for i, d in enumerate(todo, 1):
+        try:
+            df = tushare_api.call("daily", "ts_code,pct_chg", trade_date=d.replace("-", ""))
+            if df.empty:
+                empty += 1
+                if empty >= 5:
+                    print("  ✗✗ 连续空数据, 中断")
+                    break
+                continue
+            empty = 0
+            zt, dt_ = _est_zt_count(df)
+            if zt > 0 or dt_ > 0:
+                upsert_mood(conn, d, zt_count=zt, dt_count=dt_, zt_source="est")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ {d}: {e}")
+            time.sleep(2)
+        if i % 50 == 0:
+            conn.commit()
+            print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")
+    conn.commit()
+    print(f"[zt-est] 完成 {time.time()-t0:.0f}s")
+
+
 def fetch_breadth_today():
     """当日涨跌家数(乐咕口径, 可选; 历史序列无法获取, 仅最新一天)"""
     conn = connect()
@@ -404,6 +458,8 @@ def main():
                     help="tushare历史回补(涨跌停→mood_raw+板块聚合), 默认20200102起")
     ap.add_argument("--breadth-backfill", nargs="?", const="20180102", metavar="START",
                     help="涨跌家数历史回补(tushare daily_basic), 默认20180102起")
+    ap.add_argument("--zt-est-backfill", nargs="?", const="20120101", metavar="START",
+                    help="涨停/跌停家数估算回补(daily pct_chg), 默认20120101起")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -428,6 +484,8 @@ def main():
         backfill_tushare(args.ts_backfill)
     if args.breadth_backfill:
         breadth_from_tushare(args.breadth_backfill)
+    if args.zt_est_backfill:
+        backfill_zt_est(args.zt_est_backfill)
 
 
 if __name__ == "__main__":

@@ -87,6 +87,19 @@ def build_payload(cfg, years=None):
         "weights": {k: cfg["weights"][k] for k in keys},
         "n": n,
     }
+    # S2.2-B: 附图各序列数据起始日
+    def _first_date(series):
+        for i, v in enumerate(series):
+            if v is not None:
+                return payload["dates"][i]
+        return None
+    payload["sub_starts"] = {
+        "zt": _first_date(payload["zt"]),
+        "dt": _first_date(payload["dt"]),
+        "zb": _first_date(payload["zb"]),
+        "jl": _first_date(payload["jl"]),
+        "score": _first_date(payload["score"]),
+    }
     return payload
 
 
@@ -296,6 +309,18 @@ chart.setOption({
       data: D.jl, showSymbol: false, lineStyle: { width: 1.6, color: C.aqua },
       itemStyle: { color: C.aqua } },
   ],
+  // S2.2-B: 附图数据起始日标注
+  graphic: (() => {
+    const els = [];
+    const ss = D.sub_starts || {};
+    const mk = (text, x, y) => ({
+      type: 'text', left: x, top: y, silent: true, z: 100,
+      style: { text, fontSize: 9, fill: '#898781', fontFamily: 'sans-serif' } });
+    if (ss.zt) els.push(mk(`涨停起 ${ss.zt}`, '52%', '348px'));
+    if (ss.zb) els.push(mk(`炸板率起 ${ss.zb}`, '3%', '438px'));
+    if (ss.jl && ss.jl !== ss.zb) els.push(mk(`接力率起 ${ss.jl}`, '20%', '438px'));
+    return els;
+  })(),
 });
 
 // ---- 右侧详情面板: 悬停联动显示当日全部构成 ----
