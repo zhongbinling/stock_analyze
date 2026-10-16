@@ -186,6 +186,7 @@ def remap_pending(conn) -> int:
                 (d, bk, zt, dt_, zb, lbm, lb2))
         conn.execute("DELETE FROM sector_pool_stat WHERE code=?", (code,))
         n += len(rows)
+        _unmatched.discard(name)     # 已成功映射, 从未匹配清单移除
     if n:
         conn.commit()
         print(f"[sectors] 重映射 {n} 行 @行业名 → BK码")
@@ -209,7 +210,7 @@ def agg_today(conn):
 def pool_backfill(conn):
     """回补板块涨停行业聚合。口径注意: 行业归属(hybk)仅东财池携带, 其历史约最近
     一个月, 故只回补近40天(更早日期池接口返回空, 无谓浪费请求); 此后逐日积累。"""
-    cutoff = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=32)).strftime("%Y-%m-%d")   # 东财池边界约30天
     dates = [r[0] for r in conn.execute(
         "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL AND date>=? ORDER BY date",
         (cutoff,))]

@@ -35,15 +35,18 @@ POOL_URLS = {
 _UT = "7eea3edcaed734bea9cbfc24409ed989"
 
 
-def _curl_get(url, params, timeout=12):
+def _curl_get(url, params, timeout=12, headers=None):
     """curl 子进程兜底: 东财WAF按TLS指纹封锁 python-requests 时, curl 指纹仍可用"""
     import json as _json
     import subprocess
     from urllib.parse import urlencode
     full = f"{url}?{urlencode(params)}"
-    cmd = ["curl", "-s", "-m", str(timeout), "-H",
-           "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124",
-           "-H", "Referer: https://quote.eastmoney.com/", full]
+    hdrs = dict(headers or {})
+    hdrs.setdefault("User-Agent", _UA["User-Agent"])
+    cmd = ["curl", "-s", "-m", str(timeout)]
+    for k, v in hdrs.items():
+        cmd += ["-H", f"{k}: {v}"]
+    cmd.append(full)
     r = subprocess.run(cmd, capture_output=True, text=True,
                        encoding="utf-8", errors="replace")
     if r.returncode == 0 and r.stdout.strip():
@@ -61,7 +64,7 @@ def _get(url, params, retries=3, headers=None, backoff=1.5):
         except Exception as e:  # noqa: BLE001
             last = e
             try:                 # requests 失败立即试 curl(指纹不同, 常见WAF场景)
-                return _curl_get(url, params)
+                return _curl_get(url, params, headers=headers)
             except Exception:  # noqa: BLE001
                 pass
             time.sleep(backoff + i + random.random())
@@ -166,6 +169,8 @@ def sector_list(kind: str = "industry") -> list:
             except Exception:  # noqa: BLE001
                 continue
         if j is None:
+            if page == 1:
+                print("[em_api] 板块清单: 全部host失败(push2被限流?)")
             break
         d = j.get("data") or {}
         diff = d.get("diff") or []
