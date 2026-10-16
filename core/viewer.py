@@ -145,7 +145,7 @@ HTML = r"""<!DOCTYPE html>
     font-size: 12px; color: #fff; background: var(--muted); vertical-align: middle;
   }
   .wrap { display: flex; gap: 14px; padding: 14px 20px; align-items: flex-start; }
-  #chart { flex: 1 1 auto; min-width: 0; height: 850px; background: var(--surface);
+  #chart { flex: 1 1 auto; min-width: 0; height: 470px; background: var(--surface);
            border: 1px solid var(--grid); border-radius: 10px; }
   aside {
     flex: 0 0 330px; max-height: 92vh; overflow-y: auto;
@@ -206,12 +206,13 @@ const KEYS = Object.keys(D.weights);
 const nullish = v => (v === null || v === undefined);
 
 const chart = echarts.init(document.getElementById("chart"));
+// S2.1-A: 两列布局(K线+量 左列, 情绪分+涨停 右列, 炸板率全宽)
 const grids = [
-  { top: 46,  height: 250 },   // K线
-  { top: 306, height: 70  },   // 成交量
-  { top: 386, height: 190 },   // 情绪分
-  { top: 586, height: 110 },   // 涨跌停家数
-  { top: 706, height: 100 },   // 炸板率/接力率
+  { top: 56,  height: 220, left: '3%',  width: '44%' },  // K线(左上)
+  { top: 286, height: 60,  left: '3%',  width: '44%' },  // 成交量(左中)
+  { top: 56,  height: 220, left: '52%', width: '46%' },  // 情绪分(右上)
+  { top: 286, height: 60,  left: '52%', width: '46%' },  // 涨停/跌停(右中)
+  { top: 360, height: 80,  left: '3%',  width: '95%' },  // 炸板率/接力率(全宽底)
 ];
 const catAxis = (gi) => ({
   type: "category", gridIndex: gi, data: D.dates, show: gi === 4,
@@ -245,7 +246,7 @@ chart.setOption({
       return h;
     },
   },
-  grid: grids.map(g => ({ ...g, left: 64, right: 20 })),
+  grid: grids.map(g => ({ ...g, containLabel: true, right: 20 })),
   xAxis: grids.map((_, gi) => catAxis(gi)),
   yAxis: [
     valAxis(0),                                   // 0 K线

@@ -139,3 +139,5 @@ code {
   background: var(--page); padding: 4px 10px; max-height: 260px; overflow: auto; }
 .hist-row { cursor: pointer; }
 .hist-row:hover td { background: var(--grid); }
+
+#btnFull { font-size: 14px; padding: 3px 8px; }

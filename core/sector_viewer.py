@@ -65,11 +65,25 @@ def build_payload(years=2):
                 "SELECT code,components FROM sector_scores WHERE date=? AND components IS NOT NULL", (d,)):
             comp.setdefault(c, {})[d] = json.loads(j)
 
+    # S2.1-A: 当日摘要(最热/最冷 Top5)
+    latest = dates[-1] if dates else None
+    top5, bot5 = [], []
+    if latest:
+        ranked = conn.execute(
+            "SELECT sc.code, s.name, sc.score, sc.rank_pct FROM sector_scores sc "
+            "JOIN sectors s ON sc.code=s.code WHERE sc.date=? ORDER BY sc.score DESC",
+            (latest,)).fetchall()
+        top5 = [{"c": r[0], "n": r[1], "s": round(r[2] or 0), "r": round(r[3] or 0)}
+                for r in ranked[:5]]
+        bot5 = [{"c": r[0], "n": r[1], "s": round(r[2] or 0), "r": round(r[3] or 0)}
+                for r in sorted(ranked, key=lambda x: x[2] or 0)[:5]]
+
     conn.close()
     return {"dates": dates, "codes": codes, "names": [names.get(c, c) for c in codes],
             "mat": mat,
             "mkt": [[d, round(s, 1) if s is not None else None] for d, s in mkt],
-            "comp": comp, "clabels": CLABELS, "corder": CORDER}
+            "comp": comp, "clabels": CLABELS, "corder": CORDER,
+            "top5": top5, "bot5": bot5, "latest": latest}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -85,52 +99,87 @@ HTML = r"""<!DOCTYPE html>
 --g:#2c2c2a;--a:#383835;--bl:#3987e5;--rd:#e66767;--aq:#199e70}
 *{box-sizing:border-box}
 body{margin:0;background:var(--p);color:var(--i);
-font:13px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
-.hdr{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;
-padding:10px 18px;background:var(--s);border-bottom:1px solid var(--g)}
-.hdr h1{font-size:15px;margin:0}
-.hdr .sub{color:var(--i2);font-size:12px}
-.mktbar{display:flex;align-items:center;gap:12px}
-.mktbar .sc{font-size:26px;font-weight:700}
-#rank{width:46%;height:640px;display:inline-block;vertical-align:top;background:var(--s);
-border:1px solid var(--g);border-radius:10px;margin:10px 0 0 12px}
-#curve{width:53%;height:640px;display:inline-block;vertical-align:top;background:var(--s);
-border:1px solid var(--g);border-radius:10px;margin:10px 0 0 8px}
-#slider{margin:6px 12px;background:var(--s);border:1px solid var(--g);border-radius:10px;padding:4px 10px}
-#side{position:fixed;right:12px;top:120px;width:270px;max-height:70vh;overflow-y:auto;
-background:var(--s);border:1px solid var(--g);border-radius:10px;padding:12px 14px;display:none;z-index:10}
-#side h3{margin:0 0 4px;font-size:13px}
-#side .date{color:var(--m);font-size:11px;margin-bottom:8px}
+font:13px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+display:flex;flex-direction:column;height:100vh;overflow:hidden}
+/* ── 顶栏 ── */
+.hdr{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;
+padding:8px 16px;background:var(--s);border-bottom:1px solid var(--g);flex-shrink:0}
+.hdr h1{font-size:14px;margin:0}
+.hdr .sub{color:var(--i2);font-size:11px}
+.flt{display:flex;gap:6px;align-items:center}
+/* ── 上行: 信息聚合层 ── */
+.info-row{display:flex;gap:12px;padding:8px 16px;background:var(--s);
+border-bottom:1px solid var(--g);flex-shrink:0;align-items:stretch}
+.cards{flex:1;display:flex;gap:6px;overflow-x:auto}
+.card{min-width:100px;padding:6px 10px;border-radius:8px;background:var(--p);
+border:1px solid var(--g);cursor:pointer;transition:all .15s;text-align:center}
+.card:hover{border-color:var(--m);transform:translateY(-1px)}
+.card .nm{font-size:11px;color:var(--i2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .sc{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums}
+.card .rk{font-size:10px;color:var(--m)}
+.card.sel{border-width:2px}
+.mkt-box{flex:0 0 200px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+border-left:1px solid var(--g);padding-left:14px}
+.mkt-box .sc{font-size:28px;font-weight:700;line-height:1.1}
+.mkt-box .lb{font-size:11px;color:var(--i2)}
+#mktSpark{width:180px;height:36px;margin-top:2px}
+/* ── 滑块行 ── */
+#slider{margin:4px 16px;background:var(--s);border:1px solid var(--g);border-radius:8px;
+padding:2px 8px;flex-shrink:0}
+/* ── 下行: 分析层 ── */
+.chart-row{flex:1;display:flex;gap:8px;padding:4px 16px 8px;min-height:0}
+#rank{flex:6;background:var(--s);border:1px solid var(--g);border-radius:10px;min-width:0}
+#curve{flex:4;background:var(--s);border:1px solid var(--g);border-radius:10px;min-width:0;position:relative}
+#side{position:absolute;right:6px;top:6px;width:250px;max-height:calc(100% - 12px);overflow-y:auto;
+background:var(--s);border:1px solid var(--g);border-radius:8px;padding:10px 12px;display:none;z-index:10;
+box-shadow:0 2px 8px rgba(0,0,0,0.08)}
+#side h3{margin:0 0 2px;font-size:12px}
+#side .date{color:var(--m);font-size:10px;margin-bottom:6px}
 table{border-collapse:collapse;width:100%}
-th,td{padding:2px 3px;border-bottom:1px solid var(--g);font-size:11px;white-space:nowrap}
+th,td{padding:1px 3px;border-bottom:1px solid var(--g);font-size:10px;white-space:nowrap}
 th{color:var(--m);font-weight:500}
 td:first-child{text-align:left}
-.track{position:relative;height:8px;background:var(--g);border-radius:2px;margin:2px 0}
+.track{position:relative;height:7px;background:var(--g);border-radius:2px;margin:1px 0}
 .track::after{content:"";position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--a)}
 .fill{position:absolute;top:1px;bottom:1px;border-radius:2px}
-.btn{border:1px solid var(--a);background:var(--s);color:var(--i);border-radius:7px;
-padding:4px 12px;font-size:12px;cursor:pointer}
-.search{border:1px solid var(--a);border-radius:7px;padding:4px 10px;font-size:12px;
-background:var(--p);color:var(--i);width:120px}
-.flt{display:flex;gap:8px;align-items:center}
+.btn{border:1px solid var(--a);background:var(--s);color:var(--i);border-radius:6px;
+padding:3px 10px;font-size:11px;cursor:pointer}
+.search{border:1px solid var(--a);border-radius:6px;padding:3px 8px;font-size:11px;
+background:var(--p);color:var(--i);width:110px}
+/* 多板块色板 */
+.pal{display:["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"]}
 </style>
 </head>
 <body>
 <div class="hdr">
   <div><h1>板块温度计 <span class="sub" id="hInfo"></span></h1></div>
-  <div class="mktbar"><span class="sub">大盘情绪</span><span class="sc" id="mktSc">--</span>
-  <span class="sub" id="mktDate"></span></div>
   <div class="flt">
     <input class="search" id="q" placeholder="搜索板块名">
-    <button class="btn" id="btnAll">Top 80</button>
+    <button class="btn" id="btnAll">Top80</button>
     <button class="btn" id="btnHot">最热</button>
     <button class="btn" id="btnCold">最冷</button>
+    <button class="btn" id="btnClear">清空对比</button>
     <button class="btn" id="themeToggle">◐</button>
   </div>
 </div>
+<div class="info-row">
+  <div class="cards" id="hotCards"></div>
+  <div class="cards" id="botCards"></div>
+  <div class="mkt-box">
+    <span class="lb">大盘情绪</span>
+    <span class="sc" id="mktSc">--</span>
+    <span class="lb" id="mktDate"></span>
+    <div id="mktSpark"></div>
+  </div>
+</div>
 <div id="slider"></div>
-<div id="rank"></div><div id="curve"></div>
-<div id="side"></div>
+<div class="chart-row">
+  <div id="rank"></div>
+  <div style="flex:4;position:relative;min-width:0">
+    <div id="curve" style="width:100%;height:100%"></div>
+    <div id="side"></div>
+  </div>
+</div>
 <script>
 window.onerror = function(msg, src, line, col) {
   var d = document.createElement("div");
@@ -144,11 +193,14 @@ window.onerror = function(msg, src, line, col) {
 <script>
 const D = __PAYLOAD__;
 const N_D = D.dates.length, N_C = D.codes.length;
-let curDay = N_D - 1, curCode = -1, filter = "all", query = "";
+let curDay = N_D - 1, filter = "all", query = "";
+let selected = [];   // 多板块对比: 已选板块的 code index 数组(≤5)
+const PALETTE = ["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"];
 
 const rankC = echarts.init(document.getElementById('rank'));
 const curveC = echarts.init(document.getElementById('curve'));
 const slideC = echarts.init(document.getElementById('slider'));
+const sparkC = echarts.init(document.getElementById('mktSpark'));
 
 function mktAt(di) {
   const d = D.dates[di];
@@ -157,6 +209,7 @@ function mktAt(di) {
 }
 function scoreAt(di, ci) { return D.mat[di] ? D.mat[di][ci] : null; }
 
+/* ── 大盘情绪更新 ── */
 function updateMkt() {
   const m = mktAt(curDay);
   const el = document.getElementById('mktSc');
@@ -164,8 +217,54 @@ function updateMkt() {
   el.textContent = (m[1] >= 0 ? '+' : '') + m[1];
   el.style.color = m[1] >= 0 ? 'var(--rd)' : 'var(--bl)';
   document.getElementById('mktDate').textContent = m[0];
+  const recent = D.mkt.slice(-30);
+  sparkC.setOption({
+    animation: false,
+    grid: { left: 0, right: 0, top: 2, bottom: 0 },
+    xAxis: { type: 'category', show: false, data: recent.map(r => r[0]) },
+    yAxis: { type: 'value', show: false, min: -100, max: 100 },
+    series: [{ type: 'line', data: recent.map(r => r[1]), showSymbol: false,
+      lineStyle: { width: 1.5, color: m[1] >= 0 ? '#e34948' : '#2a78d6' },
+      itemStyle: { color: m[1] >= 0 ? '#e34948' : '#2a78d6' } }]
+  }, true);
 }
 
+/* ── 信息卡 ── */
+function renderCards() {
+  const mkCard = (item, idx) => {
+    const ci = D.codes.indexOf(item.c);
+    const isSel = selected.includes(ci);
+    const color = isSel ? PALETTE[selected.indexOf(ci)] : null;
+    return `<div class="card ${isSel ? 'sel' : ''}" data-ci="${ci}"
+      style="${color ? `border-color:${color}` : ''}">
+      <div class="nm">${item.n}</div>
+      <div class="sc" style="color:${item.s >= 0 ? 'var(--rd)' : 'var(--bl)'}">${item.s > 0 ? '+' : ''}${item.s}</div>
+      <div class="rk">排名${item.r}%</div>
+    </div>`;
+  };
+  const hot = document.getElementById('hotCards');
+  const bot = document.getElementById('botCards');
+  if (D.top5 && D.top5.length) {
+    hot.innerHTML = D.top5.map(mkCard).join('');
+    bot.innerHTML = D.bot5.map(mkCard).join('');
+    hot.querySelectorAll('.card').forEach(c => c.onclick = () => toggleSel(parseInt(c.dataset.ci)));
+    bot.querySelectorAll('.card').forEach(c => c.onclick = () => toggleSel(parseInt(c.dataset.ci)));
+  }
+}
+
+/* ── 多板块 toggle ── */
+function toggleSel(ci) {
+  const idx = selected.indexOf(ci);
+  if (idx >= 0) selected.splice(idx, 1);
+  else {
+    if (selected.length >= 5) selected.shift();
+    selected.push(ci);
+  }
+  renderCards(); drawCurve();
+  drawRank();  // 高亮已选板块
+}
+
+/* ── 排行榜 ── */
 function rankData() {
   const row = D.mat[curDay] || [];
   const items = [];
@@ -187,85 +286,100 @@ function rankData() {
 function drawRank() {
   const items = rankData();
   const day = D.dates[curDay];
-  document.getElementById('hInfo').textContent =
-    `${day} · ${items.length > 0 ? N_C : 0} 板块`;
+  document.getElementById('hInfo').textContent = `${day} · ${N_C} 板块`;
   rankC.setOption({
     animation: false,
-    title: { text: `温度排行 · ${day}`, left: 10, top: 6, textStyle: { fontSize: 13, color: '#52514e' } },
-    tooltip: { trigger: 'item', formatter: p => `${p.name}<br/>温度 ${p.value > 0 ? '+' : ''}${p.value}` },
-    grid: { left: 10, right: 40, top: 34, bottom: 10, containLabel: true },
+    title: { text: `温度排行 · ${day}`, left: 10, top: 6, textStyle: { fontSize: 12, color: '#52514e' } },
+    tooltip: { trigger: 'item', formatter: p => {
+      const it = items[p.dataIndex];
+      const sel = it && selected.includes(it.ci);
+      return `${p.name}<br/>温度 ${p.value > 0 ? '+' : ''}${p.value}${sel ? '<br/><b>已选对比</b>' : ''}`;
+    }},
+    grid: { left: 10, right: 40, top: 30, bottom: 8, containLabel: true },
     xAxis: { type: 'value', min: -105, max: 105, axisLabel: { color: '#898781', fontSize: 10 },
       splitLine: { lineStyle: { color: '#e1e0d9' } } },
     yAxis: { type: 'category', inverse: true,
       data: items.map(i => i.name),
-      axisLabel: { color: '#52514e', fontSize: 10.5 },
+      axisLabel: { color: '#52514e', fontSize: 10,
+        formatter: v => selected.some(ci => D.names[ci] === v) ? `▶ ${v}` : v },
       axisTick: { show: false }, axisLine: { lineStyle: { color: '#c3c2b7' } } },
-    series: [{ type: 'bar', data: items.map(i => ({
-        value: i.v, itemStyle: { color: i.v >= 0
-          ? `rgba(227,73,72,${Math.min(0.25 + Math.abs(i.v) / 130, 0.95)})`
-          : `rgba(42,120,214,${Math.min(0.25 + Math.abs(i.v) / 130, 0.95)})` } })),
-      barMaxWidth: 11, barCategoryGap: '18%',
-      label: { show: true, position: 'right', fontSize: 9.5, color: '#898781',
+    series: [{ type: 'bar', data: items.map(i => {
+        const selIdx = selected.indexOf(i.ci);
+        const isSel = selIdx >= 0;
+        return { value: i.v, itemStyle: { color: isSel ? PALETTE[selIdx]
+          : i.v >= 0 ? `rgba(227,73,72,${Math.min(0.25 + Math.abs(i.v) / 130, 0.95)})`
+                     : `rgba(42,120,214,${Math.min(0.25 + Math.abs(i.v) / 130, 0.95)})` } };
+      }),
+      barMaxWidth: 10, barCategoryGap: '18%',
+      label: { show: true, position: 'right', fontSize: 9, color: '#898781',
         formatter: p => (p.value > 0 ? '+' : '') + p.value } }]
   }, true);
   rankC.off('click');
   rankC.on('click', p => {
     const it = items[p.dataIndex];
-    if (it) selectCode(it.ci);
+    if (it) toggleSel(it.ci);
   });
 }
 
+/* ── 多板块曲线 ── */
 function drawCurve() {
-  if (curCode < 0) {
+  const side = document.getElementById('side');
+  if (selected.length === 0) {
     curveC.clear();
-    curveC.setOption({ title: { text: '点击左侧板块查看温度曲线', left: 'center', top: 'center',
-      textStyle: { color: '#898781', fontSize: 14 } }, xAxis: {show:false}, yAxis: {show:false} });
+    curveC.setOption({ title: { text: '点击排行或信息卡\n选择板块对比(≤5个)', left: 'center', top: 'center',
+      textStyle: { color: '#898781', fontSize: 13 } }, xAxis: {show:false}, yAxis: {show:false} });
+    side.style.display = 'none';
     return;
   }
-  const nm = D.names[curCode];
-  const data = [];
-  for (let di = 0; di < N_D; di++) {
-    const v = scoreAt(di, curCode);
-    data.push(v === null ? null : [D.dates[di], v]);
-  }
+  const series = selected.map((ci, si) => {
+    const data = [];
+    for (let di = 0; di < N_D; di++) {
+      const v = scoreAt(di, ci);
+      data.push(v === null ? null : [D.dates[di], v]);
+    }
+    return { name: D.names[ci], type: 'line', data: data, showSymbol: false,
+      lineStyle: { width: si === 0 ? 2 : 1.6, color: PALETTE[si] },
+      itemStyle: { color: PALETTE[si] },
+      markLine: si === 0 ? { silent: true, symbol: 'none', label: { show: false },
+        lineStyle: { color: '#c3c2b7', type: 'dashed', width: 1 },
+        data: [{ yAxis: 0 }, { yAxis: 60 }, { yAxis: -60 }] } : undefined,
+      markArea: si === 0 ? { silent: true, itemStyle: { color: 'rgba(227,73,72,0.04)' },
+        data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } : undefined };
+  });
   curveC.setOption({
     animation: false,
-    title: { text: `${nm} · 板块温度`, left: 10, top: 6, textStyle: { fontSize: 13, color: '#0b0b0b' } },
-    tooltip: { trigger: 'axis', valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
-    grid: { left: 44, right: 16, top: 34, bottom: 46 },
-    xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 10 } },
+    legend: { top: 6, left: 10, itemWidth: 14, itemHeight: 8,
+      textStyle: { fontSize: 10, color: '#52514e' } },
+    tooltip: { trigger: 'axis', valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
+    grid: { left: 40, right: 12, top: 32, bottom: 40 },
+    xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
     yAxis: { type: 'value', min: -105, max: 105,
-      axisLabel: { color: '#898781' }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
-    dataZoom: [{ type: 'inside' }, { type: 'slider', bottom: 8, height: 18,
-      borderColor: '#e1e0d9', fillerColor: 'rgba(42,120,214,0.08)' }],
-    series: [{ type: 'line', data: data, showSymbol: false,
-      lineStyle: { width: 1.8, color: '#2a78d6' }, itemStyle: { color: '#2a78d6' },
-      markLine: { silent: true, symbol: 'none', label: { show: false },
-        lineStyle: { color: '#c3c2b7', type: 'dashed', width: 1 },
-        data: [{ yAxis: 0 }, { yAxis: 60 }, { yAxis: -60 }] },
-      markArea: { silent: true, itemStyle: { color: 'rgba(227,73,72,0.05)' },
-        data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } }]
+      axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
+    dataZoom: [{ type: 'inside' }],
+    series: series
   }, true);
   drawSide();
 }
 
+/* ── 分量明细(跟随最后选中的板块) ── */
 function drawSide() {
   const side = document.getElementById('side');
-  if (curCode < 0) { side.style.display = 'none'; return; }
-  const c = D.codes[curCode];
+  if (selected.length === 0) { side.style.display = 'none'; return; }
+  const lastCi = selected[selected.length - 1];
+  const c = D.codes[lastCi];
   const cd = D.comp[c];
   if (!cd) { side.style.display = 'none'; return; }
   const latest = Object.keys(cd).sort().pop();
   const comps = cd[latest];
   const order = D.corder.filter(k => comps[k] !== undefined && comps[k] !== null);
-  let h = `<h3>${D.names[curCode]}</h3><div class="date">${latest} 分量明细</div><table>
+  let h = `<h3>${D.names[lastCi]}</h3><div class="date">${latest} 分量明细</div><table>
 <tr><th>分量</th><th>分位分</th></tr>`;
   for (const k of order) {
     const v = comps[k];
     const w = Math.min(Math.abs(v), 100) / 2;
     const pos = v >= 0 ? `left:50%;width:${w}%;background:var(--rd)`
                        : `left:${50 - w}%;width:${w}%;background:var(--bl)`;
-    h += `<tr><td>${D.clabels[k] || k}</td><td style="min-width:90px">
+    h += `<tr><td>${D.clabels[k] || k}</td><td style="min-width:80px">
 <div class="track"><div class="fill" style="${pos}"></div></div></td>
 <td style="text-align:right;color:${v >= 0 ? 'var(--rd)' : 'var(--bl)'}">${v > 0 ? '+' : ''}${v}</td></tr>`;
   }
@@ -274,11 +388,7 @@ function drawSide() {
   side.style.display = 'block';
 }
 
-function selectCode(ci) {
-  curCode = ci;
-  drawCurve();
-}
-
+/* ── 日期滑块 ── */
 slideC.setOption({
   animation: false,
   grid: { left: 130, right: 130, top: 4, bottom: 22 },
@@ -287,7 +397,7 @@ slideC.setOption({
   graphic: [],
   dataZoom: [{
     type: 'slider', xAxisIndex: 0, start: Math.max(0, (N_D - 31) / N_D * 100), end: 100,
-    height: 18, bottom: 2, borderColor: '#c3c2b7',
+    height: 16, bottom: 2, borderColor: '#c3c2b7',
     fillerColor: 'rgba(42,120,214,0.12)',
     labelFormatter: v => D.dates[Math.round(v / 100 * (N_D - 1))]?.slice(5) || ''
   }]
@@ -295,24 +405,25 @@ slideC.setOption({
 slideC.on('datazoom', () => {
   const opt = slideC.getOption();
   const z = opt.dataZoom[0];
-  const span = (z.end - z.start) / 100 * (N_D - 1);
   const idx = Math.round(z.end / 100 * (N_D - 1));
-  const newDay = Math.max(0, Math.min(N_D - 1, idx - 1));   // 对齐滑块右端前1日
+  const newDay = Math.max(0, Math.min(N_D - 1, idx - 1));
   if (newDay !== curDay) { curDay = newDay; drawRank(); updateMkt(); }
 });
 
+/* ── 事件 ── */
 document.getElementById('btnAll').onclick = () => { filter = 'all'; drawRank(); };
 document.getElementById('btnHot').onclick = () => { filter = 'hot'; drawRank(); };
 document.getElementById('btnCold').onclick = () => { filter = 'cold'; drawRank(); };
+document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawRank(); };
 document.getElementById('q').addEventListener('input', e => { query = e.target.value.trim(); drawRank(); });
 document.getElementById('themeToggle').onclick = () => {
   const h = document.documentElement;
   const t = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   h.setAttribute('data-theme', t);
 };
-window.addEventListener('resize', () => { rankC.resize(); curveC.resize(); slideC.resize(); });
+window.addEventListener('resize', () => { rankC.resize(); curveC.resize(); slideC.resize(); sparkC.resize(); });
 
-drawRank(); updateMkt(); drawCurve();
+renderCards(); drawRank(); updateMkt(); drawCurve();
 </script>
 </body>
 </html>

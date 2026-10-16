@@ -12,6 +12,7 @@
       {% if current_user.is_authenticated and current_user.level >= 2 %}
       <button class="btn small" id="btnHistory">历史视图</button>
       {% endif %}
+      <button class="btn small" id="btnFull" title="全屏/退出">⛶</button>
     </div>
   </div>
 
@@ -85,6 +86,12 @@ document.querySelectorAll('.tab[data-t]').forEach(t => t.onclick = () => {
   history.replaceState(null, '', '/mkt?type=' + curType);
   loadView(null);
 });
+const bf = $('btnFull');
+if (bf) bf.onclick = () => {
+  const f = $('viewFrame');
+  if (document.fullscreenElement) document.exitFullscreen();
+  else f.requestFullscreen().catch(()=>{});
+};
 loadView(curRid);
 </script>
 {% endblock %}
