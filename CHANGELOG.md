@@ -4,6 +4,14 @@
 
 ## [未发布] 第二阶段 · 板块温度计（开发中）
 
+### S2.1-B 数据补全 - 2026-10-16
+- viewer.py: years参数只截断主图(K线/情绪分), 附图(涨停/涨跌/炸板/接力)全量嵌入;
+  统一全量日期轴+主图null填充+dataZoom默认近2年窗口可拖全历史
+- 涨跌家数历史回补: tushare daily API → mood_raw.up/down_count, 2018-01-02起2130日
+  (锚点验证: 2020-07-09 3443↑/421↓ ✓ 2024-10-08 5030↑/291↓ ✓)
+- 主链增量: fetch_breadth_today_from_tushare(1请求/日)
+- 修复: ISO日期转换(同ts-backfill bug)、daily_basic→daily(pct_chg字段)
+
 ### S8 增强 - 2026-10-16 · 第二阶段完成
 - fflow 资金流分量入模: 板块主力净流入60日分位(权重5%, 权重微调 pos 7→5/bias60 5→4/vr 8→9/
   zt_share 6→5/ud_ratio 6→4); 近期有值, 早期自动降权
