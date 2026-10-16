@@ -152,6 +152,12 @@ def datasets() -> list:
                         "rows": rows or 0, "first": None, "last": last,
                         "health": "ok" if _stale_days(last) <= 7 else "warn",
                         "note": f"{codes or 0} 板块·约最近120日·周频刷新"})
+            rows, codes, last = con.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT code), MAX(date) FROM sector_scores").fetchone()
+            out.append({"code": "sector_scores", "name": "板块温度(S6)", "source": "本系统计算",
+                        "rows": rows or 0, "first": None, "last": last,
+                        "health": "ok" if _stale_days(last) <= 4 else "warn",
+                        "note": f"{codes} 板块纵向温度+横向排名"})
         except sqlite3.Error:
             pass                    # 板块表未建(旧库)时跳过该组
 

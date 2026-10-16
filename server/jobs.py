@@ -213,11 +213,14 @@ def _run(cmd, append, cwd=CORE, env_extra=None):
 # ---------------------------------------------------------------- 任务定义
 
 def task_update(append):
-    """增量更新: 抓取(指数+涨停池) → 重算评分"""
+    """增量更新: 抓取(指数+涨停池+板块) → 重算评分(大盘+板块温度)"""
     rc = _run([sys.executable, "-u", "fetch_daily.py"], append)
     if rc:
         return rc
-    return _run([sys.executable, "-u", "score.py"], append)
+    rc = _run([sys.executable, "-u", "score.py"], append)
+    if rc:
+        return rc
+    return _run([sys.executable, "-u", "sector.py", "calc"], append)
 
 
 def _slug(name: str) -> str:

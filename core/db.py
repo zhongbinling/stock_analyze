@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS margin_daily(        -- 融资融券汇总(tushare, �
   date TEXT PRIMARY KEY,
   rzye REAL, rzmre REAL, rqye REAL, rzrqye REAL,   -- 全市场合计(亿→元)
   sse_rzrqye REAL, szse_rzrqye REAL);
+
+CREATE TABLE IF NOT EXISTS sector_scores(       -- 板块温度结果(S6, 重算整表重建)
+  date TEXT, code TEXT,
+  score REAL,            -- 纵向温度 -100~100
+  rank_pct REAL,         -- 横向热度: 当日全板块百分位 0~100
+  stage TEXT, components TEXT,   -- JSON分量明细
+  PRIMARY KEY(date, code));
 """
 
 
