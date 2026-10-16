@@ -270,8 +270,9 @@ def _def_row(vd: ViewDef) -> dict:
             "params": {"weights": w, "window": p.get("window", 250),
                        "pool_min_periods": p.get("pool_min_periods", 60),
                        "years": p.get("years")},
-            "wsum": round(sum(w.values()), 3),
-            "wtop": " ".join(f"{k}:{v:.0%}" for k, v in top),
+            "wsum": 1.0 if (vd.type == "sector_heat" and not w) else round(sum(w.values()), 3),
+            "wtop": "板块温度权重→config" if (vd.type == "sector_heat") else
+                    " ".join(f"{k}:{v:.0%}" for k, v in top),
             "updated": vd.updated_at.strftime("%m-%d %H:%M") if vd.updated_at else ""}
 
 

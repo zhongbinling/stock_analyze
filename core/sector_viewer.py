@@ -121,7 +121,7 @@ background:var(--p);color:var(--i);width:120px}
   <span class="sub" id="mktDate"></span></div>
   <div class="flt">
     <input class="search" id="q" placeholder="搜索板块名">
-    <button class="btn" id="btnAll">全部</button>
+    <button class="btn" id="btnAll">Top 80</button>
     <button class="btn" id="btnHot">最热</button>
     <button class="btn" id="btnCold">最冷</button>
     <button class="btn" id="themeToggle">◐</button>
@@ -130,6 +130,15 @@ background:var(--p);color:var(--i);width:120px}
 <div id="slider"></div>
 <div id="rank"></div><div id="curve"></div>
 <div id="side"></div>
+<script>
+window.onerror = function(msg, src, line, col) {
+  var d = document.createElement("div");
+  d.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:999;background:#d03b3b;color:#fff;padding:6px 12px;font:12px monospace";
+  d.textContent = "JS错误: " + msg + " @" + line + ":" + col;
+  document.body.appendChild(d);
+  return false;
+};
+</script>
 <script>__ECHARTS__</script>
 <script>
 const D = __PAYLOAD__;
@@ -287,7 +296,7 @@ slideC.on('datazoom', () => {
   const z = opt.dataZoom[0];
   const span = (z.end - z.start) / 100 * (N_D - 1);
   const idx = Math.round(z.end / 100 * (N_D - 1));
-  const newDay = Math.max(0, Math.min(N_D - 1, idx - Math.round(span * 0.08)));
+  const newDay = Math.max(0, Math.min(N_D - 1, idx - 1));   // 对齐滑块右端前1日
   if (newDay !== curDay) { curDay = newDay; drawRank(); updateMkt(); }
 });
 
