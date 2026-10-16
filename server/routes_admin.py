@@ -238,16 +238,25 @@ def api_sources():
 @require_level(7)
 def api_sources_save():
     d = request.get_json(force=True) or {}
+    ts_key_changed = False
     for code, v in (d or {}).items():
         ds = DataSource.query.filter_by(code=code).first()
         if not ds or not isinstance(v, dict):
             continue
         ds.enabled = 1 if v.get("enabled") else 0
         if str(v.get("api_key") or "").strip():
-            ds.api_key = str(v["api_key"]).strip()      # 空值不覆盖已存key
+            key = str(v["api_key"]).strip()       # 空值不覆盖已存key
+            ds.api_key = key
+            if code == "tushare":
+                # 同步写 core 侧 token 文件(采集进程读取), core/data/ 不入git
+                p = ROOT / "core" / "data" / "tushare_token.txt"
+                p.parent.mkdir(exist_ok=True)
+                p.write_text(key, encoding="utf-8")
+                ts_key_changed = True
     db.session.commit()
     audit("sources_update", detail=",".join(d.keys()))
-    return jsonify({"ok": True, "msg": "数据源已保存"})
+    return jsonify({"ok": True, "msg": "数据源已保存"
+                    + ("，tushare token 已同步" if ts_key_changed else "")})
 
 
 # ---------------- 生成规则 CRUD / 执行 ----------------

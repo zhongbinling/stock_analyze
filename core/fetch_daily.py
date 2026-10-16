@@ -117,6 +117,30 @@ def fetch_sectors():
         print(f"[sectors] 失败(不阻塞主链): {type(e).__name__}: {e}")
 
 
+def fetch_calendar():
+    """同步交易日历(tushare, 可选): 过去2年+未来6个月 → calendar 表"""
+    try:
+        import tushare_api
+        if not tushare_api.has_token():
+            return
+        from datetime import date
+        start = (date.today().replace(year=date.today().year - 2)).strftime("%Y%m%d")
+        end = (date.today().replace(year=date.today().year + 1)).strftime("%Y1231")
+        df = tushare_api.trade_cal(start, end)
+        conn = connect()
+        for _, r in df.iterrows():
+            conn.execute(
+                "INSERT INTO calendar(cal_date,is_open,pretrade_date) VALUES(?,?,?) "
+                "ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,"
+                "pretrade_date=excluded.pretrade_date",
+                (r["cal_date"], int(r["is_open"]), r["pretrade_date"]))
+        conn.commit()
+        n_open = conn.execute("SELECT COUNT(*) FROM calendar WHERE is_open=1").fetchone()[0]
+        print(f"[calendar] tushare 交易日历: {len(df)} 天({df['cal_date'].min()}~{df['cal_date'].max()}), 交易日{n_open}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[calendar] 失败(不影响主流程): {type(e).__name__}: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=None, help="池回补起始日 YYYYMMDD (默认取 config pool_start)")
@@ -141,6 +165,7 @@ def main():
         fetch_breadth_today()
     if not args.no_sectors:
         fetch_sectors()
+    fetch_calendar()
 
 
 if __name__ == "__main__":

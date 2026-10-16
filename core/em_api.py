@@ -76,16 +76,57 @@ def _get(url, params, retries=3, headers=None, backoff=1.5):
 def index_kline(secid: str, beg="19900101", end="20500000"):
     """指数日线, 返回 (DataFrame, 数据源)。
     secid: '1.000001'(上证) / '0.399106'(深证综指)
+    三重回退: 东财 push2his → 腾讯 ifzq → tushare(需本地token)
     列: date,open,close,high,low,volume[,amount],amp,pct_chg,chg,turnover
-    腾讯源 amount/turnover 为 NaN(接口不提供)。
-    """
+    回退源 amount/turnover 可能为 NaN。"""
     try:
         df = _em_kline(secid, beg, end)
         if not df.empty:
             return df, "eastmoney"
     except Exception:  # noqa: BLE001
         pass
-    return _tx_kline(_tx_code(secid), beg), "tencent"
+    try:
+        df = _tx_kline(_tx_code(secid), beg)
+        if not df.empty:
+            return df, "tencent"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        df = _ts_kline(secid, beg, end)
+        if not df.empty:
+            return df, "tushare"
+    except Exception:  # noqa: BLE001
+        pass
+    return pd.DataFrame(), "none"
+
+
+_TS_MAP = {"1.000001": "000001.SH", "0.399106": "399106.SZ",
+           "1.000300": "000300.SH", "0.399001": "399001.SZ"}
+
+
+def _ts_kline(secid: str, beg: str, end: str = "20500101") -> pd.DataFrame:
+    """tushare 指数日线回退(第三源); amount 单位千元→元"""
+    import tushare_api
+    ts_code = _TS_MAP.get(secid)
+    if not ts_code:
+        return pd.DataFrame()
+    df = tushare_api.index_daily(ts_code, beg, end)
+    if df.empty:
+        return pd.DataFrame()
+    df = df.sort_values("trade_date")
+    out = pd.DataFrame({
+        "date": pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d"),
+        "open": df["open"].astype(float), "close": df["close"].astype(float),
+        "high": df["high"].astype(float), "low": df["low"].astype(float),
+        "volume": df["vol"].astype(float),
+        "amount": df["amount"].astype(float) * 1000.0,   # 千元 → 元
+    })
+    prev = out["close"].shift(1)
+    out["amp"] = (out["high"] - out["low"]) / prev * 100
+    out["pct_chg"] = (out["close"] / prev - 1) * 100
+    out["chg"] = out["close"].diff()
+    out["turnover"] = float("nan")
+    return out
 
 
 def _em_kline(secid, beg, end):

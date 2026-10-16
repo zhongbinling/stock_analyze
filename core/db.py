@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS sector_fundflow(    -- 板块资金流历史(约最�
 
 CREATE TABLE IF NOT EXISTS sector_alias(       -- THS行业名 → BK码 别名
   name TEXT PRIMARY KEY, code TEXT);
+
+CREATE TABLE IF NOT EXISTS calendar(            -- 交易日历(tushare, 有token时同步)
+  cal_date TEXT PRIMARY KEY,                   -- YYYYMMDD
+  is_open INTEGER,                             -- 1交易日
+  pretrade_date TEXT);
 """
 
 

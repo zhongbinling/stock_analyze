@@ -4,6 +4,15 @@
 
 ## [未发布] 第二阶段 · 板块温度计（开发中）
 
+### tushare 数据源适配 - 2026-10-16
+- core/tushare_api.py: pro 接口薄客户端(token读 core/data/tushare_token.txt 或环境变量, 限频节流)
+- 指数日线三重回退: 东财→腾讯→tushare(_ts_kline, amount千元→元)
+- 交易日历: fetch_calendar 同步近3年+未来日历 → calendar 表;
+  交易日守卫升级为"日历前验优先, 无日历回退行情后验"
+- token 管理闭环: 数据管理页 tushare 保存 → 同步写 core/data/tushare_token.txt(不入git);
+  数据集状态新增"交易日历(tushare)"行
+- 本token实测权限: trade_cal/index_daily/daily_basic可用; limit_list_d需2000积分(未接入, 留待升级)
+
 ### S5 板块数据底座 - 2026-10-16
 - 新表×6: sectors(行业~500细分到三级+概念~500默认停用)/sector_daily/sector_pool_stat/
   sector_fundflow/sector_alias；core/sectors.py 采集编排(清单/增量K线/资金流周频/涨停行业聚合)

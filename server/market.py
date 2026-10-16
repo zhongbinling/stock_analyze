@@ -47,8 +47,20 @@ def latest_index_date():
 
 
 def is_trading_day_today() -> bool:
-    latest = latest_index_date()
-    return bool(latest) and latest == time.strftime("%Y-%m-%d")
+    """交易日判定: 优先 tushare 交易日历(前验); 无日历时回退'行情最新日期==今天'(后验)"""
+    today = time.strftime("%Y%m%d")
+    try:
+        con = _conn()
+        if con is None:
+            return latest_index_date() == time.strftime("%Y-%m-%d")
+        row = con.execute("SELECT is_open FROM calendar WHERE cal_date=?",
+                          (today,)).fetchone()
+        con.close()
+        if row is not None:
+            return bool(row[0])
+    except sqlite3.Error:
+        pass
+    return latest_index_date() == time.strftime("%Y-%m-%d")
 
 
 def _stale_days(last: str) -> int:
@@ -142,6 +154,19 @@ def datasets() -> list:
                         "note": f"{codes or 0} 板块·约最近120日·周频刷新"})
         except sqlite3.Error:
             pass                    # 板块表未建(旧库)时跳过该组
+
+        # ---- tushare 数据源状态 ----
+        try:
+            ts_token = (CORE / "data" / "tushare_token.txt")
+            rows, first, last = con.execute(
+                "SELECT COUNT(*), MIN(cal_date), MAX(cal_date) FROM calendar").fetchone()
+            out.append({"code": "tushare_cal", "name": "交易日历(tushare)", "source": "tushare",
+                        "rows": rows or 0, "first": first, "last": last,
+                        "health": "ok" if rows else "warn",
+                        "note": f"token{'已配置' if ts_token.exists() and ts_token.read_text(encoding='utf-8').strip() else '未配置'}"
+                                "·limit_list_d等需更高积分"})
+        except sqlite3.Error:
+            pass
         return out
     except sqlite3.Error as e:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,
