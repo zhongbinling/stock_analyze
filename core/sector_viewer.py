@@ -146,8 +146,6 @@ td:first-child{text-align:left}
 padding:3px 10px;font-size:11px;cursor:pointer}
 .search{border:1px solid var(--a);border-radius:6px;padding:3px 8px;font-size:11px;
 background:var(--p);color:var(--i);width:110px}
-/* 多板块色板 */
-.pal{display:["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"]}
 </style>
 </head>
 <body>
