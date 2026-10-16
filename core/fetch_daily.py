@@ -194,6 +194,7 @@ def fetch_tushare_mood_today():
                 b(n)["zb"] += 1
         import sectors as _sec
         _sec._write_pool_agg(conn, iso, ind)
+        conn.commit()
         _sec.remap_pending(conn)
         print(f"[ts-mood] tushare当日口径: zt={zt} dt={len(dn)} zb={zb} 行业{len(ind)}")
     except Exception as e:  # noqa: BLE001

@@ -211,7 +211,16 @@ def remap_pending(conn) -> int:
 
 
 def agg_today(conn):
-    """当日涨停池按行业聚合"""
+    """当日涨停池按行业聚合(东财池口径)。
+    有 tushare token 时跳过: 当日行业聚合由主链的 fetch_tushare_mood_today 统一提供
+    (tushare industry 体系完整且与2020起的历史同口径), 避免同日双口径双写。"""
+    try:
+        import tushare_api
+        if tushare_api.has_token():
+            print("[sectors] 当日行业聚合走 tushare 口径(见 [ts-mood]), 跳过东财池聚合")
+            return
+    except ImportError:
+        pass
     d = time.strftime("%Y%m%d")
     try:
         st = em_api.ths_pool_stats(d, with_industry=True)
