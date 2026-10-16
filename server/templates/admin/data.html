@@ -118,11 +118,26 @@ $('btnSources').onclick = async () => {
 function alert_ok(id, msg) { $('schedState').textContent = msg || '已保存'; }
 
 $('btnUpdate').onclick = async () => {
+  const btn = $('btnUpdate');
+  btn.disabled = true;
+  btn.textContent = '⏳ 已提交，等待执行...';
+  $('log').style.display = 'block';
+  $('log').textContent = '正在启动任务...';
+  $('jobState').textContent = '';
   try {
     const r = await api('/admin/api/update', {method: 'POST'});
-    if (!r.ok) { alert(r.msg); return; }
+    if (!r.ok) {
+      btn.disabled = false;
+      btn.textContent = '增量更新数据（抓取＋重算评分）';
+      $('log').textContent = r.msg || '提交失败';
+      return;
+    }
     poll(true);
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = '增量更新数据（抓取＋重算评分）';
+    $('log').textContent = '提交失败: ' + e.message;
+  }
 };
 
 let pollTimer = null;
@@ -130,15 +145,22 @@ async function poll(quick) {
   let j;
   try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
   $('schedState').textContent = '调度器: ' + j.scheduler;
+  const btn = $('btnUpdate');
   if (j.running) {
     $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})`;
     $('log').style.display = 'block';
     $('log').textContent = j.running.log || '(等待输出…)';
+    btn.disabled = true;
+    btn.textContent = '⏳ 任务执行中...';
   } else if (j.queued > 0) {
     $('jobState').textContent = `排队中 ×${j.queued}`;
     $('log').style.display = 'block';
+    btn.disabled = true;
+    btn.textContent = '⏳ 排队中...';
   } else {
     $('jobState').textContent = '空闲';
+    btn.disabled = false;
+    btn.textContent = '增量更新数据（抓取＋重算评分）';
   }
   $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th></tr>' +
     (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(t.target)}</td>
