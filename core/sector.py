@@ -64,7 +64,7 @@ def load_frames(conn):
     daily = pd.read_sql(
         "SELECT d.code AS code, d.date, d.open, d.close, d.high, d.low, d.amount, "
         "d.up_count, d.down_count FROM sector_daily d JOIN sectors s ON d.code=s.code "
-        "WHERE s.kind='industry' AND s.enabled=1", conn, parse_dates=["date"])
+        "WHERE s.enabled=1", conn, parse_dates=["date"])
     pool = pd.read_sql(
         "SELECT date,code,zt_count,dt_count,lb_max,lb2_count FROM sector_pool_stat "
         "WHERE code LIKE 'BK%'", conn, parse_dates=["date"])

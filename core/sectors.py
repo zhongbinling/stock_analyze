@@ -51,8 +51,9 @@ def refresh_lists(conn) -> dict:
 
 
 def _enabled_industries(conn) -> list:
+    """所有已启用的板块(行业+概念), 用于日线/资金流采集"""
     return [r[0] for r in conn.execute(
-        "SELECT code FROM sectors WHERE kind='industry' AND enabled=1 ORDER BY code")]
+        "SELECT code FROM sectors WHERE enabled=1 ORDER BY code")]
 
 
 # ---------------------------------------------------------------- 日线/资金流
