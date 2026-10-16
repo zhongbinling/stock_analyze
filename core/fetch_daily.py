@@ -90,16 +90,19 @@ def fetch_pools(cfg, dates, force=False):
     print(f"[pools] 完成, 成功 {ok} 天")
 
 
-def _est_zt_count(df):
-    """从 daily(pct_chg) 估算涨停/跌停家数(按板块规则)"""
+def _est_zt_count(df, date_iso):
+    """从 daily(pct_chg) 估算涨停/跌停家数(按板块规则, 日期感知)
+    创业板2020-08-24前为10%制, 之后为20%制"""
     import pandas as pd
     codes = df["ts_code"].astype(str)
     pct = pd.to_numeric(df["pct_chg"], errors="coerce")
     main = codes.str.startswith(("60", "00")) & ~codes.str.startswith(("68", "8", "4"))
     cyb = codes.str.startswith("30")
     kcb = codes.str.startswith("68")
-    zt = (main & (pct >= 9.8)) | (cyb & (pct >= 19.8)) | (kcb & (pct >= 19.8))
-    dt = (main & (pct <= -9.8)) | (cyb & (pct <= -19.8)) | (kcb & (pct <= -19.8))
+    # 创业板阈值: 2020-08-24 改革前 10%, 之后 20%
+    cyb_th = 9.8 if date_iso < "2020-08-24" else 19.8
+    zt = (main & (pct >= 9.8)) | (cyb & (pct >= cyb_th)) | (kcb & (pct >= 19.8))
+    dt = (main & (pct <= -9.8)) | (cyb & (pct <= -cyb_th)) | (kcb & (pct <= -19.8))
     return int(zt.sum()), int(dt.sum())
 
 
@@ -131,7 +134,7 @@ def backfill_zt_est(start="20120101"):
                     break
                 continue
             empty = 0
-            zt, dt_ = _est_zt_count(df)
+            zt, dt_ = _est_zt_count(df, d)
             if zt > 0 or dt_ > 0:
                 upsert_mood(conn, d, zt_count=zt, dt_count=dt_, zt_source="est")
         except Exception as e:  # noqa: BLE001
