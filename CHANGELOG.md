@@ -4,6 +4,17 @@
 
 ## [未发布] 第二阶段 · 板块温度计（开发中）
 
+### tushare 完整数据接入(5100积分) - 2026-10-16
+- limit_list_d 涨跌停名单(2020年起): 历史回补 mood_raw 1642日(2020-01-02起, 不覆盖THS段)+
+  sector_pool_stat 行业聚合 64826行(自带industry字段, 板块涨停历史从1个月扩展到近7年)
+- 当日主链新增 fetch_tushare_mood_today: 每日以tushare口径刷新mood+板块聚合(与THS互为校验,
+  逐步统一口径); fetch_margin: 两融汇总2020-05起1555日(最新2.50万亿)
+- 板块全量回补完成(东财解封后): 清单1000(行业493+概念507)、日线102万行(2018起)、
+  资金流493板块; 行业名映射 BK105/@98(去Ⅰ/Ⅱ/Ⅲ后缀匹配)
+- 锚点回放 8/8 全中(扩展窗口后: 2024-02-05 -57.1 / 2024-10-08 +80.2)
+- 修复: ts-backfill 起始日YYYYMMDD未转ISO(2020年被字符串比较误排除); industry NaN穿透
+  _resolve/_write_pool_agg 类型防御
+
 ### tushare 数据源适配 - 2026-10-16
 - core/tushare_api.py: pro 接口薄客户端(token读 core/data/tushare_token.txt 或环境变量, 限频节流)
 - 指数日线三重回退: 东财→腾讯→tushare(_ts_kline, amount千元→元)

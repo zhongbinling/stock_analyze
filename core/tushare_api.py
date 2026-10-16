@@ -73,12 +73,23 @@ def index_daily(ts_code: str, start: str, end: str = "20500101") -> pd.DataFrame
 
 
 def limit_list_d(trade_date: str) -> pd.DataFrame:
-    """涨跌停名单(单日): ts_code,name,limit_type(U涨停/D跌停/Z炸板)...
-    注意: 该接口对积分有要求"""
+    """涨跌停名单(单日, 2020年起): limit列 U涨停/D跌停/Z炸板, industry行业,
+    limit_times连板数, open_times打开次数, up_stat几天几板"""
     return call("limit_list_d",
-                "trade_date,ts_code,name,limit_type,fd_amount,first_time,"
-                "last_time,open_times,up_stat,limit_times",
+                "trade_date,ts_code,industry,name,limit,pct_chg,fd_amount,"
+                "first_time,last_time,open_times,up_stat,limit_times",
                 trade_date=trade_date)
+
+
+def margin(start: str, end: str = "") -> pd.DataFrame:
+    """融资融券交易汇总(按交易所, 区间): rzye融资余额/rzmre买入/rzche偿还/
+    rqye融券余额/rzrqye两融余额; exchange_id: SSE/SZSE/BSE"""
+    p = {"start_date": start}
+    if end:
+        p["end_date"] = end
+    return call("margin",
+                "trade_date,exchange_id,rzye,rzmre,rzche,rqye,rqmcl,rzrqye,rqyl",
+                **p)
 
 
 def probe():
@@ -89,16 +100,16 @@ def probe():
         return
     tests = [
         ("trade_cal 交易日历", lambda: trade_cal("20260101", "20260131")),
-        ("index_daily 指数日线", lambda: index_daily("000001.SHY", "20260101", "20260110")
-         if False else index_daily("000001.SH", "20260101", "20260110")),
+        ("index_daily 指数日线", lambda: index_daily("000001.SH", "20260101", "20260110")),
         ("limit_list_d 涨跌停名单", lambda: limit_list_d("20261015")),
+        ("margin 融资融券汇总", lambda: margin("20261010", "20261015")),
         ("daily_basic 每日指标", lambda: call("daily_basic", "ts_code,close,turnover_rate",
                                           trade_date="20261015")),
     ]
     for name, fn in tests:
         try:
             df = fn()
-            print(f"  ✓ {name}: {len(df)} 行 | 字段: {list(df.columns)[:5]}")
+            print(f"  ✓ {name}: {len(df)} 行 | 字段: {list(df.columns)[:6]}")
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {name}: {e}")
 

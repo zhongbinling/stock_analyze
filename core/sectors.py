@@ -145,17 +145,34 @@ def refresh_fundflow(conn, force=False):
 # ---------------------------------------------------------------- 涨停行业聚合
 
 def _resolve(conn, name: str):
-    """THS行业名 → BK码: 先板块名直连, 再别名表"""
+    """行业名 → BK码: 精确匹配 → 去Ⅰ/Ⅱ/Ⅲ后缀(tushare申万风格名) → 别名表;
+    name 可能为 None/NaN(float), 先做类型防御"""
+    if not name or not isinstance(name, str):
+        return None
     row = conn.execute("SELECT code FROM sectors WHERE name=? AND kind='industry'",
                        (name,)).fetchone()
     if row:
         return row[0]
+    base = name.rstrip("ⅠⅡⅢ").strip()
+    if base and base != name:
+        row = conn.execute("SELECT code FROM sectors WHERE name=? AND kind='industry'",
+                           (base,)).fetchone()
+        if row:
+            return row[0]
     row = conn.execute("SELECT code FROM sector_alias WHERE name=?", (name,)).fetchone()
-    return row[0] if row else None
+    if row:
+        return row[0]
+    if base and base != name:
+        row = conn.execute("SELECT code FROM sector_alias WHERE name=?", (base,)).fetchone()
+        if row:
+            return row[0]
+    return None
 
 
 def _write_pool_agg(conn, date_iso: str, ind: dict):
     for name, st in ind.items():
+        if not isinstance(name, str) or not name:      # None/NaN(float)防御
+            continue
         code = _resolve(conn, name)
         if not code:
             # 清单未入库(如东财clist被限流)时以 @行业名 落库, 待 remap_pending 重映射

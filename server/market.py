@@ -145,7 +145,7 @@ def datasets() -> list:
             out.append({"code": "sector_pool", "name": "板块涨停聚合(THS行业)", "source": "同花顺",
                         "rows": rows or 0, "first": None, "last": last,
                         "health": "ok" if _stale_days(last) <= 4 else "warn",
-                        "note": "东财池口径·历史约1个月起逐日积累"})
+                        "note": "tushare行业聚合·2020起(东财池每日增量补充)"})
             rows, codes, last = con.execute(
                 "SELECT COUNT(*), COUNT(DISTINCT code), MAX(date) FROM sector_fundflow").fetchone()
             out.append({"code": "sector_fflow", "name": "板块资金流", "source": "东财fflow",
@@ -165,6 +165,15 @@ def datasets() -> list:
                         "health": "ok" if rows else "warn",
                         "note": f"token{'已配置' if ts_token.exists() and ts_token.read_text(encoding='utf-8').strip() else '未配置'}"
                                 "·limit_list_d等需更高积分"})
+            rows, first, last = con.execute(
+                "SELECT COUNT(*), MIN(date), MAX(date) FROM margin_daily").fetchone()
+            latest_rzrq = con.execute(
+                "SELECT rzrqye FROM margin_daily ORDER BY date DESC LIMIT 1").fetchone()
+            out.append({"code": "margin", "name": "融资融券(tushare)", "source": "tushare",
+                        "rows": rows or 0, "first": first, "last": last,
+                        "health": "ok" if (last and _stale_days(last) <= 7) else "warn",
+                        "note": (f"最新两融余额 {(latest_rzrq[0] or 0) / 1e12:.2f}万亿" if latest_rzrq and latest_rzrq[0] else "--")
+                                + "·每日随更新链增量"})
         except sqlite3.Error:
             pass
         return out

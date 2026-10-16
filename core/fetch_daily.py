@@ -141,6 +141,191 @@ def fetch_calendar():
         print(f"[calendar] 失败(不影响主流程): {type(e).__name__}: {e}")
 
 
+def fetch_tushare_mood_today():
+    """tushare 当日涨停结构 upsert(主链内): 统一 mood_raw/板块聚合口径为 tushare,
+    与 THS 互为校验; 失败不影响 THS 主源"""
+    try:
+        import tushare_api
+        if not tushare_api.has_token():
+            return
+        import pandas as pd
+        d = time.strftime("%Y%m%d")
+        df = tushare_api.limit_list_d(d)
+        if df.empty:
+            return                       # 盘前/非交易日
+        conn = connect()
+        iso = time.strftime("%Y-%m-%d")
+        prev = conn.execute(
+            "SELECT zt_count FROM mood_raw WHERE date<? AND zt_count IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1", (iso,)).fetchone()
+        u = df[df["limit"] == "U"]
+        dn = df[df["limit"] == "D"]
+        z = df[df["limit"] == "Z"]
+        lb = pd.to_numeric(u.get("limit_times"), errors="coerce")
+        lb2 = int((lb >= 2).sum()) if len(lb) else 0
+        zb = len(z)
+        zt = len(u)
+        upsert_mood(conn, iso, zt_count=zt, dt_count=len(dn), zb_count=zb,
+                    zb_rate=round(zb / (zt + zb) * 100, 1) if (zt + zb) else 0.0,
+                    lb_max=int(lb.max()) if lb.notna().any() else 0, lb2_count=lb2,
+                    jl_rate=round(lb2 / prev[0] * 100, 1) if prev and prev[0] else None,
+                    yzt_count=prev[0] if prev else None)
+        # 板块聚合(tushare industry)
+        ind = {}
+        def b(n):
+            return ind.setdefault(n, {"zt": 0, "dt": 0, "zb": 0, "lb_max": 0, "lb2": 0})
+        for _, r in u.iterrows():
+            n = r.get("industry")
+            if isinstance(n, str) and n:
+                lv = r.get("limit_times")
+                lv = float(lv) if lv == lv else 0
+                bb = b(n)
+                bb["zt"] += 1
+                bb["lb_max"] = max(bb["lb_max"], int(lv))
+                if lv >= 2:
+                    bb["lb2"] += 1
+        for _, r in dn.iterrows():
+            n = r.get("industry")
+            if isinstance(n, str) and n:
+                b(n)["dt"] += 1
+        for _, r in z.iterrows():
+            n = r.get("industry")
+            if isinstance(n, str) and n:
+                b(n)["zb"] += 1
+        import sectors as _sec
+        _sec._write_pool_agg(conn, iso, ind)
+        _sec.remap_pending(conn)
+        print(f"[ts-mood] tushare当日口径: zt={zt} dt={len(dn)} zb={zb} 行业{len(ind)}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[ts-mood] 失败(不影响主流程): {type(e).__name__}: {e}")
+
+
+def fetch_margin():
+    """融资融券汇总(tushare, 可选): 增量/首次回补(2020起) → margin_daily"""
+    try:
+        import tushare_api
+        if not tushare_api.has_token():
+            return
+        conn = connect()
+        last = conn.execute("SELECT MAX(date) FROM margin_daily").fetchone()[0]
+        start = _next_ymd(last) if last else "20200101"
+        today = time.strftime("%Y%m%d")
+        total = 0
+        while start <= today:
+            df = tushare_api.margin(start, today)
+            if df.empty:
+                break
+            for d, g in df.groupby("trade_date"):
+                iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+                tot = g.sum(numeric_only=True)
+                sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
+                szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
+                conn.execute(
+                    "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
+                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+                    "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
+                    "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
+                    (iso, float(tot["rzye"]), float(tot["rzmre"]),
+                     float(tot["rqye"]), float(tot["rzrqye"]),
+                     float(sse) if sse else None, float(szse) if szse else None))
+                total += 1
+            conn.commit()
+            last_d = df["trade_date"].max()
+            if last_d >= today:
+                break
+            start = _next_ymd(f"{last_d[:4]}-{last_d[4:6]}-{last_d[6:8]}")   # 分页续拉
+        print(f"[margin] 两融汇总: 本次写入 {total} 日")
+    except Exception as e:  # noqa: BLE001
+        print(f"[margin] 失败(不影响主流程): {type(e).__name__}: {e}")
+
+
+def _next_ymd(iso: str) -> str:
+    from datetime import date, timedelta
+    y, m, d = map(int, iso.split("-"))
+    return (date(y, m, d) + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def backfill_tushare(start: str = "20200102"):
+    """tushare limit_list_d 历史回补(2020年起):
+    mood_raw 涨停结构(不覆盖已有THS段) + sector_pool_stat 行业聚合(@名落库, 自动remap)"""
+    import tushare_api
+    if not tushare_api.has_token():
+        print("[ts-backfill] 无 token, 跳过")
+        return
+    conn = connect()
+    cfg = load_cfg()
+    s = str(start)
+    iso_start = s if "-" in s else f"{s[:4]}-{s[4:6]}-{s[6:8]}"   # 支持 YYYYMMDD/ISO
+    dates = trading_dates(conn, cfg["index"]["primary"], start=iso_start)
+    have_mood = {r[0] for r in conn.execute(
+        "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL")}
+    have_pool = {r[0] for r in conn.execute("SELECT DISTINCT date FROM sector_pool_stat")}
+    todo = [d for d in dates if d not in have_mood or d not in have_pool]
+    if not todo:
+        print("[ts-backfill] 无缺失日期")
+        return
+    print(f"[ts-backfill] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo) * 0.8 / 60:.0f} 分钟")
+    import sectors as _sec
+    import pandas as pd
+    empty, prev_u, t0 = 0, None, time.time()
+    for i, d in enumerate(todo, 1):
+        try:
+            df = tushare_api.limit_list_d(d.replace("-", ""))
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ {d}: {e}")
+            time.sleep(2)
+            continue
+        if df.empty:
+            empty += 1
+            if empty >= 5:
+                print("  ✗✗ 连续5天空数据(超出tushare历史), 中断")
+                break
+            continue
+        empty = 0
+        u = df[df["limit"] == "U"]
+        dn = df[df["limit"] == "D"]
+        z = df[df["limit"] == "Z"]
+
+        if d not in have_mood:
+            zt, dt_n, zb = len(u), len(dn), len(z)
+            lb = pd.to_numeric(u.get("limit_times"), errors="coerce")
+            lb_max = int(lb.max()) if lb.notna().any() else 0
+            lb2 = int((lb >= 2).sum()) if len(lb) else 0
+            zb_rate = round(zb / (zt + zb) * 100, 1) if (zt + zb) else 0.0
+            jl = round(lb2 / prev_u * 100, 1) if prev_u else None
+            upsert_mood(conn, d, zt_count=zt, dt_count=dt_n, zb_count=zb,
+                        zb_rate=zb_rate, lb_max=lb_max, lb2_count=lb2,
+                        jl_rate=jl, yzt_count=prev_u)
+        if d not in have_pool:
+            def b(n):
+                return ind.setdefault(n, {"zt": 0, "dt": 0, "zb": 0, "lb_max": 0, "lb2": 0})
+            ind = {}
+            for _, r in u.iterrows():
+                if not r.get("industry"):
+                    continue
+                lv = r.get("limit_times")
+                lv = float(lv) if lv == lv else 0
+                bb = b(r["industry"])
+                bb["zt"] += 1
+                bb["lb_max"] = max(bb["lb_max"], int(lv))
+                if lv >= 2:
+                    bb["lb2"] += 1
+            for _, r in dn.iterrows():
+                if r.get("industry"):
+                    b(r["industry"])["dt"] += 1
+            for _, r in z.iterrows():
+                if r.get("industry"):
+                    b(r["industry"])["zb"] += 1
+            _sec._write_pool_agg(conn, d, ind)
+        prev_u = len(u)
+        if i % 30 == 0:
+            conn.commit()
+            print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s 最新 {d}")
+    conn.commit()
+    _sec.remap_pending(conn)
+    print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=None, help="池回补起始日 YYYYMMDD (默认取 config pool_start)")
@@ -149,6 +334,8 @@ def main():
     ap.add_argument("--force", action="store_true", help="忽略断点重新抓池")
     ap.add_argument("--no-breadth", action="store_true", help="跳过当日涨跌家数")
     ap.add_argument("--no-sectors", action="store_true", help="跳过板块数据(S5)")
+    ap.add_argument("--ts-backfill", nargs="?", const="20200102", metavar="START",
+                    help="tushare历史回补(涨跌停→mood_raw+板块聚合), 默认20200102起")
     args = ap.parse_args()
 
     cfg = load_cfg()
@@ -166,6 +353,10 @@ def main():
     if not args.no_sectors:
         fetch_sectors()
     fetch_calendar()
+    fetch_margin()
+    fetch_tushare_mood_today()
+    if args.ts_backfill:
+        backfill_tushare(args.ts_backfill)
 
 
 if __name__ == "__main__":

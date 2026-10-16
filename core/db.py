@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS calendar(            -- 交易日历(tushare, 有toke
   cal_date TEXT PRIMARY KEY,                   -- YYYYMMDD
   is_open INTEGER,                             -- 1交易日
   pretrade_date TEXT);
+
+CREATE TABLE IF NOT EXISTS margin_daily(        -- 融资融券汇总(tushare, 全市场+分所)
+  date TEXT PRIMARY KEY,
+  rzye REAL, rzmre REAL, rqye REAL, rzrqye REAL,   -- 全市场合计(亿→元)
+  sse_rzrqye REAL, szse_rzrqye REAL);
 """
 
 
