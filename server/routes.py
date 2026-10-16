@@ -165,7 +165,9 @@ def mkt():
 @require_level(1)
 def mkt_latest():
     from server.models import ViewRun
-    q = (ViewRun.query.filter_by(published=1, env="prod", vtype="sentiment", status="done")
+    vtype = request.args.get("type", "sentiment")
+    q = (ViewRun.query.filter_by(published=1, env="prod", status="done")
+         .filter(ViewRun.vtype == vtype)
          .filter(ViewRun.file_path.isnot(None)))
     rid = request.args.get("rid", type=int)
     r = q.filter_by(id=rid).first() if rid else q.order_by(ViewRun.id.desc()).first()

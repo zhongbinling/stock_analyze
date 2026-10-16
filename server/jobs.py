@@ -261,9 +261,14 @@ def task_generate(def_id, scheduled=False):
         tmp.parent.mkdir(exist_ok=True)
         tmp.write_text(yaml.safe_dump(override, allow_unicode=True), encoding="utf-8")
 
-        cmd = [sys.executable, "-u", "viewer.py", "--out", str(out)]
-        if params.get("years"):
-            cmd += ["--years", str(int(params["years"]))]
+        if vd.type == "sector_heat":
+            cmd = [sys.executable, "-u", "sector_viewer.py", "--out", str(out)]
+            if params.get("years"):
+                cmd += ["--years", str(int(params["years"]))]
+        else:
+            cmd = [sys.executable, "-u", "viewer.py", "--out", str(out)]
+            if params.get("years"):
+                cmd += ["--years", str(int(params["years"]))]
         append(f"生成规则: {vd.name} [{vd.env}] 数据日期 {data_date}")
         rc = _run(cmd, append, env_extra={"SENTIMENT_OVERRIDE": tmp})
         try:

@@ -265,7 +265,7 @@ def _def_row(vd: ViewDef) -> dict:
     p = json.loads(vd.params_json or "{}")
     w = p.get("weights") or {}
     top = sorted(w.items(), key=lambda kv: -kv[1])[:3]
-    return {"id": vd.id, "name": vd.name, "env": vd.env, "type": vd.type,
+    return {"id": vd.id, "name": vd.name, "env": vd.env, "type": vd.type or "sentiment",
             "auto_publish": bool(vd.auto_publish), "enabled": bool(vd.enabled),
             "params": {"weights": w, "window": p.get("window", 250),
                        "pool_min_periods": p.get("pool_min_periods", 60),
@@ -328,16 +328,19 @@ def api_def_create():
     from server.jobs import component_meta
     name = str(d.get("name", "")).strip()
     env = d.get("env")
+    vtype = d.get("type", "sentiment")
     if not (2 <= len(name) <= 32):
         return jsonify({"ok": False, "msg": "名称需2~32字"}), 400
     if env not in ("test", "prod"):
         return jsonify({"ok": False, "msg": "环境需为 test/prod"}), 400
+    if vtype not in ("sentiment", "sector_heat"):
+        return jsonify({"ok": False, "msg": "类型需为 sentiment/sector_heat"}), 400
     if ViewDef.query.filter_by(name=name).first():
         return jsonify({"ok": False, "msg": f"规则名 {name} 已存在, 请换名"}), 400
     params, err = _validate_params(d, {c[0] for c in component_meta()})
     if err:
         return jsonify({"ok": False, "msg": err}), 400
-    vd = ViewDef(name=name, env=env, type="sentiment",
+    vd = ViewDef(name=name, env=env, type=vtype,
                  params_json=json.dumps(params, ensure_ascii=False),
                  auto_publish=1 if d.get("auto_publish") else 0)
     db.session.add(vd)

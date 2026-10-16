@@ -17,6 +17,9 @@
   <form id="defForm" onsubmit="return false">
     <div class="row-flex">
       <span>名称 <input class="input" id="fName" placeholder="如 情绪视图·保守版"></span>
+      <span>类型
+        <select class="input" id="fType"><option value="sentiment">情绪视图</option><option value="sector_heat">板块温度</option></select>
+      </span>
       <span>环境
         <select class="input" id="fEnv"><option value="test">test 测试</option><option value="prod">prod 产线</option></select>
       </span>
@@ -26,7 +29,7 @@
       <label class="chk"><input type="checkbox" id="fPublish"> 自动发布(仅产线生效)</label>
       <label class="chk"><input type="checkbox" id="fEnabled" checked> 启用</label>
     </div>
-    <h3 class="sub-h">分量权重</h3>
+    <h3 class="sub-h" id="wTitle">分量权重 <span class="hint" id="wNote"></span></h3>
     <div class="wgrid" id="wGrid"></div>
     <div class="row-flex">
       <span class="hint">权重和 <b id="wSum">--</b></span>
@@ -67,7 +70,7 @@ async function loadDefs() {
     const d = await api('/admin/api/defs');
     defsCache = d.defs;
     COMPONENTS = d.components;
-    $('defTable').innerHTML = '<tr><th>规则</th><th>环境</th><th>算法</th><th>权重摘要</th><th>窗口/年限</th><th>发布</th><th>状态</th><th>操作</th></tr>' +
+    $('defTable').innerHTML = '<tr><th>规则</th><th>类型</th><th>环境</th><th>算法</th><th>权重摘要</th><th>窗口/年限</th><th>发布</th><th>状态</th><th>操作</th></tr>' +
       d.defs.map(v => `<tr>
         <td><b>${esc(v.name)}</b></td>
         <td>${v.env === 'prod' ? '<span class="badge badge-ok">prod</span>' : '<span class="badge">test</span>'}</td>
@@ -81,7 +84,7 @@ async function loadDefs() {
           <button class="btn small" onclick="editDef(${v.id})">编辑</button>
           <button class="btn small" onclick="toggleDef(${v.id})">${v.enabled ? '停用' : '启用'}</button>
           <button class="btn small danger" onclick="delDef(${v.id})">删除</button>
-        </td></tr>`).join('') || '<tr><td colspan="8" class="hint">暂无规则, 点下方新建</td></tr>';
+        </td></tr>`).join('') || '<tr><td colspan="9" class="hint">暂无规则, 点下方新建</td></tr>';
     if (!$('btnNew')) {
       const b = document.createElement('button');
       b.className = 'btn'; b.id = 'btnNew'; b.textContent = '＋ 新建规则';
@@ -104,6 +107,11 @@ function collectWeights() {
   document.querySelectorAll('#wGrid input[data-w]').forEach(i => { if (i.value !== '') w[i.dataset.w] = parseFloat(i.value); });
   return w;
 }
+document.getElementById('fType').addEventListener('change', () => {
+    const sh = document.getElementById('fType').value === 'sector_heat';
+    document.getElementById('wNote').textContent = sh ? '(板块温度权重在 core/config.yaml 的 sector_weights)' : '';
+    document.getElementById('wGrid').style.opacity = sh ? 0.35 : 1;
+  });
 function updateSum() {
   let s = 0; document.querySelectorAll('#wGrid input[data-w]').forEach(i => s += parseFloat(i.value) || 0);
   $('wSum').textContent = s.toFixed(2);
@@ -112,6 +120,7 @@ function openEditor(v) {
   editingId = v ? v.id : null;
   $('editorTitle').textContent = v ? `编辑规则: ${v.name}` : '新建生成规则';
   $('fName').value = v ? v.name : '';
+  $('fType').value = v ? (v.type || 'sentiment') : 'sentiment';
   $('fEnv').value = v ? v.env : 'test';
   $('fWindow').value = v ? v.params.window : 250;
   $('fPmp').value = v ? v.params.pool_min_periods : 60;
@@ -128,7 +137,7 @@ $('btnCancel').onclick = () => { $('editorCard').style.display = 'none'; };
 $('btnDefaults').onclick = () => buildWGrid(null);
 $('btnSave').onclick = async () => {
   const body = {
-    name: $('fName').value.trim(), env: $('fEnv').value,
+    name: $('fName').value.trim(), env: $('fEnv').value, type: $('fType').value,
     weights: collectWeights(), window: parseInt($('fWindow').value) || 250,
     pool_min_periods: parseInt($('fPmp').value) || 60,
     years: $('fYears').value ? parseInt($('fYears').value) : null,

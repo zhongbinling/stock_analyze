@@ -4,6 +4,13 @@
 
 ## [未发布] 第二阶段 · 板块温度计（开发中）
 
+### S7 板块温度视图与管理集成 - 2026-10-16
+- core/sector_viewer.py: 自包含HTML(2.7MB)——大盘情绪对照条+日期滑块+当日温度排行(条形热红冷蓝)+
+  板块温度曲线(点击联动)+侧栏分量明细(双向条形); 搜索/最热/最冷筛选; 昼夜主题
+- view_defs type 新增 sector_heat(topN/years参数); task_generate 按type分发
+- 数据生成页: 类型选择+类型列+板块温度权重提示; /mkt Tab切换(情绪|板块温度) + latest API type参数
+- 验收: 产线规则→生成→自动发布→匿名/mkt切Tab可见; 无头浏览器渲染(canvas×2+无JS错误)
+
 ### S6 板块温度引擎 - 2026-10-16
 - core/sector.py: 纵向温度(13分量五组, 250日分位→加权→EMA→限幅, 与大盘情绪同构)+
   横向热度(当日全板块百分位); calc/report/anchors/remap CLI

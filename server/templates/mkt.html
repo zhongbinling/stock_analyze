@@ -4,8 +4,8 @@
 <section class="card">
   <div class="row-flex spread">
     <div class="tabs" style="margin:0">
-      <span class="tab active">情绪视图</span>
-      <span class="tab disabled" title="后续版本">更多类型(规划中)</span>
+      <span class="tab active" data-t="sentiment">情绪视图</span>
+      <span class="tab" data-t="sector_heat">板块温度</span>
     </div>
     <div class="row-flex" style="margin:0">
       <span class="hint" id="vInfo">加载中…</span>
@@ -37,10 +37,11 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const url = new URL(location.href);
 let curRid = url.searchParams.get('rid') ? parseInt(url.searchParams.get('rid')) : null;
+let curType = url.searchParams.get('type') || 'sentiment';
 
 async function loadView(rid) {
   try {
-    const d = await fetch('/mkt/api/latest' + (rid ? '?rid=' + rid : '')).then(r => r.json());
+    const d = await fetch('/mkt/api/latest?type=' + curType + (rid ? '&rid=' + rid : '')).then(r => r.json());
     if (d.view) {
       curRid = d.view.rid;
       $('vInfo').innerHTML = `数据日期 <b>${esc(d.view.data_date)}</b> · ${esc(d.view.def_name)} · 发布于 ${esc(d.view.published_at)}`;
@@ -59,7 +60,7 @@ async function toggleHistory() {
   if (p.style.display !== 'none') { p.style.display = 'none'; return; }
   p.style.display = 'block';
   try {
-    const d = await fetch('/mkt/api/views').then(r => r.json());
+    const d = await fetch('/mkt/api/views?type=' + curType).then(r => r.json());
     p.querySelector('tbody').innerHTML = d.views.length
       ? d.views.map(v => `<tr class="hist-row" data-rid="${v.rid}">
           <td>${esc(v.data_date)}</td><td>${esc(v.def_name)}</td>
@@ -76,6 +77,14 @@ async function toggleHistory() {
 const bh = $('btnHistory');
 if (bh) bh.onclick = toggleHistory;
 
+document.querySelectorAll('.tab[data-t]').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab[data-t]').forEach(x => x.classList.remove('active'));
+  t.classList.add('active');
+  curType = t.dataset.t;
+  curRid = null;
+  history.replaceState(null, '', '/mkt?type=' + curType);
+  loadView(null);
+});
 loadView(curRid);
 </script>
 {% endblock %}
