@@ -174,6 +174,12 @@ background:var(--s);border:1px solid var(--g);border-radius:8px;padding:10px 12p
 box-shadow:0 2px 8px rgba(0,0,0,0.08)}
 #side h3{margin:0 0 2px;font-size:12px}
 #side .date{color:var(--m);font-size:10px;margin-bottom:6px}
+#side .sem{font-size:11px;color:var(--i2);margin:2px 0}
+#side .sem.warn{color:#eda100}
+#side table.cmp{margin:2px 0 8px}
+#side table.cmp td:first-child{max-width:86px;overflow:hidden;text-overflow:ellipsis}
+.card .sem{font-size:10px;color:var(--m);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mkt-box .sem{font-size:10px;color:var(--i2)}
 table{border-collapse:collapse;width:100%}
 th,td{padding:1px 3px;border-bottom:1px solid var(--g);font-size:10px;white-space:nowrap}
 th{color:var(--m);font-weight:500}
@@ -221,6 +227,7 @@ background:var(--p);color:var(--i);width:110px}
     <span class="lb">大盘情绪</span>
     <span class="sc" id="mktSc">--</span>
     <span class="lb" id="mktDate"></span>
+    <span class="sem" id="mktSem"></span>
     <div id="mktSpark"></div>
   </div>
 </div>
@@ -270,14 +277,65 @@ function mktAt(di) {
 }
 function scoreAt(di, ci) { return D.mat[di] ? D.mat[di][ci] : null; }
 
+/* ── S3-C: 温度语义引擎 ── */
+// n日前温度差(hover 日期感知); 早期数据不足返回 null
+function deltaAt(di, ci, n) {
+  const v = scoreAt(di, ci), p = scoreAt(di - n, ci);
+  return (v === null || p === null) ? null : v - p;
+}
+// 一句话定性: 温度水平 × 5日趋势
+function semanticOf(v, d5) {
+  const d = d5 === null ? 0 : d5;
+  if (v >= 60 && d <= -10) return '高位回落 · 警惕退潮';
+  if (v >= 60 && d >= 10) return '加速冲顶 · 情绪亢奋';
+  if (v >= 60) return '过热区 · 谨慎追高';
+  if (v >= 40 && d > 0) return '强势升温 · 趋势延续';
+  if (v >= 40) return '强势区 · 动能减弱';
+  if (v >= 20 && d > 5) return '升温发酵 · 关注持续性';
+  if (v >= 20) return '温热区 · 滞涨迹象';
+  if (v > -20) return d > 5 ? '中性回暖' : (d < -5 ? '中性转弱' : '中性震荡');
+  if (v <= -60 && d <= -10) return '恐慌探底 · 关注超跌反弹';
+  if (v <= -60) return '深度冰点 · 左侧观察区';
+  if (v <= -40 && d > 5) return '冰点修复 · 反弹尝试';
+  if (v <= -40) return '偏冷区 · 观望为主';
+  return d > 5 ? '低位回暖' : '持续偏冷';
+}
+function semShort(phrase) { return phrase.split(' · ')[0]; }
+// 量价背离检测(最新日分量交叉) → 提示文本或 null
+// 阈值±50=四分位语义(量能分位<25%且涨幅分位>75%): 正常日~0%触发,
+// 全市场缩量反弹等异常日(如2026-10-16)保留最极端一成(10%/493板)
+function divergenceOf(comps) {
+  if (!comps) return null;
+  const chg = comps['chg'], vd = comps['vol_dir'], ff = comps['fflow'];
+  if (chg === undefined || chg === null) return null;
+  if (vd !== undefined && vd !== null && vd <= -50 && chg >= 50) return '⚠ 缩量上涨 · 量价背离';
+  if (ff !== undefined && ff !== null && ff <= -50 && chg >= 50) return '⚠ 价涨资金流出 · 背离';
+  if (vd !== undefined && vd !== null && vd >= 50 && chg <= -50) return '放量下跌 · 恐慌宣泄';
+  if (ff !== undefined && ff !== null && ff >= 50 && chg <= -50) return '价跌资金流入 · 有承接';
+  return null;
+}
+// 最新日分量(近5日明细中取最大日期)
+function latestComps(ci) {
+  const cd = D.comp[D.codes[ci]];
+  if (!cd) return null;
+  const k = Object.keys(cd).sort().pop();
+  return { date: k, comps: cd[k] || null };
+}
+
 /* ── 大盘情绪更新 ── */
 function updateMkt() {
   const m = mktAt(curDay);
   const el = document.getElementById('mktSc');
-  if (!m || m[1] === null) { el.textContent = '--'; return; }
+  const semEl = document.getElementById('mktSem');
+  if (!m || m[1] === null) { el.textContent = '--'; if (semEl) semEl.textContent = ''; return; }
   el.textContent = (m[1] >= 0 ? '+' : '') + m[1];
   el.style.color = m[1] >= 0 ? 'var(--rd)' : 'var(--bl)';
   document.getElementById('mktDate').textContent = m[0];
+  // S3-C: 大盘语义(mkt序列上的5日差)
+  const mi = D.mkt.lastIndexOf(m);
+  const mPrev = mi >= 5 ? D.mkt[mi - 5] : null;
+  const md5 = (mPrev && mPrev[1] !== null) ? m[1] - mPrev[1] : null;
+  if (semEl) semEl.textContent = semanticOf(m[1], md5);
   const recent = D.mkt.slice(-30);
   sparkC.setOption({
     animation: false,
@@ -296,11 +354,15 @@ function renderCards() {
     const ci = D.codes.indexOf(item.c);
     const isSel = selected.includes(ci);
     const color = isSel ? PALETTE[selected.indexOf(ci)] : null;
+    // S3-C: 卡片短语义
+    const d5 = deltaAt(N_D - 1, ci, 5);
+    const sem = semShort(semanticOf(item.s, d5));
     return `<div class="card ${isSel ? 'sel' : ''}" data-ci="${ci}"
       style="${color ? `border-color:${color}` : ''}">
       <div class="nm">${item.n}</div>
       <div class="sc" style="color:${item.s >= 0 ? 'var(--rd)' : 'var(--bl)'}">${item.s > 0 ? '+' : ''}${item.s}</div>
       <div class="rk">分位${item.r}%</div>
+      <div class="sem">${sem}</div>
     </div>`;
   };
   const hot = document.getElementById('hotCards');
@@ -375,7 +437,13 @@ function drawRank() {
     tooltip: { trigger: 'item', formatter: p => {
       const it = items[p.dataIndex];
       const sel = it && selected.includes(it.ci);
-      return `${p.name}<br/>温度 ${p.value > 0 ? '+' : ''}${p.value}${sel ? '<br/><b>已选对比</b>' : ''}`;
+      // S3-C: 5日变化 + 语义短语
+      const d5 = it ? deltaAt(curDay, it.ci, 5) : null;
+      let h = `${p.name}<br/>温度 ${p.value > 0 ? '+' : ''}${p.value}`;
+      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? '#e34948' : '#2a78d6'}">5日 ${d5 > 0 ? '+' : ''}${d5}</span> · ${semanticOf(p.value, d5)}`;
+      else h += `<br/>${semanticOf(p.value, null)}`;
+      if (sel) h += '<br/><b>已选对比</b>';
+      return h;
     }},
     grid: { left: 10, right: 40, top: 30, bottom: 8, containLabel: true },
     xAxis: { type: 'value', min: -105, max: 105, axisLabel: { color: '#898781', fontSize: 10 },
@@ -492,28 +560,45 @@ function drawCurve() {
   drawSide();
 }
 
-/* ── 分量明细(跟随最后选中的板块) ── */
-// S3-A: hover联动 — 指定板块的分量明细(不改变 selected)
+/* ── 分量明细(统一渲染: hover联动/选中跟随) ── */
+// S3-C: drawSideFor 增加语义头+背离徽标+多选对比摘要; drawSide 复用同一渲染
 function drawSideFor(ci) {
   const side = document.getElementById('side');
   if (ci < 0) { side.style.display = 'none'; return; }
-  const c = D.codes[ci];
-  const cd = D.comp[c];
-  if (!cd) { side.style.display = 'none'; return; }
-  const latest = Object.keys(cd).sort().pop();
-  const comps = cd[latest];
+  const lc = latestComps(ci);
+  if (!lc || !lc.comps) { side.style.display = 'none'; return; }
+  // 语义头(温度×5日趋势) + 背离徽标
+  const v = scoreAt(curDay, ci);
+  const d5 = deltaAt(curDay, ci, 5);
+  let h = `<h3>${D.names[ci]}</h3>`;
+  if (v !== null) h += `<div class="sem">${d5 !== null ? `5日${d5 > 0 ? '+' : ''}${d5} · ` : ''}${semanticOf(v, d5)}</div>`;
+  const divg = divergenceOf(lc.comps);
+  if (divg) h += `<div class="sem warn">${divg}</div>`;
+  h += `<div class="date">${lc.date} 分量明细（按贡献排序）</div>`;
+  // S3-C: 多选(≥2)时顶部对比摘要表
+  if (selected.length >= 2) {
+    h += '<table class="cmp"><tr><th>对比</th><th>温度</th><th>5日</th><th>语义</th></tr>';
+    for (const sci of selected) {
+      const sv = scoreAt(curDay, sci), sd5 = deltaAt(curDay, sci, 5);
+      h += `<tr${sci === ci ? ' style="font-weight:700"' : ''}><td>${D.names[sci]}</td>` +
+        `<td style="color:${sv !== null && sv >= 0 ? 'var(--rd)' : 'var(--bl)'}">${sv === null ? '--' : (sv > 0 ? '+' : '') + sv}</td>` +
+        `<td>${sd5 === null ? '--' : (sd5 > 0 ? '+' : '') + sd5}</td>` +
+        `<td>${sv === null ? '--' : semShort(semanticOf(sv, sd5))}</td></tr>`;
+    }
+    h += '</table>';
+  }
+  const comps = lc.comps;
   const order = D.corder.filter(k => comps[k] !== undefined && comps[k] !== null)
-    .sort((a, b) => Math.abs(comps[b]) - Math.abs(comps[a]));  // 按贡献排序
-  let h = `<h3>${D.names[ci]}</h3><div class="date">${latest} 分量明细（按贡献排序）</div><table>
-<tr><th>分量</th><th>分位分</th></tr>`;
+    .sort((a, b) => Math.abs(comps[b]) - Math.abs(comps[a]));
+  h += '<table><tr><th>分量</th><th>分位分</th></tr>';
   for (const k of order) {
-    const v = comps[k];
-    const w = Math.min(Math.abs(v), 100) / 2;
-    const pos = v >= 0 ? `left:50%;width:${w}%;background:var(--rd)`
-                       : `left:${50 - w}%;width:${w}%;background:var(--bl)`;
+    const val = comps[k];
+    const w = Math.min(Math.abs(val), 100) / 2;
+    const pos = val >= 0 ? `left:50%;width:${w}%;background:var(--rd)`
+                         : `left:${50 - w}%;width:${w}%;background:var(--bl)`;
     h += `<tr><td>${D.clabels[k] || k}</td><td style="min-width:80px">
 <div class="track"><div class="fill" style="${pos}"></div></div></td>
-<td style="text-align:right;color:${v >= 0 ? 'var(--rd)' : 'var(--bl)'}">${v > 0 ? '+' : ''}${v}</td></tr>`;
+<td style="text-align:right;color:${val >= 0 ? 'var(--rd)' : 'var(--bl)'}">${val > 0 ? '+' : ''}${val}</td></tr>`;
   }
   h += '</table>';
   side.innerHTML = h;
@@ -521,29 +606,8 @@ function drawSideFor(ci) {
 }
 
 function drawSide() {
-  const side = document.getElementById('side');
-  if (selected.length === 0) { side.style.display = 'none'; return; }
-  const lastCi = selected[selected.length - 1];
-  const c = D.codes[lastCi];
-  const cd = D.comp[c];
-  if (!cd) { side.style.display = 'none'; return; }
-  const latest = Object.keys(cd).sort().pop();
-  const comps = cd[latest];
-  const order = D.corder.filter(k => comps[k] !== undefined && comps[k] !== null);
-  let h = `<h3>${D.names[lastCi]}</h3><div class="date">${latest} 分量明细</div><table>
-<tr><th>分量</th><th>分位分</th></tr>`;
-  for (const k of order) {
-    const v = comps[k];
-    const w = Math.min(Math.abs(v), 100) / 2;
-    const pos = v >= 0 ? `left:50%;width:${w}%;background:var(--rd)`
-                       : `left:${50 - w}%;width:${w}%;background:var(--bl)`;
-    h += `<tr><td>${D.clabels[k] || k}</td><td style="min-width:80px">
-<div class="track"><div class="fill" style="${pos}"></div></div></td>
-<td style="text-align:right;color:${v >= 0 ? 'var(--rd)' : 'var(--bl)'}">${v > 0 ? '+' : ''}${v}</td></tr>`;
-  }
-  h += '</table>';
-  side.innerHTML = h;
-  side.style.display = 'block';
+  if (selected.length === 0) { document.getElementById('side').style.display = 'none'; return; }
+  drawSideFor(selected[selected.length - 1]);
 }
 
 /* ── 日期滑块 ── */
@@ -731,9 +795,16 @@ function drawHeatmap() {
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci));
       const v = p.data[2];
       const drv = driversOf(ci);
+      // S3-C: 5日变化 + 语义短语 + 量价背离
+      const d5 = deltaAt(dStart + p.data[0], ci, 5);
       let h = `<b>${D.names[ci]}</b>${sw && sw ? `（SW: ${sw}）` : ''}`;
       h += `<br/>${hmDates[p.data[0]]}`;
       h += `<br/>温度 <b style="color:${v >= 0 ? '#e34948' : '#2a78d6'}">${v > 0 ? '+' : ''}${v}</b>（${labelOf(v)}）`;
+      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? '#e34948' : '#2a78d6'};font-size:11px">5日 ${d5 > 0 ? '+' : ''}${d5}</span><span style="color:#898781;font-size:11px"> · ${semanticOf(v, d5)}</span>`;
+      else h += `<br/><span style="color:#898781;font-size:11px">${semanticOf(v, null)}</span>`;
+      const lc = latestComps(ci);
+      const divg = divergenceOf(lc && lc.comps);
+      if (divg) h += `<br/><span style="color:#eda100;font-size:11px">${divg}</span>`;
       if (drv) h += `<br/><span style="color:#898781;font-size:11px">${drv}</span>`;
       return h;
     }},
