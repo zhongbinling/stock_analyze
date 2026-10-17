@@ -49,12 +49,11 @@ def build_payload(years=2):
     idx_c = {c: i for i, c in enumerate(codes)}
     mat = [[None] * len(codes) for _ in range(len(dates))]
     for d, c, s, _rp in rows:
-        mat[idx_d[d]][idx_c[c]] = round(s)
+        mat[idx_d[d]][idx_c[c]] = None if s is None else round(s)
 
-    # 大盘情绪对照
+    # 大盘情绪对照(S3-F: 拉取15年, 供右侧曲线独立缩放到更长区间)
     mkt = conn.execute(
-        "SELECT date,score FROM sentiment ORDER BY date DESC LIMIT ?",
-        ((years + 1) * 250,)).fetchall()
+        "SELECT date,score FROM sentiment ORDER BY date DESC LIMIT 4000").fetchall()
     mkt.reverse()
 
     # 最近5日全板块分量明细
@@ -230,8 +229,9 @@ background:var(--p);color:var(--i);width:110px}
   <span style="font-size:10px;color:var(--m)">时间:</span>
   <button class="btn" id="tq5" style="padding:2px 8px;font-size:10px">近5日</button>
   <button class="btn" id="tq20" style="padding:2px 8px;font-size:10px">近20日</button>
-  <button class="btn" id="tq60" style="padding:2px 8px;font-size:10px;font-weight:bold">近60日</button>
-  <button class="btn" id="tq120" style="padding:2px 8px;font-size:10px">近120日</button>
+  <button class="btn" id="tq60" style="padding:2px 8px;font-size:10px">近60日</button>
+  <button class="btn" id="tq120" style="padding:2px 8px;font-size:10px;font-weight:bold">近120日</button>
+  <button class="btn" id="tq250" style="padding:2px 8px;font-size:10px">近250日</button>
   <button class="btn" id="tqAll" style="padding:2px 8px;font-size:10px">全部</button>
 </div>
 <div class="chart-row">
@@ -405,6 +405,19 @@ function drawRank() {
 }
 
 /* ── 多板块曲线 ── */
+// S3-F: 曲线缩放态 — 重绘时保留用户当前缩放; 首次按 hmDaysGlobal 对齐热力图窗口
+function curveTotalDays() {
+  return Math.max((D.mkt || []).length, N_D);
+}
+function curveZoomOpt() {
+  let z = null;
+  try { const o = curveC.getOption(); z = o && o.dataZoom && o.dataZoom[0]; } catch (e) { z = null; }
+  if (z && typeof z.start === 'number' && (z.start > 0.01 || z.end < 99.99)) {
+    return [{ type: 'inside', start: z.start, end: z.end }];
+  }
+  return [{ type: 'inside',
+    start: Math.max(0, 100 - (hmDaysGlobal / curveTotalDays()) * 100), end: 100 }];
+}
 function drawCurve() {
   const side = document.getElementById('side');
   if (selected.length === 0) {
@@ -419,8 +432,7 @@ function drawCurve() {
       xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
       yAxis: { type: 'value', min: -105, max: 105,
         axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
-      dataZoom: [{ type: 'inside',
-        start: Math.max(0, 100 - (hmDaysGlobal / N_D) * 100), end: 100 }],
+      dataZoom: curveZoomOpt(),
       series: [{ name: '大盘情绪分', type: 'line', data: mktData, showSymbol: false,
         lineStyle: { width: 2, color: '#2a78d6' }, itemStyle: { color: '#2a78d6' },
         markLine: { silent: true, symbol: 'none', label: { show: false },
@@ -447,17 +459,25 @@ function drawCurve() {
       markArea: si === 0 ? { silent: true, itemStyle: { color: 'rgba(227,73,72,0.04)' },
         data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } : undefined };
   });
+  // 大盘情绪分始终作为背景层(图例可点击隐藏)
+  const mktBgData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
+  const mktSeries = { name: '大盘情绪分', type: 'line', data: mktBgData,
+    showSymbol: false, lineStyle: { width: 1, color: '#c3c2b7', type: 'dashed' },
+    itemStyle: { color: '#c3c2b7' }, silent: true, z: 1 };
+  // 选中板块曲线在上层
+  series.forEach(s => { s.z = 10; });
   curveC.setOption({
     animation: false,
     legend: { top: 6, left: 10, itemWidth: 14, itemHeight: 8,
-      textStyle: { fontSize: 10, color: '#52514e' } },
+      textStyle: { fontSize: 10, color: '#52514e' },
+      data: ['大盘情绪分', ...series.map(s => s.name)] },
     tooltip: { trigger: 'axis', valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
     grid: { left: 40, right: 12, top: 32, bottom: 40 },
     xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
     yAxis: { type: 'value', min: -105, max: 105,
       axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
-    dataZoom: [{ type: 'inside' }],
-    series: series
+    dataZoom: curveZoomOpt(),
+    series: [mktSeries, ...series]
   }, true);
   drawSide();
 }
@@ -586,17 +606,17 @@ if (sortSel) {
 }
 
 // S3-B: 时间快捷 — 改变热力图天数并重绘
-let hmDaysGlobal = 60;
+let hmDaysGlobal = 120;
 function hmZoom(days) {
   hmDaysGlobal = days || N_D; // 0 = 全部
   drawLeft();
-  const btns = [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tqAll',0]];
+  const btns = [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tq250',250],['tqAll',0]];
   for (const [id, d] of btns) {
     const b = document.getElementById(id);
     if (b) b.style.fontWeight = d === days ? 'bold' : 'normal';
   }
 }
-for (const [id, d] of [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tqAll',0]]) {
+for (const [id, d] of [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tq250',250],['tqAll',0]]) {
   const b = document.getElementById(id);
   if (b) b.onclick = () => hmZoom(d);
 }
@@ -615,7 +635,7 @@ btnR.onclick = () => setMode('rank');
 btnH.onclick = () => setMode('heat');
 
 function drawHeatmap() {
-  const hmDays = hmDaysGlobal || 60;
+  const hmDays = hmDaysGlobal || 120;
   const dStart = Math.max(0, N_D - hmDays);
   const hmDates = D.dates.slice(dStart);
   // S3-E: 层级感知分组
@@ -771,15 +791,14 @@ document.getElementById('themeToggle').onclick = () => {
   const t = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   h.setAttribute('data-theme', t);
 };
-// S3-F: 右侧曲线 dataZoom → 左侧热力图同步
+// S3-F: 右侧曲线 dataZoom → 左侧热力图同步(曲线跨度15年, 按曲线总天数折算)
 curveC.on('datazoom', () => {
   const opt = curveC.getOption();
   const z = opt.dataZoom[0];
   if (!z) return;
-  const visiblePct = (z.end - z.start) / 100;
-  const visibleDays = Math.round(visiblePct * N_D);
+  const visibleDays = Math.round(((z.end - z.start) / 100) * curveTotalDays());
   if (Math.abs(visibleDays - hmDaysGlobal) > 10) {
-    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), 750);
+    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), N_D); // 热力图数据上限=全部日期
     drawLeft();
   }
 });
