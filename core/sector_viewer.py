@@ -567,19 +567,21 @@ function drawSideFor(ci) {
   if (ci < 0) { side.style.display = 'none'; return; }
   const lc = latestComps(ci);
   if (!lc || !lc.comps) { side.style.display = 'none'; return; }
-  // 语义头(温度×5日趋势) + 背离徽标
-  const v = scoreAt(curDay, ci);
-  const d5 = deltaAt(curDay, ci, 5);
+  // 语义头(温度×5日趋势) + 背离徽标 — 与分量表同日(lc.date)对齐, 不随日期滑块漂移
+  const at = D.dates.indexOf(lc.date);
+  const adi = at >= 0 ? at : curDay;
+  const v = scoreAt(adi, ci);
+  const d5 = deltaAt(adi, ci, 5);
   let h = `<h3>${D.names[ci]}</h3>`;
   if (v !== null) h += `<div class="sem">${d5 !== null ? `5日${d5 > 0 ? '+' : ''}${d5} · ` : ''}${semanticOf(v, d5)}</div>`;
   const divg = divergenceOf(lc.comps);
   if (divg) h += `<div class="sem warn">${divg}</div>`;
   h += `<div class="date">${lc.date} 分量明细（按贡献排序）</div>`;
-  // S3-C: 多选(≥2)时顶部对比摘要表
+  // S3-C: 多选(≥2)时顶部对比摘要表(同日对比)
   if (selected.length >= 2) {
     h += '<table class="cmp"><tr><th>对比</th><th>温度</th><th>5日</th><th>语义</th></tr>';
     for (const sci of selected) {
-      const sv = scoreAt(curDay, sci), sd5 = deltaAt(curDay, sci, 5);
+      const sv = scoreAt(adi, sci), sd5 = deltaAt(adi, sci, 5);
       h += `<tr${sci === ci ? ' style="font-weight:700"' : ''}><td>${D.names[sci]}</td>` +
         `<td style="color:${sv !== null && sv >= 0 ? 'var(--rd)' : 'var(--bl)'}">${sv === null ? '--' : (sv > 0 ? '+' : '') + sv}</td>` +
         `<td>${sd5 === null ? '--' : (sd5 > 0 ? '+' : '') + sd5}</td>` +

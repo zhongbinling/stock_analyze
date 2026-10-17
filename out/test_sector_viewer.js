@@ -32,7 +32,8 @@ let curveChart = null;
 global.echarts = { init(dom){ const c = mkChart(); if (dom && dom.id === 'curve') curveChart = c; return c; } };
 
 const driver = app + ';globalThis.__T={toggleSel,hmZoom,drawCurve,drawSideFor,renderCards,updateMkt,' +
-  'semanticOf,semShort,divergenceOf,latestComps,D,hmDays:()=>hmDaysGlobal,getSel:()=>selected};';
+  'semanticOf,semShort,divergenceOf,latestComps,deltaAt,D,hmDays:()=>hmDaysGlobal,' +
+  'getSel:()=>selected,setCur:d=>curDay=d};';
 new Function(driver)();
 
 const T = globalThis.__T;
@@ -156,6 +157,27 @@ check(els['hotCards'].innerHTML.includes('class="sem"'), 'cards include semantic
 T.updateMkt();
 check(typeof els['mktSem'].textContent === 'string' && els['mktSem'].textContent.length > 0,
   'mkt-box semantic phrase', els['mktSem'].textContent);
+
+// 15. side 语义头与分量表同日对齐(不随日期滑块漂移)
+{
+  T.toggleSel(bk1); T.toggleSel(bk2);            // 2 板块选中
+  T.drawSideFor(bk1);
+  const semNow = (els['side'].innerHTML.match(/class="sem"[^>]*>([^<]+)</) || [])[1];
+  // 期望值: 按分量表日期(lc.date)计算, 而非 curDay
+  const lc = T.latestComps(bk1);
+  const adi = T.D.dates.indexOf(lc.date);
+  const v = adi >= 0 ? T.D.mat[adi][bk1] : null;
+  const d5 = T.deltaAt(adi, bk1, 5);
+  const expect = v === null ? '' :
+    (d5 !== null ? `5日${d5 > 0 ? '+' : ''}${d5} · ` : '') + T.semanticOf(v, d5);
+  check(semNow === expect, 'side semantic computed at comp-table date',
+    `got="${semNow}" expect="${expect}"`);
+  T.setCur(0);                                    // 滑块拖到最早日期
+  T.drawSideFor(bk1);
+  const semOld = (els['side'].innerHTML.match(/class="sem"[^>]*>([^<]+)</) || [])[1];
+  check(semOld === semNow, 'side semantic invariant to date slider', `"${semOld}" vs "${semNow}"`);
+  T.setCur(T.D.dates.length - 1);                 // 复位
+}
 
 console.log(fails === 0 ? '\nALL TESTS PASS' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails ? 1 : 0);
