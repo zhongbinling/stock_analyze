@@ -95,6 +95,7 @@ def _calc_sw1(conn, allsc):
     mapped["sw1"] = mapped["code"].map(code2sw)
     agg = mapped.groupby(["date", "sw1"]).agg(
         score=("score", "mean"), n=("code", "count")).reset_index()
+    agg = agg[agg["score"].notna()]        # 成分全NaN的预热期行不入库
     agg["score"] = agg["score"].round(1)
     agg["code"] = "SW1_" + agg["sw1"]
     agg["stage"] = agg["score"].apply(stage_of)
@@ -126,6 +127,7 @@ def _calc_sw2(conn, allsc):
     mapped["sw2"] = mapped["code"].map(code2sw2)
     agg = mapped.groupby(["date", "sw2"]).agg(
         score=("score", "mean"), n=("code", "count")).reset_index()
+    agg = agg[agg["score"].notna()]        # 成分全NaN的预热期行不入库
     agg["score"] = agg["score"].round(1)
     agg["code"] = "SW2_" + agg["sw2"]
     agg["stage"] = agg["score"].apply(stage_of)
@@ -225,6 +227,7 @@ def calc_all(conn=None):
             res.loc[:len(res) - comp_keep_days - 1, "components"] = None
         out.append(res)
     allsc = pd.concat(out, ignore_index=True)
+    allsc = allsc[allsc["score"].notna()].reset_index(drop=True)  # 250日滚动窗口预热期的NaN行不入库
     allsc["rank_pct"] = allsc.groupby("date")["score"].rank(pct=True) * 100
     allsc["stage"] = allsc["score"].apply(stage_of)
 

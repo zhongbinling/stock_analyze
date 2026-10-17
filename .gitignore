@@ -25,3 +25,4 @@ Thumbs.db
 
 # 生成的视图文件(发布产物)
 /views_store/
+out/*.html

@@ -418,6 +418,15 @@ function curveZoomOpt() {
   return [{ type: 'inside',
     start: Math.max(0, 100 - (hmDaysGlobal / curveTotalDays()) * 100), end: 100 }];
 }
+// 图例隐藏态随重绘保留(仅对当前仍存在的系列; notMerge=true 会清掉 legend.selected)
+function curveLegendHidden(names) {
+  const out = {};
+  try {
+    const lg = curveC.getOption().legend[0];
+    if (lg && lg.selected) for (const n of names) if (lg.selected[n] === false) out[n] = false;
+  } catch (e) { /* 首次渲染无 legend */ }
+  return out;
+}
 function drawCurve() {
   const side = document.getElementById('side');
   if (selected.length === 0) {
@@ -470,7 +479,8 @@ function drawCurve() {
     animation: false,
     legend: { top: 6, left: 10, itemWidth: 14, itemHeight: 8,
       textStyle: { fontSize: 10, color: '#52514e' },
-      data: ['大盘情绪分', ...series.map(s => s.name)] },
+      data: ['大盘情绪分', ...series.map(s => s.name)],
+      selected: curveLegendHidden(['大盘情绪分', ...series.map(s => s.name)]) },
     tooltip: { trigger: 'axis', valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
     grid: { left: 40, right: 12, top: 32, bottom: 40 },
     xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
