@@ -182,6 +182,13 @@ HTML = r"""<!DOCTYPE html>
   .fill { position: absolute; top: 1px; bottom: 1px; border-radius: 2px; }
   footer { color: var(--muted); padding: 8px 20px 18px; }
   .hint { color: var(--muted); font-size: 12px; }
+  .btn-sm {
+    border: 1px solid var(--axis); background: var(--surface); color: var(--ink2);
+    border-radius: 6px; padding: 3px 10px; font-size: 11px; cursor: pointer;
+  }
+  .btn-sm:hover { border-color: var(--blue); color: var(--blue); }
+  #subPanelCtl label { cursor: pointer; user-select: none; }
+  #subPanelCtl input { margin-right: 2px; }
 </style>
 </head>
 <body>
@@ -199,10 +206,23 @@ window.onerror = function(msg, src, line, col) {
   <span class="chip" id="heroStage">--</span>
   <span class="sub" id="heroDate">--</span>
   <span class="sub">V1量价对照 <b id="heroV1">--</b></span>
+  <span style="flex:1"></span>
+  <button class="btn-sm" onclick="setZoom(250)">最新1年</button>
+  <button class="btn-sm" onclick="setZoom(500)">近2年</button>
+  <button class="btn-sm" onclick="setZoom(0)">全部</button>
 </header>
 <div class="wrap">
   <div id="chart"></div>
   <aside id="panel">加载中…</aside>
+</div>
+<div id="subPanelCtl" style="padding:0 20px 6px;display:flex;gap:10px;align-items:center;font-size:12px;color:#898781">
+  <span>底部面板:</span>
+  <label><input type="checkbox" id="ckZb" checked> 炸板率</label>
+  <label><input type="checkbox" id="ckJl" checked> 接力率</label>
+  <label><input type="checkbox" id="ckUd"> 涨跌家数</label>
+  <label><input type="checkbox" id="ckVol"> 成交额</label>
+  <label><input type="checkbox" id="ckRsi"> RSI</label>
+  <label><input type="checkbox" id="ckBias"> 乖离率</label>
 </div>
 <footer>
   鼠标在图上移动查看当日构成 · 滚轮缩放 · 底部滑块选区间 ·
@@ -240,6 +260,12 @@ const valAxis = (gi) => ({
 chart.setOption({
   animation: false,
   backgroundColor: "transparent",
+  // S2.2-A: 面板标题
+  title: [
+    { text: "上证指数", left: "4%", top: "38px", textStyle: { fontSize: 11, color: C.ink2 } },
+    { text: "情绪分", left: "53%", top: "38px", textStyle: { fontSize: 11, color: C.ink2 } },
+    { text: "底部面板(可勾选)", left: "4%", top: "352px", textStyle: { fontSize: 10, color: C.muted } },
+  ],
   axisPointer: { link: [{ xAxisIndex: "all" }],
                  lineStyle: { color: C.axis } },
   tooltip: {
@@ -291,7 +317,7 @@ chart.setOption({
     { type: "slider", xAxisIndex: [0, 1, 2, 3, 4], bottom: 4, height: 20,
       borderColor: C.grid, fillerColor: "rgba(42,120,214,0.10)",
       handleStyle: { color: C.blue }, textStyle: { color: C.muted },
-      start: Math.max(0, 100 - (500 / D.n) * 100) },  // S2.1-B: 默认展示近~2年窗口
+      start: Math.max(0, 100 - (250 / D.n) * 100) },  // S2.2-A: 默认近~1年窗口
   ],
   series: [
     { name: "上证指数", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0,
@@ -406,6 +432,57 @@ chart.on("updateAxisPointer", (e) => {
   curIdx = i; render(i);
 });
 window.addEventListener("resize", () => chart.resize());
+
+// S2.2-A: 快捷缩放
+function setZoom(days) {
+  if (!days) chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+  else {
+    const pct = Math.max(0, 100 - (days / D.n) * 100);
+    chart.dispatchAction({ type: 'dataZoom', start: pct, end: 100 });
+  }
+}
+
+// S2.2-A: 底部面板可选(checkbox 切换 series 显隐)
+const SUB_OPTS = [
+  { id: 'ckZb',  name: '炸板率%',   key: 'zb',  color: '#eda100' },
+  { id: 'ckJl',  name: '接力率%',   key: 'jl',  color: '#1baf7a' },
+  { id: 'ckRsi', name: 'RSI',      key: 'rsi', color: '#eb6834' },
+  { id: 'ckBias', name: '20日乖离',  key: 'bias20', color: '#6250d6' },
+  { id: 'ckVol', name: '成交额(亿)', key: 'vol', color: '#898781' },
+];
+function subSeriesFor(id) {
+  const opt = SUB_OPTS.find(o => o.id === id);
+  if (!opt) return null;
+  let data = null;
+  if (opt.key === 'zb') data = D.zb;
+  else if (opt.key === 'jl') data = D.jl;
+  else if (opt.key === 'vol') data = D.vol;
+  else if (D.cs && D.cs[opt.key]) data = D.cs[opt.key];
+  if (!data) return null;
+  return { name: opt.name, type: 'line', xAxisIndex: 4, yAxisIndex: 4,
+    data: data, showSymbol: false,
+    lineStyle: { width: 1.4, color: opt.color }, itemStyle: { color: opt.color } };
+}
+function rebuildSubPanel() {
+  const newSeries = [];
+  for (const opt of SUB_OPTS) {
+    const ck = document.getElementById(opt.id);
+    if (ck && ck.checked) {
+      const s = subSeriesFor(opt.id);
+      if (s) newSeries.push(s);
+    }
+  }
+  // 保留 top 5 series(固定), 替换底部 series
+  const current = chart.getOption().series;
+  const top5 = current.slice(0, 5);   // K线/量/情绪分/涨停/跌停
+  chart.setOption({ series: [...top5, ...newSeries] }, { replaceMerge: ['series'] });
+}
+for (const opt of SUB_OPTS) {
+  const el = document.getElementById(opt.id);
+  if (el) el.addEventListener('change', rebuildSubPanel);
+}
+// 初始: 只显示勾选的(炸板率+接力率默认勾选)
+setTimeout(rebuildSubPanel, 100);
 </script>
 </body>
 </html>
