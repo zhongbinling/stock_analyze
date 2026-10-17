@@ -1,6 +1,8 @@
 // 回归测试: sector_viewer 前端 (DOM/echarts mock) — 含 S3-C 语义引擎用例
+// 用法: node test_sector_viewer.js [html路径]  (默认 out/sector_heat_test.html; pytest 用夹具HTML)
 const fs = require('fs');
-const html = fs.readFileSync('out/sector_heat_test.html', 'utf8');
+const htmlPath = process.argv[2] || 'out/sector_heat_test.html';
+const html = fs.readFileSync(htmlPath, 'utf8');
 const app = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])[2];
 
 function el(id) {
@@ -88,7 +90,8 @@ curveChart._opt = null;
 T.drawCurve();
 opt = curveChart._opt;
 const total = Math.max(T.D.mkt.length, T.D.dates.length);
-const expectStart = +(100 - (120 / total) * 100).toFixed(2);
+// 小数据集(夹具 total<120)时窗口钳到 0
+const expectStart = Math.max(0, +(100 - (120 / total) * 100).toFixed(2));
 check(Math.abs(opt.dataZoom[0].start - expectStart) < 0.5, 'first render window = last 120d',
   `start=${opt.dataZoom[0].start.toFixed(2)} expect≈${expectStart}`);
 

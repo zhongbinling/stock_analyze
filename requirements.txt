@@ -15,3 +15,6 @@ requests
 pandas
 pyyaml
 matplotlib
+
+# 测试 (python -m pytest tests -q 全过才算完成; 前端套件需 PATH 中有 node)
+pytest
