@@ -110,7 +110,14 @@ def build_payload(years=2):
         pass
 
     conn.close()
-    return {"dates": dates, "codes": codes, "names": [names.get(c, c) for c in codes],
+
+    def disp_name(c):
+        n = names.get(c)
+        if n:
+            return n
+        return c.replace("SW1_", "").replace("SW2_", "")
+
+    return {"dates": dates, "codes": codes, "names": [disp_name(c) for c in codes],
             "mat": mat,
             "mkt": [[d, round(s, 1) if s is not None else None] for d, s in mkt],
             "comp": comp, "clabels": CLABELS, "corder": CORDER,
@@ -607,7 +614,7 @@ function drawHeatmap() {
       levelCis.forEach(ci => {
         const nm = D.names[ci];
         const parent = s2s1[nm.replace('SW2_','')] || '';
-        byParent.setdefault(parent, []).push(ci);
+        (byParent[parent] = byParent[parent] || []).push(ci);
       });
       groups = byParent;
     }
