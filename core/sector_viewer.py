@@ -671,9 +671,14 @@ function drawHeatmap() {
   }
   // 温度定性
   function labelOf(v) {
-    if (v >= 80) return '极热'; if (v > 20) return '偏热';
-    if (v <= -80) return '极冷'; if (v < -20) return '偏冷';
-    return '中性';
+    if (v <= -80) return '绝对冷'; if (v <= -70) return '极冷';
+    if (v <= -60) return '超强冷'; if (v <= -50) return '强冷';
+    if (v <= -40) return '较强冷'; if (v <= -30) return '冷';
+    if (v <= -20) return '弱冷'; if (v <= 0) return '中性弱冷';
+    if (v <= 20) return '中性弱热'; if (v <= 30) return '弱热';
+    if (v <= 40) return '热'; if (v <= 50) return '较强热';
+    if (v <= 60) return '强热'; if (v <= 70) return '超强热';
+    if (v <= 80) return '极热'; return '狂热';
   }
   // 核心驱动(取分量绝对值最大的2个)
   function driversOf(ci) {
@@ -712,32 +717,33 @@ function drawHeatmap() {
         rich: { g: { fontWeight: 'bold', fontSize: 10, color: '#0b0b0b' } },
         color: '#52514e' },
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
-    // S3-F: 17段色阶(每10度一档, 分辨率集中在日常波动区)
+    // 16段色阶(深蓝→浅蓝→米白→橙红→深红, 每段带语义标签)
     visualMap: { type: 'piecewise',
       pieces: [
-        { lte: -80, color: '#1565c0' },
-        { gt: -80, lte: -70, color: '#1976d2' },
-        { gt: -70, lte: -60, color: '#2196f3' },
-        { gt: -60, lte: -50, color: '#42a5f5' },
-        { gt: -50, lte: -40, color: '#64b5f6' },
-        { gt: -40, lte: -30, color: '#90caf9' },
-        { gt: -30, lte: -20, color: '#bbdefb' },
-        { gt: -20, lte: 0, color: '#e8eaf6' },
-        { gt: 0, lte: 20, color: '#fce4ec' },
-        { gt: 20, lte: 30, color: '#ffcdd2' },
-        { gt: 30, lte: 40, color: '#ef9a9a' },
-        { gt: 40, lte: 50, color: '#e57373' },
-        { gt: 50, lte: 60, color: '#ef5350' },
-        { gt: 60, lte: 70, color: '#e53935' },
-        { gt: 70, lte: 80, color: '#d32f2f' },
-        { gt: 80, lte: 95, color: '#c62828' },
-        { gt: 95, color: '#b71c1c' },
+        { lte: -80, color: '#0d47a1', label: '绝对冷' },
+        { gt: -80, lte: -70, color: '#1565c0', label: '极冷' },
+        { gt: -70, lte: -60, color: '#1e88e5', label: '超强冷' },
+        { gt: -60, lte: -50, color: '#42a5f5', label: '强冷' },
+        { gt: -50, lte: -40, color: '#64b5f6', label: '较强冷' },
+        { gt: -40, lte: -30, color: '#90caf9', label: '冷' },
+        { gt: -30, lte: -20, color: '#bbdefb', label: '弱冷' },
+        { gt: -20, lte: 0, color: '#dce8f5', label: '弱冷' },
+        { gt: 0, lte: 20, color: '#fdf0e0', label: '弱热' },
+        { gt: 20, lte: 30, color: '#ffcc80', label: '弱热' },
+        { gt: 30, lte: 40, color: '#ffa270', label: '热' },
+        { gt: 40, lte: 50, color: '#ff7043', label: '较强热' },
+        { gt: 50, lte: 60, color: '#f4511e', label: '强热' },
+        { gt: 60, lte: 70, color: '#e53935', label: '超强热' },
+        { gt: 70, lte: 80, color: '#c62828', label: '极热' },
+        { gt: 80, color: '#a01616', label: '狂热' },
       ],
       orient: 'horizontal', left: 'center', bottom: 0,
       itemWidth: 10, itemHeight: 8, itemGap: 1,
       textStyle: { fontSize: 8, color: '#898781' },
-      formatter: (v, v2) => v2 !== undefined ? `${v}~${v2}` : (v > 0 ? `>${v}` : `<${v}`),
-      splitNumber: 17,
+      formatter: (v, v2) => {
+        const mid = (v + v2) / 2 || v;
+        return labelOf(mid);
+      },
     },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
       bottom: 26, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
