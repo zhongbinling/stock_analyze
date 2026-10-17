@@ -263,10 +263,10 @@ chart.setOption({
         const d = s - D.score[i-1];
         h += ` <span style="color:${d >= 0 ? C.red : C.blue}">环比${d >= 0 ? "+" : ""}${d.toFixed(1)}</span>`;
       }
-      // 分量明细(来自 raw/cs)
+      // 分量明细(来自 cs, key与config weights一致)
       const compBits = [];
-      const cKeys = ['rsi', 'vol_dir', 'bias20', 'zt', 'amp'];
-      const cNms = {rsi: 'RSI', vol_dir: '量能', bias20: '乖离', zt: '涨停', amp: '振幅'};
+      const cKeys = ['rsi', 'vol_total', 'bias20', 'zt_count', 'amp'];
+      const cNms = {rsi: 'RSI', vol_total: '量能', bias20: '乖离', zt_count: '涨停', amp: '振幅'};
       for (const ck of cKeys) {
         if (D.cs && D.cs[ck] && !nullish(D.cs[ck][i]))
           compBits.push(`${cNms[ck]} ${D.cs[ck][i] > 0 ? '+' : ''}${Math.round(D.cs[ck][i])}`);
