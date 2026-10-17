@@ -570,7 +570,7 @@ function drawCurve() {
   series.forEach(s => { s.z = 10; });
   curveC.setOption({
     animation: false,
-    legend: { top: 6, left: 10, itemWidth: 14, itemHeight: 8,
+    legend: { type: 'scroll', top: 6, left: 10, itemWidth: 14, itemHeight: 8,
       textStyle: { fontSize: 10, color: PAL.txt },
       data: ['大盘情绪分', ...series.map(s => s.name)],
       selected: curveLegendHidden(['大盘情绪分', ...series.map(s => s.name)]) },
@@ -642,6 +642,11 @@ function drawSide() {
 /* ── 日期滑块 ── */
 // S3-D: 包成函数, 主题切换后随 PAL 重绘(事件绑定仅一次)
 function drawSlider() {
+  // 保留当前滑块位置(重绘不重置; setOption不触发datazoom事件, 否则与curDay失同步)
+  let z = null;
+  try { const o = slideC.getOption(); z = o && o.dataZoom && o.dataZoom[0]; } catch (e) { z = null; }
+  const start = z && typeof z.start === 'number' ? z.start : Math.max(0, (N_D - 31) / N_D * 100);
+  const end = z && typeof z.end === 'number' ? z.end : 100;
   slideC.setOption({
     animation: false,
     grid: { left: 130, right: 130, top: 4, bottom: 22 },
@@ -649,7 +654,7 @@ function drawSlider() {
     yAxis: { show: false, min: 0, max: 1 },
     graphic: [],
     dataZoom: [{
-      type: 'slider', xAxisIndex: 0, start: Math.max(0, (N_D - 31) / N_D * 100), end: 100,
+      type: 'slider', xAxisIndex: 0, start: start, end: end,
       height: 16, bottom: 2, borderColor: PAL.a,
       fillerColor: 'rgba(42,120,214,0.12)',
       labelFormatter: v => D.dates[Math.round(v / 100 * (N_D - 1))]?.slice(5) || ''

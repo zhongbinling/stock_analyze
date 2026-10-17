@@ -215,6 +215,21 @@ hmOpt = rankChart._opt;   // drawLeft 已被 themeToggle 触发(heat 模式)
 check(hmOpt.yAxis.axisLabel.rich.g.color === '#f0efec', 'heatmap re-rendered with dark strong');
 check(hmOpt.title.textStyle.color === '#c3c2b7', 'heatmap title dark txt');
 check(hmOpt.tooltip.backgroundColor === 'rgba(38,38,37,0.96)', 'tooltip dark background');
+
+// 19. S3D-review: 滑块位置跨重绘保留(主题切换不失同步)
+slideChart._opt = { dataZoom: [{ type: 'slider', start: 33.3, end: 41.7 }] };
+T.drawSlider();
+check(slideChart._opt.dataZoom[0].start === 33.3 && slideChart._opt.dataZoom[0].end === 41.7,
+  'slider position preserved on redraw', JSON.stringify(slideChart._opt.dataZoom[0]));
+slideChart._opt = null;
+T.drawSlider();
+check(slideChart._opt.dataZoom[0].end === 100, 'first render slider defaults to last 31d');
+
+// 20. S3D-review: 曲线图例滚动模式(flex-4宽度下6项不换行压图)
+T.setMode('rank');
+T.toggleSel(bk1);
+check(curveChart._opt.legend.type === 'scroll', 'curve legend type scroll',
+  JSON.stringify(curveChart._opt.legend.type));
 check(hmOpt.xAxis.splitArea.areaStyle.color[0] === 'rgba(255,255,255,0.02)', 'heatmap dark splitArea');
 check(slideChart._opt.dataZoom[0].borderColor === '#383835', 'slider re-rendered with dark border');
 
