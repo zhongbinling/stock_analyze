@@ -727,7 +727,7 @@ function drawHeatmap() {
         { gt: -50, lte: -40, color: '#64b5f6', label: '较强冷' },
         { gt: -40, lte: -30, color: '#90caf9', label: '冷' },
         { gt: -30, lte: -20, color: '#bbdefb', label: '弱冷' },
-        { gt: -20, lte: 0, color: '#dce8f5', label: '弱冷' },
+        { gt: -20, lte: 0, color: '#e8f4fd', label: '弱冷' },
         { gt: 0, lte: 20, color: '#fdf0e0', label: '弱热' },
         { gt: 20, lte: 30, color: '#ffe082', label: '弱热' },
         { gt: 30, lte: 40, color: '#ff9800', label: '热' },
