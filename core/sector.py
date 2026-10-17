@@ -204,6 +204,12 @@ def calc_one(df: pd.DataFrame, pool: pd.DataFrame, mkt_zt: pd.Series,
 def calc_all(conn=None):
     t0 = time.time()
     conn = conn or connect()
+    # 高危操作前置快照(backup方案): 全量重算会 DELETE 全表, 失败可回滚
+    try:
+        from backup import snapshot
+        snapshot("sentiment", tag="pre-calc")
+    except Exception as e:  # noqa: BLE001
+        print(f"[sector] pre-calc备份失败(继续计算): {e}")
     cfg = load_cfg()
     weights = cfg.get("sector_weights", {})
     window = cfg.get("window", 250)
