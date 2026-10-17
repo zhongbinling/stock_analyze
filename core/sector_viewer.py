@@ -362,7 +362,7 @@ function rankData() {
   } else {
     items.sort((a, b) => b.v - a.v);
   }
-  return items.slice(0, 80);
+  return items.slice(0, 600);  // S3-F: 提高上限, yAxis dataZoom 控制显示数量
 }
 
 function drawRank() {
@@ -419,7 +419,8 @@ function drawCurve() {
       xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
       yAxis: { type: 'value', min: -105, max: 105,
         axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
-      dataZoom: [{ type: 'inside' }],
+      dataZoom: [{ type: 'inside',
+        start: Math.max(0, 100 - (hmDaysGlobal / N_D) * 100), end: 100 }],
       series: [{ name: '大盘情绪分', type: 'line', data: mktData, showSymbol: false,
         lineStyle: { width: 2, color: '#2a78d6' }, itemStyle: { color: '#2a78d6' },
         markLine: { silent: true, symbol: 'none', label: { show: false },
