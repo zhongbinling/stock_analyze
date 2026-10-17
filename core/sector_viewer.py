@@ -158,12 +158,20 @@ background:var(--p);color:var(--i);width:110px}
 </head>
 <body>
 <div class="hdr">
-  <div><h1>板块温度计 <span class="sub" id="hInfo"></span></h1></div>
-  <div class="flt">
+  <div style="display:flex;align-items:center;gap:8px">
+    <h1>板块温度计</h1>
+    <span class="sub" id="hInfo"></span>
+  </div>
+  <div class="flt" style="flex:1;justify-content:center">
     <input class="search" id="q" placeholder="搜索板块名">
-    <button class="btn" id="btnAll">Top80</button>
-    <button class="btn" id="btnHot">最热</button>
-    <button class="btn" id="btnCold">最冷</button>
+    <select class="input" id="swFilter" style="width:110px;font-size:11px;padding:3px 4px"><option value="">全部申万一级</option></select>
+    <select class="input" id="sortMode" style="width:90px;font-size:11px;padding:3px 4px">
+      <option value="score">当日温度</option>
+      <option value="chg">今日变化</option>
+      <option value="ext">区间极值</option>
+    </select>
+  </div>
+  <div class="flt">
     <span style="border-left:1px solid var(--a);margin:0 4px"></span>
     <button class="btn" id="btnRankMode" style="font-weight:bold">排行</button>
     <button class="btn" id="btnHeatMode">热力图</button>
@@ -172,8 +180,8 @@ background:var(--p);color:var(--i);width:110px}
   </div>
 </div>
 <div class="info-row">
-  <div class="cards" id="hotCards"></div>
-  <div class="cards" id="botCards"></div>
+  <div class="cards" id="hotCards" style="overflow-x:auto;white-space:nowrap"></div>
+  <div class="cards" id="botCards" style="overflow-x:auto;white-space:nowrap"></div>
   <div class="mkt-box">
     <span class="lb">大盘情绪</span>
     <span class="sc" id="mktSc">--</span>
@@ -182,6 +190,14 @@ background:var(--p);color:var(--i);width:110px}
   </div>
 </div>
 <div id="slider"></div>
+<div style="display:flex;gap:6px;padding:2px 16px 4px;flex-shrink:0;align-items:center">
+  <span style="font-size:10px;color:var(--m)">时间:</span>
+  <button class="btn" id="tq5" style="padding:2px 8px;font-size:10px">近5日</button>
+  <button class="btn" id="tq20" style="padding:2px 8px;font-size:10px">近20日</button>
+  <button class="btn" id="tq60" style="padding:2px 8px;font-size:10px;font-weight:bold">近60日</button>
+  <button class="btn" id="tq120" style="padding:2px 8px;font-size:10px">近120日</button>
+  <button class="btn" id="tqAll" style="padding:2px 8px;font-size:10px">全部</button>
+</div>
 <div class="chart-row">
   <div id="rank"></div>
   <div style="flex:4;position:relative;min-width:0">
@@ -202,7 +218,7 @@ window.onerror = function(msg, src, line, col) {
 <script>
 const D = __PAYLOAD__;
 const N_D = D.dates.length, N_C = D.codes.length;
-let curDay = N_D - 1, filter = "all", query = "";
+let curDay = N_D - 1, query = "";
 let selected = [];   // 多板块对比: 已选板块的 code index 数组(≤5)
 const PALETTE = ["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"];
 
@@ -276,20 +292,39 @@ function toggleSel(ci) {
 /* ── 排行榜 ── */
 function rankData() {
   const row = D.mat[curDay] || [];
+  const groups = D.sw1_groups || {};
   const items = [];
   for (let ci = 0; ci < N_C; ci++) {
     const nm = D.names[ci];
     if (query && !nm.includes(query)) continue;
+    if (swFilterVal) {
+      const sw = Object.keys(groups).find(s => groups[s]?.includes(ci)) || '';
+      if (sw !== swFilterVal) continue;
+    }
     const v = row[ci];
     if (v === null) continue;
     items.push({ name: nm, v: v, ci: ci });
+  });
+  // S3-B: 排序模式
+  if (sortModeVal === 'chg') {
+    const prev = D.mat[curDay - 1] || [];
+    items.sort((a, b) => ((row[b.ci]||0) - (prev[b.ci]||0)) - ((row[a.ci]||0) - (prev[a.ci]||0)));
+  } else if (sortModeVal === 'ext') {
+    const hmDays = 60;
+    const dStart = Math.max(0, curDay - hmDays);
+    const ext = (ci) => {
+      let m = 0;
+      for (let di = dStart; di <= curDay; di++) {
+        const v = D.mat[di] ? D.mat[di][ci] : null;
+        if (v !== null) m = Math.abs(v) > Math.abs(m) ? v : m;
+      }
+      return m;
+    };
+    items.sort((a, b) => Math.abs(ext(b.ci)) - Math.abs(ext(a.ci)));
+  } else {
+    items.sort((a, b) => b.v - a.v);
   }
-  items.sort((a, b) => b.v - a.v);
-  let show = items;
-  if (filter === 'hot') show = items.slice(0, 40);
-  else if (filter === 'cold') show = items.slice(-40).reverse();
-  else show = items.slice(0, 80);
-  return show;
+  return items.slice(0, 80);
 }
 
 function drawRank() {
@@ -448,11 +483,40 @@ slideC.on('datazoom', () => {
 });
 
 /* ── 事件 ── */
-document.getElementById('btnAll').onclick = () => { filter = 'all'; setMode('rank'); };
-document.getElementById('btnHot').onclick = () => { filter = 'hot'; setMode('rank'); };
-document.getElementById('btnCold').onclick = () => { filter = 'cold'; setMode('rank'); };
+// S3-B: 申万一级筛选 + 排序模式 + 时间快捷
+let swFilterVal = '', sortModeVal = 'score';
+const swSel = document.getElementById('swFilter');
+if (swSel && D.sw1_groups) {
+  const sws = Object.keys(D.sw1_groups).filter(s => s).sort();
+  for (const sw of sws) {
+    const opt = document.createElement('option');
+    opt.value = sw; opt.textContent = `${sw}(${D.sw1_groups[sw].length})`;
+    swSel.appendChild(opt);
+  }
+  swSel.addEventListener('change', () => { swFilterVal = swSel.value; drawLeft(); });
+}
+const sortSel = document.getElementById('sortMode');
+if (sortSel) {
+  sortSel.addEventListener('change', () => { sortModeVal = sortSel.value; drawLeft(); });
+}
 
-// S2.2-A: 热力图模式
+// S3-B: 时间快捷
+function hmZoom(days) {
+  const pct = days ? Math.max(0, 100 - (days / N_D) * 100) : 0;
+  slideC.dispatchAction({ type: 'dataZoom', start: pct, end: 100 });
+  // 同步更新时间按钮高亮
+  const btns = [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tqAll',0]];
+  for (const [id, d] of btns) {
+    const b = document.getElementById(id);
+    if (b) b.style.fontWeight = d === days ? 'bold' : 'normal';
+  }
+}
+for (const [id, d] of [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tqAll',0]]) {
+  const b = document.getElementById(id);
+  if (b) b.onclick = () => hmZoom(d);
+}
+
+// S3-B: 模式切换
 let mode = 'rank';
 const btnR = document.getElementById('btnRankMode');
 const btnH = document.getElementById('btnHeatMode');
@@ -469,8 +533,9 @@ function drawHeatmap() {
   const hmDays = 60;
   const dStart = Math.max(0, N_D - hmDays);
   const hmDates = D.dates.slice(dStart);
-  // 按申万一级排序板块
-  const groups = D.sw1_groups || {};
+  // 按申万一级排序板块(S3-B: 支持筛选)
+  const allGroups = D.sw1_groups || {};
+  const groups = swFilterVal ? { [swFilterVal]: allGroups[swFilterVal] || [] } : allGroups;
   const sortedCis = [];
   const yLabels = [];
   const swNames = Object.keys(groups).sort();
