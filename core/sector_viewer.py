@@ -248,7 +248,7 @@ function renderCards() {
       style="${color ? `border-color:${color}` : ''}">
       <div class="nm">${item.n}</div>
       <div class="sc" style="color:${item.s >= 0 ? 'var(--rd)' : 'var(--bl)'}">${item.s > 0 ? '+' : ''}${item.s}</div>
-      <div class="rk">排名${item.r}%</div>
+      <div class="rk">分位${item.r}%</div>
     </div>`;
   };
   const hot = document.getElementById('hotCards');
@@ -371,6 +371,33 @@ function drawCurve() {
 }
 
 /* ── 分量明细(跟随最后选中的板块) ── */
+// S3-A: hover联动 — 指定板块的分量明细(不改变 selected)
+function drawSideFor(ci) {
+  const side = document.getElementById('side');
+  if (ci < 0) { side.style.display = 'none'; return; }
+  const c = D.codes[ci];
+  const cd = D.comp[c];
+  if (!cd) { side.style.display = 'none'; return; }
+  const latest = Object.keys(cd).sort().pop();
+  const comps = cd[latest];
+  const order = D.corder.filter(k => comps[k] !== undefined && comps[k] !== null)
+    .sort((a, b) => Math.abs(comps[b]) - Math.abs(comps[a]));  // 按贡献排序
+  let h = `<h3>${D.names[ci]}</h3><div class="date">${latest} 分量明细（按贡献排序）</div><table>
+<tr><th>分量</th><th>分位分</th></tr>`;
+  for (const k of order) {
+    const v = comps[k];
+    const w = Math.min(Math.abs(v), 100) / 2;
+    const pos = v >= 0 ? `left:50%;width:${w}%;background:var(--rd)`
+                       : `left:${50 - w}%;width:${w}%;background:var(--bl)`;
+    h += `<tr><td>${D.clabels[k] || k}</td><td style="min-width:80px">
+<div class="track"><div class="fill" style="${pos}"></div></div></td>
+<td style="text-align:right;color:${v >= 0 ? 'var(--rd)' : 'var(--bl)'}">${v > 0 ? '+' : ''}${v}</td></tr>`;
+  }
+  h += '</table>';
+  side.innerHTML = h;
+  side.style.display = 'block';
+}
+
 function drawSide() {
   const side = document.getElementById('side');
   if (selected.length === 0) { side.style.display = 'none'; return; }
@@ -446,14 +473,12 @@ function drawHeatmap() {
   const groups = D.sw1_groups || {};
   const sortedCis = [];
   const yLabels = [];
-  const swLabels = [];
   const swNames = Object.keys(groups).sort();
   for (const sw of swNames) {
-    if (sw) swLabels.push({ y: yLabels.length + sortedCis.length / 2, name: sw });
     for (const ci of groups[sw]) { sortedCis.push(ci); yLabels.push(D.names[ci]); }
-    yLabels.push(''); sortedCis.push(-1);  // 组间空行
+    yLabels.push(sw || ''); sortedCis.push(-1);  // 组名行
   }
-  yLabels.pop(); sortedCis.pop();  // 去掉最后一行的空行
+  yLabels.pop(); sortedCis.pop();
   const hmData = [];
   for (let xi = 0; xi < hmDates.length; xi++) {
     for (let yi = 0; yi < sortedCis.length; yi++) {
@@ -463,38 +488,84 @@ function drawHeatmap() {
       if (v !== null) hmData.push([xi, yi, v]);
     }
   }
+  // 温度定性
+  function labelOf(v) {
+    if (v > 80) return '极热'; if (v > 20) return '偏热';
+    if (v < -80) return '极冷'; if (v < -20) return '偏冷';
+    return '中性';
+  }
+  // 核心驱动(取分量绝对值最大的2个)
+  function driversOf(ci) {
+    const cd = D.comp[D.codes[ci]];
+    if (!cd) return '';
+    const latest = Object.keys(cd).sort().pop();
+    const comps = cd[latest] || {};
+    const arr = D.corder.filter(k => comps[k] !== undefined && comps[k] !== null)
+      .map(k => ({ k, v: comps[k] })).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 2);
+    return arr.map(x => `${D.clabels[x.k] || x.k} ${x.v > 0 ? '+' : ''}${Math.round(x.v)}`).join(' · ');
+  }
   rankC.setOption({
     animation: false,
     title: { text: `热力图 · ${hmDates[0]?.slice(5)} ~ ${hmDates[hmDates.length-1]?.slice(5)}`,
              left: 10, top: 6, textStyle: { fontSize: 12, color: '#52514e' } },
     tooltip: { position: 'top', formatter: p => {
       const ci = sortedCis[p.data[1]];
-      if (ci < 0) return '';
+      if (ci < 0) return yLabels[p.data[1]] ? `<b>${yLabels[p.data[1]]}</b>` : '';
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci));
-      return `${D.names[ci]}<br/>${hmDates[p.data[0]]} · 温度 ${p.data[2] > 0 ? '+' : ''}${p.data[2]}${sw ? '<br/>SW: ' + sw : ''}`;
+      const v = p.data[2];
+      const drv = driversOf(ci);
+      let h = `<b>${D.names[ci]}</b>${sw && sw ? `（SW: ${sw}）` : ''}`;
+      h += `<br/>${hmDates[p.data[0]]}`;
+      h += `<br/>温度 <b style="color:${v >= 0 ? '#e34948' : '#2a78d6'}">${v > 0 ? '+' : ''}${v}</b>（${labelOf(v)}）`;
+      if (drv) h += `<br/><span style="color:#898781;font-size:11px">${drv}</span>`;
+      return h;
     }},
-    grid: { left: 10, right: 60, top: 32, bottom: 50, containLabel: true },
+    grid: { left: 10, right: 60, top: 32, bottom: 56, containLabel: true },
     xAxis: { type: 'category', data: hmDates.map(d => d.slice(5)),
       axisLabel: { color: '#898781', fontSize: 9, rotate: 45 },
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
     yAxis: { type: 'category', data: yLabels,
-      axisLabel: { color: '#52514e', fontSize: 8 },
+      axisLabel: { fontSize: 8,
+        formatter: v => v,
+        rich: { g: { fontWeight: 'bold', fontSize: 10, color: '#0b0b0b' } },
+        color: '#52514e' },
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
-    visualMap: { min: -100, max: 100, calculable: true, orient: 'horizontal',
-      left: 'center', bottom: 0, itemHeight: 80, itemWidth: 12,
-      textStyle: { color: '#898781', fontSize: 9 },
-      inRange: { color: ['#2a78d6', '#e1e0d9', '#e34948'] } },
+    // S3-A: 分段对称色阶
+    visualMap: { type: 'piecewise',
+      pieces: [
+        { gt: 80, label: '极热', color: '#b71c1c' },
+        { gt: 50, lte: 80, label: '强热', color: '#e34948' },
+        { gt: 20, lte: 50, label: '偏热', color: '#ef9a9a' },
+        { gt: -20, lte: 20, label: '中性', color: '#e1e0d9' },
+        { gt: -50, lte: -20, label: '偏冷', color: '#90caf9' },
+        { gt: -80, lte: -50, label: '强冷', color: '#42a5f5' },
+        { lte: -80, label: '极冷', color: '#1565c0' },
+      ],
+      orient: 'horizontal', left: 'center', bottom: 0,
+      itemWidth: 14, itemHeight: 10, itemGap: 3,
+      textStyle: { fontSize: 9, color: '#898781' },
+      formatter: (v, v2) => {
+        const mid = (v + v2) / 2 || v;
+        return labelOf(mid) + ' ' + (v2 !== undefined ? `${v}~${v2}` : v > 0 ? `>${v}` : `<${v}`);
+      },
+    },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
-      bottom: 22, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
+      bottom: 26, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
     series: [{ type: 'heatmap', data: hmData,
-      itemStyle: { borderColor: 'rgba(0,0,0,0.1)', borderWidth: 0.5 },
+      itemStyle: { borderColor: 'rgba(0,0,0,0.08)', borderWidth: 0.3 },
       progressive: 5000, progressiveThreshold: 10000,
-      emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(0,0,0,0.3)' } } }]
+      emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(0,0,0,0.3)', borderColor: '#0b0b0b', borderWidth: 1.5 } } }]
   }, true);
   rankC.off('click');
   rankC.on('click', p => {
     const ci = sortedCis[p.data[1]];
     if (ci >= 0) toggleSel(ci);
+  });
+  // S3-A: hover联动右侧分量
+  rankC.off('mouseover');
+  rankC.on('mouseover', p => {
+    const ci = sortedCis[p.componentType === 'series' ? p.data[1] : -1];
+    if (ci >= 0) drawSideFor(ci);
   });
 }
 document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawLeft(); };
@@ -507,6 +578,11 @@ document.getElementById('themeToggle').onclick = () => {
 window.addEventListener('resize', () => { rankC.resize(); curveC.resize(); slideC.resize(); sparkC.resize(); });
 
 renderCards(); drawLeft(); updateMkt(); drawCurve();
+// S3-A: 默认显示最热板块的分量明细
+if (D.top5 && D.top5.length) {
+  const ci = D.codes.indexOf(D.top5[0].c);
+  if (ci >= 0) drawSideFor(ci);
+}
 </script>
 </body>
 </html>
