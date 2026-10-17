@@ -490,8 +490,8 @@ function drawHeatmap() {
   }
   // 温度定性
   function labelOf(v) {
-    if (v > 80) return '极热'; if (v > 20) return '偏热';
-    if (v < -80) return '极冷'; if (v < -20) return '偏冷';
+    if (v >= 80) return '极热'; if (v > 20) return '偏热';
+    if (v <= -80) return '极冷'; if (v < -20) return '偏冷';
     return '中性';
   }
   // 核心驱动(取分量绝对值最大的2个)
@@ -504,6 +504,7 @@ function drawHeatmap() {
       .map(k => ({ k, v: comps[k] })).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 2);
     return arr.map(x => `${D.clabels[x.k] || x.k} ${x.v > 0 ? '+' : ''}${Math.round(x.v)}`).join(' · ');
   }
+  const swSet = new Set(swNames.filter(s => s));
   rankC.setOption({
     animation: false,
     title: { text: `热力图 · ${hmDates[0]?.slice(5)} ~ ${hmDates[hmDates.length-1]?.slice(5)}`,
@@ -526,7 +527,7 @@ function drawHeatmap() {
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
     yAxis: { type: 'category', data: yLabels,
       axisLabel: { fontSize: 8,
-        formatter: v => v,
+        formatter: v => swSet.has(v) ? `{g|${v}}` : v,
         rich: { g: { fontWeight: 'bold', fontSize: 10, color: '#0b0b0b' } },
         color: '#52514e' },
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
