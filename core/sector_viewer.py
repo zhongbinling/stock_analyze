@@ -85,13 +85,38 @@ def build_payload(years=2):
         sw1 = sw1_map.get(c, "")
         sw1_groups.setdefault(sw1, []).append(ci)
 
+    # S3-E: 申万二级分组 + SW1/SW2聚合行索引
+    sw2_groups = {}
+    try:
+        sw2_map = dict(conn.execute("SELECT bk_code, sw2_name FROM sw2_map").fetchall())
+        for ci, c in enumerate(codes):
+            sw2 = sw2_map.get(c, "")
+            if sw2:
+                sw2_groups.setdefault(sw2, []).append(ci)
+    except Exception:
+        pass
+    # SW1_/SW2_ 聚合行的 code index(用于一级/二级模式)
+    sw1_agg_cis = [ci for ci, c in enumerate(codes) if c.startswith("SW1_")]
+    sw2_agg_cis = [ci for ci, c in enumerate(codes) if c.startswith("SW2_")]
+    bk_cis = [ci for ci, c in enumerate(codes) if c.startswith("BK")]
+    level_data = {"L1": sw1_agg_cis, "L2": sw2_agg_cis, "L3": bk_cis}
+
+    # SW2组的父级(SW1)归属
+    sw2_to_sw1 = {}
+    try:
+        for sw2_name, sw1_name in conn.execute("SELECT DISTINCT sw2_name, sw1_name FROM sw2_map"):
+            sw2_to_sw1[sw2_name] = sw1_name
+    except Exception:
+        pass
+
     conn.close()
     return {"dates": dates, "codes": codes, "names": [names.get(c, c) for c in codes],
             "mat": mat,
             "mkt": [[d, round(s, 1) if s is not None else None] for d, s in mkt],
             "comp": comp, "clabels": CLABELS, "corder": CORDER,
             "top5": top5, "bot5": bot5, "latest": latest,
-            "sw1_groups": sw1_groups}
+            "sw1_groups": sw1_groups, "sw2_groups": sw2_groups,
+            "level_data": level_data, "sw2_to_sw1": sw2_to_sw1}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -170,6 +195,10 @@ background:var(--p);color:var(--i);width:110px}
       <option value="chg">今日变化</option>
       <option value="ext">区间极值</option>
     </select>
+    <span style="border-left:1px solid var(--a);margin:0 2px"></span>
+    <button class="btn" id="lvL1" style="padding:2px 6px;font-size:10px">一级</button>
+    <button class="btn" id="lvL2" style="padding:2px 6px;font-size:10px">二级</button>
+    <button class="btn" id="lvL3" style="padding:2px 6px;font-size:10px;font-weight:bold">三级</button>
   </div>
   <div class="flt">
     <span style="border-left:1px solid var(--a);margin:0 4px"></span>
@@ -292,9 +321,11 @@ function toggleSel(ci) {
 /* ── 排行榜 ── */
 function rankData() {
   const row = D.mat[curDay] || [];
-  const groups = D.sw1_groups || {};
+  const groups = levelVal === 'L2' ? (D.sw2_groups || {}) : (D.sw1_groups || {});
+  const levelCis = (D.level_data && D.level_data[levelVal]) || null;
   const items = [];
   for (let ci = 0; ci < N_C; ci++) {
+    if (levelCis && !levelCis.includes(ci)) continue;
     const nm = D.names[ci];
     if (query && !nm.includes(query)) continue;
     if (swFilterVal) {
@@ -484,7 +515,35 @@ slideC.on('datazoom', () => {
 
 /* ── 事件 ── */
 // S3-B: 申万一级筛选 + 排序模式 + 时间快捷
-let swFilterVal = '', sortModeVal = 'score';
+let swFilterVal = '', sortModeVal = 'score', levelVal = 'L3';
+// S3-E: 层级切换
+function setLevel(lv) {
+  levelVal = lv;
+  for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvL3','L3']]) {
+    const b = document.getElementById(id);
+    if (b) b.style.fontWeight = l === lv ? 'bold' : 'normal';
+  }
+  // 重填 swFilter 选项
+  if (swSel) {
+    swSel.innerHTML = '<option value="">全部</option>';
+    let groups;
+    if (lv === 'L2') groups = Object.keys(D.sw2_groups || {}).sort();
+    else groups = Object.keys(D.sw1_groups || {}).filter(s => s).sort();
+    for (const g of groups) {
+      const opt = document.createElement('option');
+      opt.value = g;
+      const cnt = lv === 'L2' ? (D.sw2_groups[g]||[]).length : (D.sw1_groups[g]||[]).length;
+      opt.textContent = `${g}(${cnt})`;
+      swSel.appendChild(opt);
+    }
+    swFilterVal = '';
+  }
+  drawLeft();
+}
+for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvL3','L3']]) {
+  const b = document.getElementById(id);
+  if (b) b.onclick = () => setLevel(l);
+}
 const swSel = document.getElementById('swFilter');
 if (swSel && D.sw1_groups) {
   const sws = Object.keys(D.sw1_groups).filter(s => s).sort();
@@ -533,9 +592,40 @@ function drawHeatmap() {
   const hmDays = hmDaysGlobal || 60;
   const dStart = Math.max(0, N_D - hmDays);
   const hmDates = D.dates.slice(dStart);
-  // 按申万一级排序板块(S3-B: 支持筛选)
-  const allGroups = D.sw1_groups || {};
-  const groups = swFilterVal ? { [swFilterVal]: allGroups[swFilterVal] || [] } : allGroups;
+  // S3-E: 层级感知分组
+  const levelCis = (D.level_data && D.level_data[levelVal]) || null;
+  let groups, groupKey;
+  if (levelVal === 'L1') {
+    groups = {};
+    if (levelCis) levelCis.forEach(ci => groups[D.names[ci]] = [ci]);
+    groupKey = 'sw1';
+  } else if (levelVal === 'L2') {
+    groups = {};
+    if (levelCis) {
+      const s2s1 = D.sw2_to_sw1 || {};
+      const byParent = {};
+      levelCis.forEach(ci => {
+        const nm = D.names[ci];
+        const parent = s2s1[nm.replace('SW2_','')] || '';
+        byParent.setdefault(parent, []).push(ci);
+      });
+      groups = byParent;
+    }
+    groupKey = 'sw2';
+  } else {
+    const allGroups = D.sw1_groups || {};
+    groups = swFilterVal ? { [swFilterVal]: allGroups[swFilterVal] || [] } : allGroups;
+    groupKey = 'sw1';
+    if (levelCis) {
+      // L3模式: 只取BK码, 剔除SW1_/SW2_聚合行
+      const bkSet = new Set(levelCis);
+      const filtered = {};
+      for (const [k, v] of Object.entries(groups)) {
+        filtered[k] = v.filter(ci => bkSet.has(ci));
+      }
+      groups = filtered;
+    }
+  }
   const sortedCis = [];
   const yLabels = [];
   const swNames = Object.keys(groups).sort();

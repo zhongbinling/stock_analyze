@@ -111,6 +111,35 @@ def _calc_sw1(conn, allsc):
           f" (最新 {agg['date'].max()}, {len(latest)} 行)")
 
 
+def _calc_sw2(conn, allsc):
+    """S3-E: 按申万二级聚合板块温度 → 写入 sector_scores (code='SW2_'+名称)"""
+    try:
+        sw2 = conn.execute("SELECT bk_code, sw2_name FROM sw2_map").fetchall()
+    except Exception:  # noqa: BLE001
+        return
+    if not sw2:
+        return
+    code2sw2 = dict(sw2)
+    mapped = allsc[allsc["code"].isin(code2sw2)].copy()
+    if mapped.empty:
+        return
+    mapped["sw2"] = mapped["code"].map(code2sw2)
+    agg = mapped.groupby(["date", "sw2"]).agg(
+        score=("score", "mean"), n=("code", "count")).reset_index()
+    agg["score"] = agg["score"].round(1)
+    agg["code"] = "SW2_" + agg["sw2"]
+    agg["stage"] = agg["score"].apply(stage_of)
+    agg["rank_pct"] = None
+    agg["components"] = None
+    conn.executemany(
+        "INSERT OR REPLACE INTO sector_scores(date,code,score,rank_pct,stage,components) "
+        "VALUES(?,?,?,?,?,?)",
+        [(r["date"], r["code"], float(r["score"]), None, r["stage"], None)
+         for _, r in agg.iterrows()])
+    conn.commit()
+    print(f"[sector] 申万二级聚合: {agg['sw2'].nunique()} 个 × {agg['date'].nunique()} 日")
+
+
 def calc_one(df: pd.DataFrame, pool: pd.DataFrame, mkt_zt: pd.Series,
              weights: dict, window=250, pool_mp=60) -> pd.DataFrame:
     """单板块: 输入合并后的日线+涨停, 输出含 score 的明细"""
@@ -209,6 +238,7 @@ def calc_all(conn=None):
          for _, r in allsc.iterrows()])
     conn.commit()
     _calc_sw1(conn, allsc)
+    _calc_sw2(conn, allsc)
     conn.execute("VACUUM")         # 回收历史components空间
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "
           f"({time.time()-t0:.1f}s, 最新 {allsc['date'].max()})")
