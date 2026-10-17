@@ -78,12 +78,20 @@ def build_payload(years=2):
         bot5 = [{"c": r[0], "n": r[1], "s": round(r[2] or 0), "r": round(r[3] or 0)}
                 for r in sorted(ranked, key=lambda x: x[2] or 0)[:5]]
 
+    # S2.2-A: 申万一级分组(code index → sw1 name)
+    sw1_groups = {}
+    sw1_map = dict(conn.execute("SELECT bk_code, sw1_name FROM sw1_map").fetchall())
+    for ci, c in enumerate(codes):
+        sw1 = sw1_map.get(c, "")
+        sw1_groups.setdefault(sw1, []).append(ci)
+
     conn.close()
     return {"dates": dates, "codes": codes, "names": [names.get(c, c) for c in codes],
             "mat": mat,
             "mkt": [[d, round(s, 1) if s is not None else None] for d, s in mkt],
             "comp": comp, "clabels": CLABELS, "corder": CORDER,
-            "top5": top5, "bot5": bot5, "latest": latest}
+            "top5": top5, "bot5": bot5, "latest": latest,
+            "sw1_groups": sw1_groups}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -156,6 +164,9 @@ background:var(--p);color:var(--i);width:110px}
     <button class="btn" id="btnAll">Top80</button>
     <button class="btn" id="btnHot">最热</button>
     <button class="btn" id="btnCold">最冷</button>
+    <span style="border-left:1px solid var(--a);margin:0 4px"></span>
+    <button class="btn" id="btnRankMode" style="font-weight:bold">排行</button>
+    <button class="btn" id="btnHeatMode">热力图</button>
     <button class="btn" id="btnClear">清空对比</button>
     <button class="btn" id="themeToggle">◐</button>
   </div>
@@ -259,7 +270,7 @@ function toggleSel(ci) {
     selected.push(ci);
   }
   renderCards(); drawCurve();
-  drawRank();  // 高亮已选板块
+  drawLeft();  // 高亮已选板块
 }
 
 /* ── 排行榜 ── */
@@ -400,19 +411,94 @@ slideC.setOption({
     labelFormatter: v => D.dates[Math.round(v / 100 * (N_D - 1))]?.slice(5) || ''
   }]
 });
+function drawLeft() { if (mode === 'heat') drawHeatmap(); else drawRank(); }
 slideC.on('datazoom', () => {
   const opt = slideC.getOption();
   const z = opt.dataZoom[0];
   const idx = Math.round(z.end / 100 * (N_D - 1));
   const newDay = Math.max(0, Math.min(N_D - 1, idx - 1));
-  if (newDay !== curDay) { curDay = newDay; drawRank(); updateMkt(); }
+  if (newDay !== curDay) { curDay = newDay; drawLeft(); updateMkt(); }
 });
 
 /* ── 事件 ── */
-document.getElementById('btnAll').onclick = () => { filter = 'all'; drawRank(); };
-document.getElementById('btnHot').onclick = () => { filter = 'hot'; drawRank(); };
+document.getElementById('btnAll').onclick = () => { filter = 'all'; setMode('rank'); };
+document.getElementById('btnHot').onclick = () => { filter = 'hot'; setMode('rank'); };
+document.getElementById('btnCold').onclick = () => { filter = 'cold'; setMode('rank'); };
+
+// S2.2-A: 热力图模式
+let mode = 'rank';
+const btnR = document.getElementById('btnRankMode');
+const btnH = document.getElementById('btnHeatMode');
+function setMode(m) {
+  mode = m;
+  btnR.style.fontWeight = m === 'rank' ? 'bold' : 'normal';
+  btnH.style.fontWeight = m === 'heat' ? 'bold' : 'normal';
+  if (m === 'heat') drawHeatmap(); else drawRank();
+}
+btnR.onclick = () => setMode('rank');
+btnH.onclick = () => setMode('heat');
+
+function drawHeatmap() {
+  const hmDays = 60;
+  const dStart = Math.max(0, N_D - hmDays);
+  const hmDates = D.dates.slice(dStart);
+  // 按申万一级排序板块
+  const groups = D.sw1_groups || {};
+  const sortedCis = [];
+  const yLabels = [];
+  const swLabels = [];
+  const swNames = Object.keys(groups).sort();
+  for (const sw of swNames) {
+    if (sw) swLabels.push({ y: yLabels.length + sortedCis.length / 2, name: sw });
+    for (const ci of groups[sw]) { sortedCis.push(ci); yLabels.push(D.names[ci]); }
+    yLabels.push(''); sortedCis.push(-1);  // 组间空行
+  }
+  yLabels.pop(); sortedCis.pop();  // 去掉最后一行的空行
+  const hmData = [];
+  for (let xi = 0; xi < hmDates.length; xi++) {
+    for (let yi = 0; yi < sortedCis.length; yi++) {
+      const ci = sortedCis[yi];
+      if (ci < 0) continue;
+      const v = scoreAt(dStart + xi, ci);
+      if (v !== null) hmData.push([xi, yi, v]);
+    }
+  }
+  rankC.setOption({
+    animation: false,
+    title: { text: `热力图 · ${hmDates[0]?.slice(5)} ~ ${hmDates[hmDates.length-1]?.slice(5)}`,
+             left: 10, top: 6, textStyle: { fontSize: 12, color: '#52514e' } },
+    tooltip: { position: 'top', formatter: p => {
+      const ci = sortedCis[p.data[1]];
+      if (ci < 0) return '';
+      const sw = Object.keys(groups).find(s => groups[s]?.includes(ci));
+      return `${D.names[ci]}<br/>${hmDates[p.data[0]]} · 温度 ${p.data[2] > 0 ? '+' : ''}${p.data[2]}${sw ? '<br/>SW: ' + sw : ''}`;
+    }},
+    grid: { left: 10, right: 60, top: 32, bottom: 50, containLabel: true },
+    xAxis: { type: 'category', data: hmDates.map(d => d.slice(5)),
+      axisLabel: { color: '#898781', fontSize: 9, rotate: 45 },
+      splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
+    yAxis: { type: 'category', data: yLabels,
+      axisLabel: { color: '#52514e', fontSize: 8 },
+      splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
+    visualMap: { min: -100, max: 100, calculable: true, orient: 'horizontal',
+      left: 'center', bottom: 0, itemHeight: 80, itemWidth: 12,
+      textStyle: { color: '#898781', fontSize: 9 },
+      inRange: { color: ['#2a78d6', '#e1e0d9', '#e34948'] } },
+    dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
+      bottom: 22, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
+    series: [{ type: 'heatmap', data: hmData,
+      itemStyle: { borderColor: 'rgba(0,0,0,0.1)', borderWidth: 0.5 },
+      progressive: 5000, progressiveThreshold: 10000,
+      emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(0,0,0,0.3)' } } }]
+  }, true);
+  rankC.off('click');
+  rankC.on('click', p => {
+    const ci = sortedCis[p.data[1]];
+    if (ci >= 0) toggleSel(ci);
+  });
+}
 document.getElementById('btnCold').onclick = () => { filter = 'cold'; drawRank(); };
-document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawRank(); };
+document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawLeft(); };
 document.getElementById('q').addEventListener('input', e => { query = e.target.value.trim(); drawRank(); });
 document.getElementById('themeToggle').onclick = () => {
   const h = document.documentElement;
@@ -421,7 +507,7 @@ document.getElementById('themeToggle').onclick = () => {
 };
 window.addEventListener('resize', () => { rankC.resize(); curveC.resize(); slideC.resize(); sparkC.resize(); });
 
-renderCards(); drawRank(); updateMkt(); drawCurve();
+renderCards(); drawLeft(); updateMkt(); drawCurve();
 </script>
 </body>
 </html>
