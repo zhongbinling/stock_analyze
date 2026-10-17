@@ -500,11 +500,11 @@ if (sortSel) {
   sortSel.addEventListener('change', () => { sortModeVal = sortSel.value; drawLeft(); });
 }
 
-// S3-B: 时间快捷
+// S3-B: 时间快捷 — 改变热力图天数并重绘
+let hmDaysGlobal = 60;
 function hmZoom(days) {
-  const pct = days ? Math.max(0, 100 - (days / N_D) * 100) : 0;
-  slideC.dispatchAction({ type: 'dataZoom', start: pct, end: 100 });
-  // 同步更新时间按钮高亮
+  hmDaysGlobal = days || N_D; // 0 = 全部
+  drawLeft();
   const btns = [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tqAll',0]];
   for (const [id, d] of btns) {
     const b = document.getElementById(id);
@@ -530,7 +530,7 @@ btnR.onclick = () => setMode('rank');
 btnH.onclick = () => setMode('heat');
 
 function drawHeatmap() {
-  const hmDays = 60;
+  const hmDays = hmDaysGlobal || 60;
   const dStart = Math.max(0, N_D - hmDays);
   const hmDates = D.dates.slice(dStart);
   // 按申万一级排序板块(S3-B: 支持筛选)
