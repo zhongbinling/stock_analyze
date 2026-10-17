@@ -401,15 +401,33 @@ function drawRank() {
     const it = items[p.dataIndex];
     if (it) toggleSel(it.ci);
   });
+  enableRankScroll(items);  // S3-F: y轴滚动
 }
 
 /* ── 多板块曲线 ── */
 function drawCurve() {
   const side = document.getElementById('side');
   if (selected.length === 0) {
-    curveC.clear();
-    curveC.setOption({ title: { text: '点击排行或信息卡\n选择板块对比(≤5个)', left: 'center', top: 'center',
-      textStyle: { color: '#898781', fontSize: 13 } }, xAxis: {show:false}, yAxis: {show:false} });
+    // S3-F: 默认显示大盘情绪分曲线
+    const mktData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
+    curveC.setOption({
+      animation: false,
+      title: { text: '大盘情绪分(点击左侧板块可叠加对比)', left: 10, top: 6,
+        textStyle: { fontSize: 12, color: '#52514e' } },
+      tooltip: { trigger: 'axis', valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
+      grid: { left: 40, right: 12, top: 30, bottom: 40 },
+      xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
+      yAxis: { type: 'value', min: -105, max: 105,
+        axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
+      dataZoom: [{ type: 'inside' }],
+      series: [{ name: '大盘情绪分', type: 'line', data: mktData, showSymbol: false,
+        lineStyle: { width: 2, color: '#2a78d6' }, itemStyle: { color: '#2a78d6' },
+        markLine: { silent: true, symbol: 'none', label: { show: false },
+          lineStyle: { color: '#c3c2b7', type: 'dashed', width: 1 },
+          data: [{ yAxis: 0 }, { yAxis: 60 }, { yAxis: -60 }] },
+        markArea: { silent: true, itemStyle: { color: 'rgba(227,73,72,0.04)' },
+          data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } }]
+    }, true);
     side.style.display = 'none';
     return;
   }
@@ -693,24 +711,32 @@ function drawHeatmap() {
         rich: { g: { fontWeight: 'bold', fontSize: 10, color: '#0b0b0b' } },
         color: '#52514e' },
       splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
-    // S3-A: 分段对称色阶
+    // S3-F: 17段色阶(每10度一档, 分辨率集中在日常波动区)
     visualMap: { type: 'piecewise',
       pieces: [
-        { gt: 80, label: '极热', color: '#b71c1c' },
-        { gt: 50, lte: 80, label: '强热', color: '#e34948' },
-        { gt: 20, lte: 50, label: '偏热', color: '#ef9a9a' },
-        { gt: -20, lte: 20, label: '中性', color: '#e1e0d9' },
-        { gt: -50, lte: -20, label: '偏冷', color: '#90caf9' },
-        { gt: -80, lte: -50, label: '强冷', color: '#42a5f5' },
-        { lte: -80, label: '极冷', color: '#1565c0' },
+        { lte: -80, color: '#1565c0' },
+        { gt: -80, lte: -70, color: '#1976d2' },
+        { gt: -70, lte: -60, color: '#2196f3' },
+        { gt: -60, lte: -50, color: '#42a5f5' },
+        { gt: -50, lte: -40, color: '#64b5f6' },
+        { gt: -40, lte: -30, color: '#90caf9' },
+        { gt: -30, lte: -20, color: '#bbdefb' },
+        { gt: -20, lte: 0, color: '#e8eaf6' },
+        { gt: 0, lte: 20, color: '#fce4ec' },
+        { gt: 20, lte: 30, color: '#ffcdd2' },
+        { gt: 30, lte: 40, color: '#ef9a9a' },
+        { gt: 40, lte: 50, color: '#e57373' },
+        { gt: 50, lte: 60, color: '#ef5350' },
+        { gt: 60, lte: 70, color: '#e53935' },
+        { gt: 70, lte: 80, color: '#d32f2f' },
+        { gt: 80, lte: 95, color: '#c62828' },
+        { gt: 95, color: '#b71c1c' },
       ],
       orient: 'horizontal', left: 'center', bottom: 0,
-      itemWidth: 14, itemHeight: 10, itemGap: 3,
-      textStyle: { fontSize: 9, color: '#898781' },
-      formatter: (v, v2) => {
-        const mid = (v + v2) / 2 || v;
-        return labelOf(mid) + ' ' + (v2 !== undefined ? `${v}~${v2}` : v > 0 ? `>${v}` : `<${v}`);
-      },
+      itemWidth: 10, itemHeight: 8, itemGap: 1,
+      textStyle: { fontSize: 8, color: '#898781' },
+      formatter: (v, v2) => v2 !== undefined ? `${v}~${v2}` : (v > 0 ? `>${v}` : `<${v}`),
+      splitNumber: 17,
     },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
       bottom: 26, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
@@ -738,6 +764,40 @@ document.getElementById('themeToggle').onclick = () => {
   const t = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   h.setAttribute('data-theme', t);
 };
+// S3-F: 右侧曲线 dataZoom → 左侧热力图同步
+curveC.on('datazoom', () => {
+  const opt = curveC.getOption();
+  const z = opt.dataZoom[0];
+  if (!z) return;
+  const visiblePct = (z.end - z.start) / 100;
+  const visibleDays = Math.round(visiblePct * N_D);
+  if (Math.abs(visibleDays - hmDaysGlobal) > 10) {
+    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), 750);
+    drawLeft();
+  }
+});
+
+// S3-F: 排行图y轴滚动(支持查看全部板块)
+function enableRankScroll(items) {
+  if (!items || items.length === 0) return;
+  const opt = rankC.getOption();
+  if (opt && opt.yAxis && opt.yAxis[0] && opt.yAxis[0].data) {
+    const total = opt.yAxis[0].data.length;
+    if (total > 60) {
+      rankC.setOption({
+        dataZoom: [
+          { type: 'inside', yAxisIndex: 0, zoomOnMouseWheel: false, moveOnMouseWheel: true,
+            startValue: 0, endValue: 60 },
+          { type: 'slider', yAxisIndex: 0, right: 0, width: 12,
+            startValue: 0, endValue: 60,
+            borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.08)',
+            textStyle: { fontSize: 8, color: '#898781' } },
+        ]
+      });
+    }
+  }
+}
+
 window.addEventListener('resize', () => { rankC.resize(); curveC.resize(); slideC.resize(); sparkC.resize(); });
 
 renderCards(); drawLeft(); updateMkt(); drawCurve();
