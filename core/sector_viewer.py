@@ -304,7 +304,7 @@ function rankData() {
     const v = row[ci];
     if (v === null) continue;
     items.push({ name: nm, v: v, ci: ci });
-  });
+  }
   // S3-B: 排序模式
   if (sortModeVal === 'chg') {
     const prev = D.mat[curDay - 1] || [];
