@@ -4,9 +4,10 @@ const html = fs.readFileSync('out/sector_heat_test.html', 'utf8');
 const app = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1])[2];
 
 function el(id) {
+  const attrs = {};
   return { id, style: {}, innerHTML: '', textContent: '', value: '',
-    addEventListener(){}, setAttribute(){}, getAttribute(){return 'light'}, appendChild(){},
-    classList:{add(){},remove(){},toggle(){}}, onclick:null, oninput:null, focus(){},
+    addEventListener(){}, setAttribute(k, v){ attrs[k] = v; }, getAttribute(k){ return attrs[k] || 'light'; },
+    appendChild(){}, classList:{add(){},remove(){},toggle(){}}, onclick:null, oninput:null, focus(){},
     querySelectorAll(){return[]} };
 }
 function mkChart() {
@@ -26,14 +27,27 @@ function mkChart() {
 const els = {};
 global.document = { getElementById(id){ return els[id] || (els[id] = el(id)); },
   createElement:()=>el('x'), addEventListener(){}, querySelector:()=>el('q'),
-  querySelectorAll:()=>[], body: el('body'), documentElement: el('html') };
+  querySelectorAll:()=>[], body: el('body'),
+  get documentElement(){ return this.getElementById('html'); } };
 global.window = global; global.addEventListener = ()=>{};
-let curveChart = null;
-global.echarts = { init(dom){ const c = mkChart(); if (dom && dom.id === 'curve') curveChart = c; return c; } };
+// S3-D: getComputedStyle mock — 按当前 data-theme 返回CSS变量(与页内:root一致)
+global.getComputedStyle = () => {
+  const dark = global.document.documentElement.getAttribute('data-theme') === 'dark';
+  const m = dark
+    ? {'--i2':'#c3c2b7','--m':'#898781','--g':'#2c2c2a','--a':'#383835','--rd':'#e66767','--bl':'#3987e5','--i':'#f0efec'}
+    : {'--i2':'#52514e','--m':'#898781','--g':'#e1e0d9','--a':'#c3c2b7','--rd':'#e34948','--bl':'#2a78d6','--i':'#0b0b0b'};
+  return { getPropertyValue: n => m[n] || '' };
+};
+let curveChart = null, rankChart = null, slideChart = null;
+global.echarts = { init(dom){ const c = mkChart();
+  if (dom && dom.id === 'curve') curveChart = c;
+  if (dom && dom.id === 'rank') rankChart = c;
+  if (dom && dom.id === 'slider') slideChart = c;
+  return c; } };
 
-const driver = app + ';globalThis.__T={toggleSel,hmZoom,drawCurve,drawSideFor,renderCards,updateMkt,' +
+const driver = app + ';globalThis.__T={toggleSel,hmZoom,drawCurve,drawSideFor,drawSlider,drawLeft,renderCards,updateMkt,' +
   'semanticOf,semShort,divergenceOf,latestComps,deltaAt,D,hmDays:()=>hmDaysGlobal,' +
-  'getSel:()=>selected,setCur:d=>curDay=d};';
+  'getSel:()=>selected,setCur:d=>curDay=d,setMode:m=>mode=m,getPAL:()=>PAL};';
 new Function(driver)();
 
 const T = globalThis.__T;
@@ -178,6 +192,37 @@ check(typeof els['mktSem'].textContent === 'string' && els['mktSem'].textContent
   check(semOld === semNow, 'side semantic invariant to date slider', `"${semOld}" vs "${semNow}"`);
   T.setCur(T.D.dates.length - 1);                 // 复位
 }
+
+// ── S3-D: 主题令牌 / 切换重绘 / 降噪 / 栅格 ──
+// 16. 令牌浅色值 + 降噪断言(热力图模式)
+check(T.getPAL().pos === '#e34948' && T.getPAL().neg === '#2a78d6', 'PAL light pos/neg from CSS vars');
+check(T.getPAL().splitA[0] === 'rgba(0,0,0,0.02)', 'PAL light splitArea');
+T.setMode('heat'); T.drawLeft();
+let hmOpt = rankChart._opt;
+check(hmOpt.series[0].itemStyle.borderWidth === 0, 'heatmap cell border removed (denoise)');
+check(hmOpt.visualMap.textStyle.fontSize === 10, 'visualMap legend fontSize 10');
+check(hmOpt.yAxis.axisLabel.rich.g.color === '#0b0b0b', 'group label uses PAL.strong (light)');
+check(hmOpt.xAxis.splitArea.areaStyle.color[0] === 'rgba(0,0,0,0.02)', 'heatmap splitArea from PAL');
+check(hmOpt.title.textStyle.color === '#52514e', 'heatmap title uses PAL.txt (light)');
+
+// 17. 主题切换 → 令牌更新 + 全量重绘为暗色值
+els['themeToggle'].onclick();
+check(global.document.documentElement.getAttribute('data-theme') === 'dark', 'theme toggled to dark');
+check(T.getPAL().strong === '#f0efec' && T.getPAL().txt === '#c3c2b7', 'PAL re-read as dark',
+  JSON.stringify({strong: T.getPAL().strong, txt: T.getPAL().txt}));
+check(T.getPAL().splitA[0] === 'rgba(255,255,255,0.02)', 'PAL dark splitArea');
+hmOpt = rankChart._opt;   // drawLeft 已被 themeToggle 触发(heat 模式)
+check(hmOpt.yAxis.axisLabel.rich.g.color === '#f0efec', 'heatmap re-rendered with dark strong');
+check(hmOpt.title.textStyle.color === '#c3c2b7', 'heatmap title dark txt');
+check(hmOpt.tooltip.backgroundColor === 'rgba(38,38,37,0.96)', 'tooltip dark background');
+check(hmOpt.xAxis.splitArea.areaStyle.color[0] === 'rgba(255,255,255,0.02)', 'heatmap dark splitArea');
+check(slideChart._opt.dataZoom[0].borderColor === '#383835', 'slider re-rendered with dark border');
+
+// 18. 栅格 8:4 与卡片内边距(CSS 断言)
+check(/#rank\{flex:8/.test(html), 'CSS: #rank flex 8 (12-grid)');
+check(/#curve\{flex:4/.test(html), 'CSS: #curve flex 4 (12-grid)');
+check(/\.card\{[^}]*padding:8px 12px/.test(html), 'CSS: card padding 8px 12px');
+check(/\.chart-row\{[^}]*gap:12px/.test(html), 'CSS: chart-row gap 12px');
 
 console.log(fails === 0 ? '\nALL TESTS PASS' : `\n${fails} TEST(S) FAILED`);
 process.exit(fails ? 1 : 0);

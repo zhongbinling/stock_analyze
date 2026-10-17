@@ -150,7 +150,7 @@ padding:8px 16px;background:var(--s);border-bottom:1px solid var(--g);flex-shrin
 .info-row{display:flex;gap:12px;padding:8px 16px;background:var(--s);
 border-bottom:1px solid var(--g);flex-shrink:0;align-items:stretch}
 .cards{flex:1;display:flex;gap:6px;overflow-x:auto}
-.card{min-width:100px;padding:6px 10px;border-radius:8px;background:var(--p);
+.card{min-width:104px;padding:8px 12px;border-radius:8px;background:var(--p);
 border:1px solid var(--g);cursor:pointer;transition:all .15s;text-align:center}
 .card:hover{border-color:var(--m);transform:translateY(-1px)}
 .card .nm{font-size:11px;color:var(--i2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -166,8 +166,8 @@ border-left:1px solid var(--g);padding-left:14px}
 #slider{margin:4px 16px;background:var(--s);border:1px solid var(--g);border-radius:8px;
 padding:2px 8px;flex-shrink:0}
 /* ── 下行: 分析层 ── */
-.chart-row{flex:1;display:flex;gap:8px;padding:4px 16px 8px;min-height:0}
-#rank{flex:6;background:var(--s);border:1px solid var(--g);border-radius:10px;min-width:0}
+.chart-row{flex:1;display:flex;gap:12px;padding:4px 16px 8px;min-height:0}
+#rank{flex:8;background:var(--s);border:1px solid var(--g);border-radius:10px;min-width:0}
 #curve{flex:4;background:var(--s);border:1px solid var(--g);border-radius:10px;min-width:0;position:relative}
 #side{position:absolute;right:6px;top:6px;width:250px;max-height:calc(100% - 12px);overflow-y:auto;
 background:var(--s);border:1px solid var(--g);border-radius:8px;padding:10px 12px;display:none;z-index:10;
@@ -265,6 +265,28 @@ let curDay = N_D - 1, query = "";
 let selected = [];   // 多板块对比: 已选板块的 code index 数组(≤5)
 const PALETTE = ["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"];
 
+/* ── S3-D: 主题令牌 — CSS变量为单一色彩源, 切换主题后重取并重绘 ── */
+const cssVar = n => (typeof getComputedStyle === 'function'
+  ? getComputedStyle(document.documentElement).getPropertyValue(n).trim() : '');
+function pal() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return {
+    txt: cssVar('--i2') || '#52514e',   // 标题/图例/主文字
+    axis: cssVar('--m') || '#898781',   // 坐标轴/辅助文字
+    grid: cssVar('--g') || '#e1e0d9',   // 网格线
+    a: cssVar('--a') || '#c3c2b7',      // markLine/滑块边框
+    pos: cssVar('--rd') || '#e34948',   // 正温
+    neg: cssVar('--bl') || '#2a78d6',   // 负温
+    strong: cssVar('--i') || '#0b0b0b', // 组名/hover描边/tooltip正文
+    warn: '#eda100',                    // 背离警示(双主题可读)
+    tipBg: dark ? 'rgba(38,38,37,0.96)' : 'rgba(255,255,255,0.96)',
+    splitA: dark ? ['rgba(255,255,255,0.02)', 'rgba(255,255,255,0.05)']
+                 : ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'],
+    shadow: dark ? 'rgba(0,0,0,0.6)' : 'rgba(0,0,0,0.3)'
+  };
+}
+let PAL = pal();
+
 const rankC = echarts.init(document.getElementById('rank'));
 const curveC = echarts.init(document.getElementById('curve'));
 const slideC = echarts.init(document.getElementById('slider'));
@@ -343,8 +365,8 @@ function updateMkt() {
     xAxis: { type: 'category', show: false, data: recent.map(r => r[0]) },
     yAxis: { type: 'value', show: false, min: -100, max: 100 },
     series: [{ type: 'line', data: recent.map(r => r[1]), showSymbol: false,
-      lineStyle: { width: 1.5, color: m[1] >= 0 ? '#e34948' : '#2a78d6' },
-      itemStyle: { color: m[1] >= 0 ? '#e34948' : '#2a78d6' } }]
+      lineStyle: { width: 1.5, color: m[1] >= 0 ? PAL.pos : PAL.neg },
+      itemStyle: { color: m[1] >= 0 ? PAL.pos : PAL.neg } }]
   }, true);
 }
 
@@ -433,26 +455,27 @@ function drawRank() {
   document.getElementById('hInfo').textContent = `${day} · ${N_C} 板块`;
   rankC.setOption({
     animation: false,
-    title: { text: `温度排行 · ${day}`, left: 10, top: 6, textStyle: { fontSize: 12, color: '#52514e' } },
-    tooltip: { trigger: 'item', formatter: p => {
+    title: { text: `温度排行 · ${day}`, left: 10, top: 6, textStyle: { fontSize: 12, color: PAL.txt } },
+    tooltip: { trigger: 'item', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
+      textStyle: { color: PAL.strong }, formatter: p => {
       const it = items[p.dataIndex];
       const sel = it && selected.includes(it.ci);
       // S3-C: 5日变化 + 语义短语
       const d5 = it ? deltaAt(curDay, it.ci, 5) : null;
       let h = `${p.name}<br/>温度 ${p.value > 0 ? '+' : ''}${p.value}`;
-      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? '#e34948' : '#2a78d6'}">5日 ${d5 > 0 ? '+' : ''}${d5}</span> · ${semanticOf(p.value, d5)}`;
+      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? PAL.pos : PAL.neg}">5日 ${d5 > 0 ? '+' : ''}${d5}</span> · ${semanticOf(p.value, d5)}`;
       else h += `<br/>${semanticOf(p.value, null)}`;
       if (sel) h += '<br/><b>已选对比</b>';
       return h;
     }},
     grid: { left: 10, right: 40, top: 30, bottom: 8, containLabel: true },
-    xAxis: { type: 'value', min: -105, max: 105, axisLabel: { color: '#898781', fontSize: 10 },
-      splitLine: { lineStyle: { color: '#e1e0d9' } } },
+    xAxis: { type: 'value', min: -105, max: 105, axisLabel: { color: PAL.axis, fontSize: 10 },
+      splitLine: { lineStyle: { color: PAL.grid } } },
     yAxis: { type: 'category', inverse: true,
       data: items.map(i => i.name),
-      axisLabel: { color: '#52514e', fontSize: 10,
+      axisLabel: { color: PAL.txt, fontSize: 10,
         formatter: v => selected.some(ci => D.names[ci] === v) ? `▶ ${v}` : v },
-      axisTick: { show: false }, axisLine: { lineStyle: { color: '#c3c2b7' } } },
+      axisTick: { show: false }, axisLine: { lineStyle: { color: PAL.a } } },
     series: [{ type: 'bar', data: items.map(i => {
         const selIdx = selected.indexOf(i.ci);
         const isSel = selIdx >= 0;
@@ -461,7 +484,7 @@ function drawRank() {
                      : `rgba(42,120,214,${Math.min(0.25 + Math.abs(i.v) / 130, 0.95)})` } };
       }),
       barMaxWidth: 10, barCategoryGap: '18%',
-      label: { show: true, position: 'right', fontSize: 9, color: '#898781',
+      label: { show: true, position: 'right', fontSize: 9, color: PAL.axis,
         formatter: p => (p.value > 0 ? '+' : '') + p.value } }]
   }, true);
   rankC.off('click');
@@ -503,17 +526,19 @@ function drawCurve() {
     curveC.setOption({
       animation: false,
       title: { text: '大盘情绪分(点击左侧板块可叠加对比)', left: 10, top: 6,
-        textStyle: { fontSize: 12, color: '#52514e' } },
-      tooltip: { trigger: 'axis', valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
+        textStyle: { fontSize: 12, color: PAL.txt } },
+      tooltip: { trigger: 'axis', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
+        textStyle: { color: PAL.strong },
+        valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
       grid: { left: 40, right: 12, top: 30, bottom: 40 },
-      xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
+      xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9 } },
       yAxis: { type: 'value', min: -105, max: 105,
-        axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
+        axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
       dataZoom: curveZoomOpt(),
       series: [{ name: '大盘情绪分', type: 'line', data: mktData, showSymbol: false,
-        lineStyle: { width: 2, color: '#2a78d6' }, itemStyle: { color: '#2a78d6' },
+        lineStyle: { width: 2, color: PAL.neg }, itemStyle: { color: PAL.neg },
         markLine: { silent: true, symbol: 'none', label: { show: false },
-          lineStyle: { color: '#c3c2b7', type: 'dashed', width: 1 },
+          lineStyle: { color: PAL.a, type: 'dashed', width: 1 },
           data: [{ yAxis: 0 }, { yAxis: 60 }, { yAxis: -60 }] },
         markArea: { silent: true, itemStyle: { color: 'rgba(227,73,72,0.04)' },
           data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } }]
@@ -531,7 +556,7 @@ function drawCurve() {
       lineStyle: { width: si === 0 ? 2 : 1.6, color: PALETTE[si] },
       itemStyle: { color: PALETTE[si] },
       markLine: si === 0 ? { silent: true, symbol: 'none', label: { show: false },
-        lineStyle: { color: '#c3c2b7', type: 'dashed', width: 1 },
+        lineStyle: { color: PAL.a, type: 'dashed', width: 1 },
         data: [{ yAxis: 0 }, { yAxis: 60 }, { yAxis: -60 }] } : undefined,
       markArea: si === 0 ? { silent: true, itemStyle: { color: 'rgba(227,73,72,0.04)' },
         data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } : undefined };
@@ -539,21 +564,23 @@ function drawCurve() {
   // 大盘情绪分始终作为背景层(图例可点击隐藏)
   const mktBgData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
   const mktSeries = { name: '大盘情绪分', type: 'line', data: mktBgData,
-    showSymbol: false, lineStyle: { width: 1, color: '#c3c2b7', type: 'dashed' },
-    itemStyle: { color: '#c3c2b7' }, silent: true, z: 1 };
+    showSymbol: false, lineStyle: { width: 1, color: PAL.a, type: 'dashed' },
+    itemStyle: { color: PAL.a }, silent: true, z: 1 };
   // 选中板块曲线在上层
   series.forEach(s => { s.z = 10; });
   curveC.setOption({
     animation: false,
     legend: { top: 6, left: 10, itemWidth: 14, itemHeight: 8,
-      textStyle: { fontSize: 10, color: '#52514e' },
+      textStyle: { fontSize: 10, color: PAL.txt },
       data: ['大盘情绪分', ...series.map(s => s.name)],
       selected: curveLegendHidden(['大盘情绪分', ...series.map(s => s.name)]) },
-    tooltip: { trigger: 'axis', valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
+    tooltip: { trigger: 'axis', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
+      textStyle: { color: PAL.strong },
+      valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
     grid: { left: 40, right: 12, top: 32, bottom: 40 },
-    xAxis: { type: 'time', axisLabel: { color: '#898781', fontSize: 9 } },
+    xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9 } },
     yAxis: { type: 'value', min: -105, max: 105,
-      axisLabel: { color: '#898781', fontSize: 9 }, splitLine: { lineStyle: { color: '#e1e0d9' } } },
+      axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
     dataZoom: curveZoomOpt(),
     series: [mktSeries, ...series]
   }, true);
@@ -613,19 +640,23 @@ function drawSide() {
 }
 
 /* ── 日期滑块 ── */
-slideC.setOption({
-  animation: false,
-  grid: { left: 130, right: 130, top: 4, bottom: 22 },
-  xAxis: { show: false, min: 0, max: N_D - 1 },
-  yAxis: { show: false, min: 0, max: 1 },
-  graphic: [],
-  dataZoom: [{
-    type: 'slider', xAxisIndex: 0, start: Math.max(0, (N_D - 31) / N_D * 100), end: 100,
-    height: 16, bottom: 2, borderColor: '#c3c2b7',
-    fillerColor: 'rgba(42,120,214,0.12)',
-    labelFormatter: v => D.dates[Math.round(v / 100 * (N_D - 1))]?.slice(5) || ''
-  }]
-});
+// S3-D: 包成函数, 主题切换后随 PAL 重绘(事件绑定仅一次)
+function drawSlider() {
+  slideC.setOption({
+    animation: false,
+    grid: { left: 130, right: 130, top: 4, bottom: 22 },
+    xAxis: { show: false, min: 0, max: N_D - 1 },
+    yAxis: { show: false, min: 0, max: 1 },
+    graphic: [],
+    dataZoom: [{
+      type: 'slider', xAxisIndex: 0, start: Math.max(0, (N_D - 31) / N_D * 100), end: 100,
+      height: 16, bottom: 2, borderColor: PAL.a,
+      fillerColor: 'rgba(42,120,214,0.12)',
+      labelFormatter: v => D.dates[Math.round(v / 100 * (N_D - 1))]?.slice(5) || ''
+    }]
+  });
+}
+drawSlider();
 function drawLeft() { if (mode === 'heat') drawHeatmap(); else drawRank(); }
 slideC.on('datazoom', () => {
   const opt = slideC.getOption();
@@ -790,8 +821,9 @@ function drawHeatmap() {
   rankC.setOption({
     animation: false,
     title: { text: `热力图 · ${hmDates[0]?.slice(5)} ~ ${hmDates[hmDates.length-1]?.slice(5)}`,
-             left: 10, top: 6, textStyle: { fontSize: 12, color: '#52514e' } },
-    tooltip: { position: 'top', formatter: p => {
+             left: 10, top: 6, textStyle: { fontSize: 12, color: PAL.txt } },
+    tooltip: { position: 'top', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
+      textStyle: { color: PAL.strong }, formatter: p => {
       const ci = sortedCis[p.data[1]];
       if (ci < 0) return yLabels[p.data[1]] ? `<b>${yLabels[p.data[1]]}</b>` : '';
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci));
@@ -801,25 +833,25 @@ function drawHeatmap() {
       const d5 = deltaAt(dStart + p.data[0], ci, 5);
       let h = `<b>${D.names[ci]}</b>${sw && sw ? `（SW: ${sw}）` : ''}`;
       h += `<br/>${hmDates[p.data[0]]}`;
-      h += `<br/>温度 <b style="color:${v >= 0 ? '#e34948' : '#2a78d6'}">${v > 0 ? '+' : ''}${v}</b>（${labelOf(v)}）`;
-      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? '#e34948' : '#2a78d6'};font-size:11px">5日 ${d5 > 0 ? '+' : ''}${d5}</span><span style="color:#898781;font-size:11px"> · ${semanticOf(v, d5)}</span>`;
-      else h += `<br/><span style="color:#898781;font-size:11px">${semanticOf(v, null)}</span>`;
+      h += `<br/>温度 <b style="color:${v >= 0 ? PAL.pos : PAL.neg}">${v > 0 ? '+' : ''}${v}</b>（${labelOf(v)}）`;
+      if (d5 !== null) h += `<br/><span style="color:${d5 >= 0 ? PAL.pos : PAL.neg};font-size:11px">5日 ${d5 > 0 ? '+' : ''}${d5}</span><span style="color:${PAL.axis};font-size:11px"> · ${semanticOf(v, d5)}</span>`;
+      else h += `<br/><span style="color:${PAL.axis};font-size:11px">${semanticOf(v, null)}</span>`;
       const lc = latestComps(ci);
       const divg = divergenceOf(lc && lc.comps);
-      if (divg) h += `<br/><span style="color:#eda100;font-size:11px">${divg}</span>`;
-      if (drv) h += `<br/><span style="color:#898781;font-size:11px">${drv}</span>`;
+      if (divg) h += `<br/><span style="color:${PAL.warn};font-size:11px">${divg}</span>`;
+      if (drv) h += `<br/><span style="color:${PAL.axis};font-size:11px">${drv}</span>`;
       return h;
     }},
     grid: { left: 10, right: 60, top: 32, bottom: 56, containLabel: true },
     xAxis: { type: 'category', data: hmDates.map(d => d.slice(5)),
-      axisLabel: { color: '#898781', fontSize: 9, rotate: 45 },
-      splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
+      axisLabel: { color: PAL.axis, fontSize: 9, rotate: 45 },
+      splitArea: { show: true, areaStyle: { color: PAL.splitA } } },
     yAxis: { type: 'category', data: yLabels,
       axisLabel: { fontSize: 8,
         formatter: v => swSet.has(v) ? `{g|${v}}` : v,
-        rich: { g: { fontWeight: 'bold', fontSize: 10, color: '#0b0b0b' } },
-        color: '#52514e' },
-      splitArea: { show: true, areaStyle: { color: ['rgba(0,0,0,0.02)', 'rgba(0,0,0,0.04)'] } } },
+        rich: { g: { fontWeight: 'bold', fontSize: 10, color: PAL.strong } },
+        color: PAL.txt },
+      splitArea: { show: true, areaStyle: { color: PAL.splitA } } },
     // 16段色阶(深蓝→浅蓝→米白→橙红→深红, 每段带语义标签)
     visualMap: { type: 'piecewise',
       pieces: [
@@ -841,19 +873,20 @@ function drawHeatmap() {
         { gt: 80, color: '#6a0000', label: '狂热' },
       ],
       orient: 'horizontal', left: 'center', bottom: 0,
-      itemWidth: 10, itemHeight: 8, itemGap: 1,
-      textStyle: { fontSize: 8, color: '#898781' },
+      itemWidth: 12, itemHeight: 8, itemGap: 1,
+      textStyle: { fontSize: 10, color: PAL.axis },
       formatter: (v, v2) => {
         const mid = (v + v2) / 2 || v;
         return labelOf(mid);
       },
     },
     dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
-      bottom: 26, height: 14, borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.1)' }],
+      bottom: 26, height: 14, borderColor: PAL.a, fillerColor: 'rgba(42,120,214,0.1)' }],
     series: [{ type: 'heatmap', data: hmData,
-      itemStyle: { borderColor: 'rgba(0,0,0,0.08)', borderWidth: 0.3 },
+      // S3-D: 常态无边框(降噪), 仅hover描边
+      itemStyle: { borderWidth: 0 },
       progressive: 5000, progressiveThreshold: 10000,
-      emphasis: { itemStyle: { shadowBlur: 4, shadowColor: 'rgba(0,0,0,0.3)', borderColor: '#0b0b0b', borderWidth: 1.5 } } }]
+      emphasis: { itemStyle: { shadowBlur: 4, shadowColor: PAL.shadow, borderColor: PAL.strong, borderWidth: 1.5 } } }]
   }, true);
   rankC.off('click');
   rankC.on('click', p => {
@@ -873,6 +906,9 @@ document.getElementById('themeToggle').onclick = () => {
   const h = document.documentElement;
   const t = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
   h.setAttribute('data-theme', t);
+  // S3-D: 重取主题令牌并全量重绘(缩放态/图例隐藏态由既有机制保留)
+  PAL = pal();
+  drawLeft(); drawCurve(); drawSlider(); updateMkt();
 };
 // S3-F: 右侧曲线 dataZoom → 左侧热力图同步(曲线跨度15年, 按曲线总天数折算)
 curveC.on('datazoom', () => {
@@ -899,8 +935,8 @@ function enableRankScroll(items) {
             startValue: 0, endValue: 60 },
           { type: 'slider', yAxisIndex: 0, right: 0, width: 12,
             startValue: 0, endValue: 60,
-            borderColor: '#c3c2b7', fillerColor: 'rgba(42,120,214,0.08)',
-            textStyle: { fontSize: 8, color: '#898781' } },
+            borderColor: PAL.a, fillerColor: 'rgba(42,120,214,0.08)',
+            textStyle: { fontSize: 8, color: PAL.axis } },
         ]
       });
     }
