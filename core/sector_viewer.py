@@ -497,9 +497,8 @@ function drawHeatmap() {
     if (ci >= 0) toggleSel(ci);
   });
 }
-document.getElementById('btnCold').onclick = () => { filter = 'cold'; drawRank(); };
 document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawLeft(); };
-document.getElementById('q').addEventListener('input', e => { query = e.target.value.trim(); drawRank(); });
+document.getElementById('q').addEventListener('input', e => { query = e.target.value.trim(); drawLeft(); });
 document.getElementById('themeToggle').onclick = () => {
   const h = document.documentElement;
   const t = h.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
