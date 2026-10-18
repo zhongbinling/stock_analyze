@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""备份系统测试 (core/backup.py): 快照闭环/去重/GFS清理/损坏检出/恢复往返"""
+"""备份系统测试 (core/backup.py v2): 类型滚动/快照闭环/损坏检出/恢复往返/钩子"""
 import datetime as dt
 import json
 import sqlite3
@@ -53,60 +53,12 @@ def env(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(B, "BACKUP_DIR", bdir)
     monkeypatch.setattr(B, "MANIFEST", bdir / "manifest.json")
+    monkeypatch.setattr(B, "LOG_FILE", bdir / "backup.log")
     return {"bdir": bdir, "sent": sent, "app": app, "secret": data / "secret.key"}
 
 
 def _entries():
     return json.loads(B.MANIFEST.read_text(encoding="utf-8"))["entries"]
-
-
-def test_snapshot_roundtrip_and_manifest(env):
-    for a in B.ASSETS:
-        assert B.snapshot(a) is not None
-    ents = _entries()
-    assert len(ents) == len(B.ASSETS)
-    sent_e = next(e for e in ents if e["asset"] == "sentiment")
-    assert sent_e["integrity"] == "ok"
-    assert sent_e["stats"]["sector_scores"] == "2026-09-30"
-    assert (env["bdir"] / sent_e["file"]).exists()
-    assert B.verify("--all") is True
-
-
-def test_skip_unchanged(env):
-    B.snapshot("sentiment")
-    n1 = len(_entries())
-    assert B.snapshot("sentiment") is None          # sha相同 → 跳过
-    assert len(_entries()) == n1
-
-
-def test_snapshot_after_change(env):
-    B.snapshot("sentiment")
-    conn = sqlite3.connect(str(env["sent"]))
-    conn.execute("INSERT INTO sentiment VALUES('2026-10-09', 10.0, '中性', NULL, NULL)")
-    conn.commit()
-    conn.close()
-    e = B.snapshot("sentiment", tag="pre-calc")
-    assert e is not None and e["tag"] == "pre-calc"
-    assert e["stats"]["sentiment"] == "2026-10-09"  # 新鲜度随数据更新
-
-
-def test_missing_asset_skips(env, monkeypatch):
-    monkeypatch.setitem(B.ASSETS, "app", ("sqlite", env["bdir"] / "nope.db"))
-    assert B.snapshot("app") is None                # 缺失告警不炸
-
-
-def _fabricate(env, days=90):
-    """伪造 days 天的 sentiment 快照(每天一份, 内容递增) + manifest"""
-    env["bdir"].mkdir(parents=True, exist_ok=True)
-    end = dt.date(2026, 9, 30)
-    for i in range(days):
-        d = end - dt.timedelta(days=days - 1 - i)
-        f = env["bdir"] / f"sentiment_{d.strftime('%Y%m%d')}__180000.db"
-        f.write_bytes(f"v{i}".encode())
-        _append({"file": f.name, "asset": "sentiment", "kind": "sqlite",
-                 "sha256": B._sha256(f), "size": f.stat().st_size,
-                 "time": f"{d.isoformat()} 18:00:00", "date": d.strftime("%Y%m%d"),
-                 "tag": "", "integrity": "ok", "stats": {}})
 
 
 def _append(entry):
@@ -116,49 +68,117 @@ def _append(entry):
     B.MANIFEST.write_text(json.dumps(m), encoding="utf-8")
 
 
-def test_prune_gfs_properties(env):
-    _fabricate(env, days=90)
-    B.prune()
-    ents = _entries()
-    files = {e["file"] for e in ents}
-    dates = sorted(dt.datetime.strptime(e["date"], "%Y%m%d").date() for e in ents)
-    end = dt.date(2026, 9, 30)
-    recent = [end - dt.timedelta(days=i) for i in range(30)]
-    # 性质1: 最近30天每日全保留
-    for d in recent:
-        assert d.strftime("%Y%m%d") in {e["date"] for e in ents}, f"missing {d}"
-    # 性质2: 总量有界 (30日 + 12周 + 12月)
-    assert len(ents) <= B.DAILY_N + B.WEEKLY_N + B.MONTHLY_N
-    # 性质3: 逾30天的快照只可能是其ISO周或月份的最新一份
-    for e in ents:
-        d = dt.datetime.strptime(e["date"], "%Y%m%d").date()
-        if d in recent:
-            continue
-        same_week = [x for x in ents
-                     if dt.datetime.strptime(x["date"], "%Y%m%d").date().isocalendar()[:2]
-                     == d.isocalendar()[:2]]
-        same_month = [x for x in ents
-                      if dt.datetime.strptime(x["date"], "%Y%m%d").date().strftime("%Y%m")
-                      == d.strftime("%Y%m")]
-        assert (max(same_week, key=lambda x: x["date"])["file"] == e["file"]
-                or max(same_month, key=lambda x: x["date"])["file"] == e["file"]), \
-            f"非锚点快照未被清理: {e['file']}"
-    # 性质4: 被清理的文件从磁盘移除, manifest同步
-    on_disk = {p.name for p in env["bdir"].glob("sentiment_*.db")}
-    assert on_disk == files
+# ── 快照闭环 ──
 
+def test_run_all_roundtrip_and_manifest(env):
+    r = B.run_all("daily")
+    assert r["status"] == "ok" and r["files_n"] == len(B.ASSETS) and r["error"] is None
+    ents = _entries()
+    assert len(ents) == len(B.ASSETS)
+    assert all(e["type"] == "daily" for e in ents)
+    sent_e = next(e for e in ents if e["asset"] == "sentiment")
+    assert sent_e["integrity"] == "ok"
+    assert sent_e["stats"]["sector_scores"] == "2026-09-30"
+    assert (env["bdir"] / sent_e["file"]).exists()
+    assert B.verify("--all") is True
+
+
+def test_skip_unchanged(env):
+    B.snapshot("sentiment", "daily")
+    n1 = len(_entries())
+    assert B.snapshot("sentiment", "daily") is None          # sha相同 → 跳过
+    assert len(_entries()) == n1
+    assert "未变化" in B.LOG_FILE.read_text(encoding="utf-8")
+
+
+def test_snapshot_after_change(env):
+    B.snapshot("sentiment", "daily")
+    conn = sqlite3.connect(str(env["sent"]))
+    conn.execute("INSERT INTO sentiment VALUES('2026-10-09', 10.0, '中性', NULL, NULL)")
+    conn.commit()
+    conn.close()
+    e = B.snapshot("sentiment", "pre-calc")
+    assert e is not None and e["type"] == "pre-calc"
+    assert e["stats"]["sentiment"] == "2026-10-09"
+
+
+def test_log_file_written(env):
+    B.run_all("daily")
+    log = B.LOG_FILE.read_text(encoding="utf-8")
+    assert "prune:" in log and "+ sentiment_" in log
+
+
+def test_missing_asset_skips(env, monkeypatch):
+    monkeypatch.setitem(B.ASSETS, "app", ("sqlite", env["bdir"] / "nope.db"))
+    assert B.snapshot("app") is None
+
+
+# ── 类型滚动清理 ──
+
+def _fabricate(env, btype, days, end=dt.date(2026, 9, 30)):
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    for i in range(days):
+        d = end - dt.timedelta(days=days - 1 - i)
+        f = env["bdir"] / f"sentiment_{d.strftime('%Y%m%d')}__180000_{btype}.db"
+        f.write_bytes(f"v{i}".encode())
+        _append({"file": f.name, "asset": "sentiment", "kind": "sqlite",
+                 "sha256": B._sha256(f), "size": f.stat().st_size,
+                 "time": f"{d.isoformat()} 18:00:00", "date": d.strftime("%Y%m%d"),
+                 "type": btype, "integrity": "ok", "stats": {}})
+
+
+def test_prune_type_rolling(env):
+    _fabricate(env, "daily", 20)
+    _fabricate(env, "weekly", 10, end=dt.date(2026, 10, 2))
+    _fabricate(env, "manual", 7)
+    B.prune({"daily": 14, "weekly": 8, "manual": 5, "pre": 10})
+    ents = _entries()
+    by_type = {}
+    for e in ents:
+        by_type.setdefault(e["type"], []).append(e)
+    assert len(by_type.get("daily", [])) == 14              # 各类型按N滚动
+    assert len(by_type.get("weekly", [])) == 8
+    assert len(by_type.get("manual", [])) == 5
+    # 保留的是最近的N份
+    days = sorted(e["date"] for e in by_type["daily"])
+    assert days == sorted((dt.date(2026, 9, 30) - dt.timedelta(days=i)).strftime("%Y%m%d")
+                          for i in range(14))
+    # 磁盘与manifest同步
+    on_disk = {p.name for p in env["bdir"].glob("sentiment_*.db")}
+    assert on_disk == {e["file"] for e in ents}
+
+
+def test_prune_keeps_latest_even_beyond_retention(env):
+    _fabricate(env, "manual", 1)                            # 唯一一份manual
+    B.prune({"daily": 14, "weekly": 8, "manual": 0, "pre": 10})
+    assert len(_entries()) == 1                             # 最新一份保底不删
+
+
+def test_prune_legacy_entries_normalized(env):
+    """旧版manifest(无type, tag为空/pre-calc) → daily/pre 归一后参与滚动"""
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    for i, (tag, want) in enumerate([("", "daily"), ("pre-calc", "pre")]):
+        f = env["bdir"] / f"sentiment_2026090{i}_1_180000.db"
+        f.write_bytes(f"v{i}".encode())
+        _append({"file": f.name, "asset": "sentiment", "kind": "sqlite",
+                 "sha256": B._sha256(f), "size": 1, "time": f"2026-09-0{i+1} 18:00:00",
+                 "date": f"2026090{i+1}", "tag": tag, "integrity": "ok", "stats": {}})
+    B.prune({"daily": 14, "weekly": 8, "manual": 5, "pre": 10})
+    types = {e["file"]: e["type"] for e in _entries()}
+    assert "daily" in types.values() and "pre" in types.values()
+
+
+# ── 校验与恢复 ──
 
 def test_verify_detects_corruption(env):
-    e = B.snapshot("sentiment")
-    f = env["bdir"] / e["file"]
-    f.write_bytes(b"corrupted!!")                   # 篡改副本
+    e = B.snapshot("sentiment", "daily")
+    (env["bdir"] / e["file"]).write_bytes(b"corrupted!!")
     assert B.verify(e["file"]) is False
     assert B.verify("--all") is False
 
 
 def test_restore_roundtrip(env):
-    e = B.snapshot("sentiment")
-    # 模拟数据被写坏
+    e = B.snapshot("sentiment", "daily")
     conn = sqlite3.connect(str(env["sent"]))
     conn.execute("DELETE FROM sector_scores")
     conn.commit()
@@ -167,16 +187,16 @@ def test_restore_roundtrip(env):
     conn = sqlite3.connect(str(env["sent"]))
     n = conn.execute("SELECT COUNT(*) FROM sector_scores").fetchone()[0]
     conn.close()
-    assert n == 1                                    # 恢复后数据回来
-    tags = [x["tag"] for x in _entries()]
-    assert "pre-restore" in tags                     # 恢复前自动兜底快照
+    assert n == 1
+    assert "pre-restore" in {x["type"] for x in _entries()}
 
+
+# ── pre-calc 钩子 ──
 
 def test_pre_calc_hook_fires(env, monkeypatch):
-    """sector.calc_all 全量重算前自动打 pre-calc 快照(防自己的代码写坏数据)"""
     calls = []
     monkeypatch.setattr(B, "snapshot",
-                        lambda asset, tag="": calls.append((asset, tag)) or {"file": "x"})
+                        lambda asset, btype="manual": calls.append((asset, btype)) or {"file": "x"})
     import sector as S
     conn = sqlite3.connect(":memory:")
     conn.executescript("""
@@ -194,7 +214,7 @@ def test_pre_calc_hook_fires(env, monkeypatch):
       CREATE TABLE sw2_map(bk_code TEXT, bk_name TEXT, sw1_name TEXT, sw2_name TEXT, PRIMARY KEY(bk_code));
     """)
     conn.execute("INSERT INTO sectors VALUES('BK0001','半导体','industry',1,NULL,NULL,NULL)")
-    for i, d in enumerate(["2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29"]):
+    for d in ["2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29"]:
         conn.execute("INSERT INTO sector_daily VALUES('BK0001',?,100,101,102,99,1e6,80,20)", (d,))
     conn.commit()
     S.calc_all(conn)                                 # 5行数据: 预热期NaN → 0行入库, 不崩

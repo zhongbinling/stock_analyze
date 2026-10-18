@@ -44,6 +44,13 @@ DEFAULT_SETTINGS = {
     "update_cron": "16:35",
     "auto_generate": "1",
     "generate_cron": "17:00",
+    # B1 备份服务化: 类型滚动保留 + 调度策略(数据管理页可改, 热生效)
+    "backup_enabled": "1",
+    "backup_daily_cron": "18:35",       # 每日备份时刻(收盘任务链后)
+    "backup_weekly_cron": "fri 18:45",  # 周备份: 周几 HH:MM
+    "backup_daily_n": "14",
+    "backup_weekly_n": "8",
+    "backup_manual_n": "5",
 }
 
 SOURCES_SEED = [
@@ -223,6 +230,46 @@ def task_update(append):
     return _run([sys.executable, "-u", "sector.py", "calc"], append)
 
 
+# ---------------------------------------------------------------- B1 备份任务
+
+def backup_retention() -> dict:
+    """类型滚动保留份数(设置热更新)"""
+    return {"daily": int(get_setting("backup_daily_n", 14) or 14),
+            "weekly": int(get_setting("backup_weekly_n", 8) or 8),
+            "manual": int(get_setting("backup_manual_n", 5) or 5),
+            "pre": 10}
+
+
+def task_backup(btype: str, trigger: str = "manual"):
+    """返回备份任务函数(闭包): in-process 调 core/backup.run_all + 落 BackupRun"""
+    def fn(append):
+        from server.models import BackupRun
+        run = BackupRun(btype=btype, trigger=trigger, status="running", started_at=_now())
+        db.session.add(run)
+        db.session.commit()
+        append(f"[{utcnow_str()}] 备份开始: {btype} ({trigger})")
+        if str(CORE) not in sys.path:
+            sys.path.insert(0, str(CORE))
+        import backup as bk
+        result = bk.run_all(btype, retention=backup_retention())
+        for f in result["files"]:
+            append(f"+ {f['file']} ({f['size'] / 1048576:.1f} MB)")
+        if result["error"]:
+            append(f"! {result['error']}")
+        run.status = "done" if result["status"] == "ok" else "fail"
+        run.files_n = result["files_n"]
+        run.total_mb = result["total_mb"]
+        run.duration_s = result["duration_s"]
+        run.error = (result["error"] or "")[:255] or None
+        run.files_json = json.dumps(result["files"], ensure_ascii=False)
+        run.finished_at = _now()
+        db.session.commit()
+        append(f"[{utcnow_str()}] 备份结束: {result['status']} "
+               f"({result['files_n']} 文件, {result['total_mb']} MB, {result['duration_s']}s)")
+        return 0 if result["status"] == "ok" else 1
+    return fn
+
+
 def _slug(name: str) -> str:
     return re.sub(r"[^\w\-]+", "_", name).strip("_") or "view"
 
@@ -341,7 +388,7 @@ def _sync_cron_jobs(app):
     uh, um = _parse_hhmm(get_setting("update_cron"), 16, 35)
     gh, gm = _parse_hhmm(get_setting("generate_cron"), 17, 0)
 
-    for jid in ("daily_update", "daily_generate"):
+    for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup"):
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
     if au:
@@ -352,6 +399,33 @@ def _sync_cron_jobs(app):
         _scheduler.add_job(_make_sched_generate(app),
                            CronTrigger(hour=gh, minute=gm, day_of_week="mon-fri"),
                            id="daily_generate")
+
+    # B1: 日备/周备(策略热更新同机制)
+    if get_setting("backup_enabled") == "1":
+        bh, bm = _parse_hhmm(get_setting("backup_daily_cron"), 18, 35)
+        _scheduler.add_job(lambda: enqueue("backup", task_backup("daily", "schedule"),
+                                           target="daily", trigger="schedule"),
+                           CronTrigger(hour=bh, minute=bm), id="daily_backup")
+        dow, wh, wm = _parse_weekly(get_setting("backup_weekly_cron"))
+        _scheduler.add_job(lambda: enqueue("backup", task_backup("weekly", "schedule"),
+                                           target="weekly", trigger="schedule"),
+                           CronTrigger(day_of_week=dow, hour=wh, minute=wm),
+                           id="weekly_backup")
+
+
+_WEEKDAYS = {"mon": "mon", "tue": "tue", "wed": "wed", "thu": "thu", "fri": "fri",
+             "sat": "sat", "sun": "sun", "周一": "mon", "周二": "tue", "周三": "wed",
+             "周四": "thu", "周五": "fri", "周六": "sat", "周日": "sun"}
+
+
+def _parse_weekly(s, dd="fri", dh=18, dm=45):
+    """解析 "fri 18:45" / "周五 18:45" → (day_of_week, h, m); 非法回落默认"""
+    m = re.match(r"^(\S+)\s+(\d{1,2}):(\d{2})$", str(s or "").strip())
+    if m and m.group(1).lower() in _WEEKDAYS:
+        h, mi = int(m.group(2)), int(m.group(3))
+        if 0 <= h <= 23 and 0 <= mi <= 59:
+            return _WEEKDAYS[m.group(1).lower()], h, mi
+    return dd, dh, dm
 
 
 def _make_sched_generate(app):

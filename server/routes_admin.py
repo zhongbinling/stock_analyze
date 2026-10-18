@@ -11,7 +11,7 @@ from flask_login import current_user, login_user
 from server import ROOT, db
 from server.auth import audit, level_name, require_level
 from server.forms import LoginForm, ResetPwForm, UserAddForm
-from server.models import AdminLog, DataSource, Job, User, ViewDef, ViewRun
+from server.models import AdminLog, BackupRun, DataSource, Job, User, ViewDef, ViewRun
 
 bp_admin = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -223,6 +223,124 @@ def api_strategy_set():
     audit("strategy_update", detail=f"更新{d.get('update_cron')} 生成{d.get('generate_cron')}"
                                     f" 自动更新={d.get('auto_update')} 自动生成={d.get('auto_generate')}")
     return jsonify({"ok": True, "msg": "已保存并生效"})
+
+
+# ---------------- B1: 数据备份 ----------------
+
+_BACKUP_TYPES = ("manual", "daily", "weekly")
+
+
+def _backup_mod():
+    import sys
+    core = ROOT / "core"
+    if str(core) not in sys.path:
+        sys.path.insert(0, str(core))
+    import backup as bk
+    return bk
+
+
+@bp_admin.post("/api/backup/run")
+@require_level(7)
+def api_backup_run():
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    btype = str(d.get("type", "manual"))
+    if btype not in _BACKUP_TYPES:
+        return jsonify({"ok": False, "msg": f"type 应为 {'/'.join(_BACKUP_TYPES)}"}), 400
+    ok, msg = jobs.enqueue("backup", jobs.task_backup(btype, "manual"),
+                           target=btype, trigger="manual")
+    audit("backup_run_enqueue" if ok else "backup_run_reject",
+          target=btype, detail=msg)
+    return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
+
+
+@bp_admin.get("/api/backups")
+@require_level(7)
+def api_backups():
+    runs = (BackupRun.query.order_by(BackupRun.id.desc()).limit(50).all())
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_ok = {}
+    for t in _BACKUP_TYPES:
+        r = (BackupRun.query.filter_by(btype=t, status="done")
+             .order_by(BackupRun.id.desc()).first())
+        last_ok[t] = r.started_at.strftime("%m-%d %H:%M") if r and r.started_at else ""
+    bk = _backup_mod()
+    m = bk._load_manifest()
+    disk_mb = sum(e.get("size", 0) for e in m["entries"]) / 1048576
+    return jsonify({
+        "runs": [{"id": r.id, "btype": r.btype, "trigger": r.trigger or "",
+                  "status": r.status, "files_n": r.files_n, "total_mb": r.total_mb,
+                  "duration": r.duration_s, "error": r.error or "",
+                  "files": json.loads(r.files_json or "[]"),
+                  "at": r.started_at.strftime("%m-%d %H:%M:%S") if r.started_at else ""}
+                 for r in runs],
+        "last_ok": last_ok,
+        "today": today,
+        "backed_today": any(r.btype in _BACKUP_TYPES and r.status == "done"
+                            and r.started_at and r.started_at.strftime("%Y-%m-%d") == today
+                            for r in runs),
+        "disk_mb": round(disk_mb, 1), "files_n": len(m["entries"]),
+    })
+
+
+@bp_admin.post("/api/backup/settings")
+@require_level(7)
+def api_backup_settings():
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    errs = []
+    if str(d.get("backup_enabled")) not in ("0", "1"):
+        errs.append("backup_enabled 应为 0/1")
+    if not re.match(r"^\d{1,2}:\d{2}$", str(d.get("backup_daily_cron", "")).strip()):
+        errs.append("日备时刻应为 HH:MM")
+    wk = str(d.get("backup_weekly_cron", "")).strip()
+    if not re.match(r"^\S+\s+\d{1,2}:\d{2}$", wk) or wk.split()[0].lower() not in jobs._WEEKDAYS:
+        errs.append("周备应为 '周几 HH:MM' (如 fri 18:45 / 周五 18:45)")
+    for k in ("backup_daily_n", "backup_weekly_n", "backup_manual_n"):
+        v = str(d.get(k, "")).strip()
+        if not (v.isdigit() and 1 <= int(v) <= 365):
+            errs.append(f"{k} 应为 1~365")
+    if errs:
+        return jsonify({"ok": False, "msg": "; ".join(errs)}), 400
+    for k in ("backup_enabled", "backup_daily_cron", "backup_weekly_cron",
+              "backup_daily_n", "backup_weekly_n", "backup_manual_n"):
+        jobs.set_setting(k, str(d.get(k)).strip())
+    jobs.reschedule()
+    audit("backup_settings", detail=f"日备{d.get('backup_daily_cron')} 周备{d.get('backup_weekly_cron')} "
+                                    f"保留{d.get('backup_daily_n')}/{d.get('backup_weekly_n')}/{d.get('backup_manual_n')}")
+    return jsonify({"ok": True, "msg": "已保存并生效"})
+
+
+@bp_admin.post("/api/backup/verify")
+@require_level(7)
+def api_backup_verify():
+    ok = _backup_mod().verify("--all")
+    audit("backup_verify", detail="全部通过" if ok else "存在异常")
+    return jsonify({"ok": ok, "msg": "全部备份校验通过" if ok else "存在异常备份, 详见服务日志/backup.log"})
+
+
+@bp_admin.post("/api/backup/restore")
+@require_level(9)
+def api_backup_restore():
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    fname = str(d.get("file", "")).strip()
+    if not fname or "/" in fname or "\\" in fname or ".." in fname:
+        return jsonify({"ok": False, "msg": "文件名非法"}), 400
+    bk = _backup_mod()
+    m = bk._load_manifest()
+    e = next((x for x in m["entries"] if x["file"] == fname), None)
+    if not e:
+        return jsonify({"ok": False, "msg": "备份不存在"}), 404
+    if e["asset"] == "app":
+        return jsonify({"ok": False, "msg": "app.db 为服务自身数据库, 请停服后用命令行恢复: "
+                                            "cd core && python backup.py restore <文件> --yes"}), 409
+    if jobs.queue_size() > 0:
+        return jsonify({"ok": False, "msg": "有任务运行/排队中, 为避免写冲突请稍后再试"}), 409
+    ok = bk.restore(fname, yes=True)
+    audit("backup_restore" if ok else "backup_restore_reject", target=fname)
+    return jsonify({"ok": ok, "msg": "已恢复(恢复前已自动快照 pre-restore)" if ok
+                                     else "恢复失败, 详见 backup.log"}), (200 if ok else 500)
 
 
 @bp_admin.get("/api/sources")

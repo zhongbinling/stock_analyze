@@ -207,7 +207,7 @@ def calc_all(conn=None):
     # 高危操作前置快照(backup方案): 全量重算会 DELETE 全表, 失败可回滚
     try:
         from backup import snapshot
-        snapshot("sentiment", tag="pre-calc")
+        snapshot("sentiment", "pre-calc")
     except Exception as e:  # noqa: BLE001
         print(f"[sector] pre-calc备份失败(继续计算): {e}")
     cfg = load_cfg()

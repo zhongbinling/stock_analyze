@@ -120,3 +120,20 @@ class AppSetting(db.Model):
 
     skey = db.Column(db.String(32), primary_key=True)
     value = db.Column(db.String(64), nullable=False)
+
+
+class BackupRun(db.Model):
+    """备份执行记录 (B1): 服务内备份能力的历史/审计, 供数据管理页与运维系统查询"""
+    __tablename__ = "backup_runs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    btype = db.Column(db.String(12), nullable=False)       # daily | weekly | manual | pre-*
+    trigger = db.Column(db.String(8), default="manual")    # manual | schedule
+    status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
+    files_n = db.Column(db.Integer, default=0)
+    total_mb = db.Column(db.Float, default=0)
+    duration_s = db.Column(db.Float)
+    error = db.Column(db.String(255))
+    files_json = db.Column(db.Text)                        # [{file,asset,size}]
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)

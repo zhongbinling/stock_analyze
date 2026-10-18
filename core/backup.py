@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
-"""核心资产备份 (数据库/密钥/配置): SQLite在线快照 + GFS保留 + 完整性校验 + 恢复
+"""核心资产备份 (数据库/密钥/配置): SQLite在线快照 + 类型滚动保留 + 校验 + 恢复
 
-设计:
-  - SQLite 用在线备份 API (Connection.backup), 不拷贝正在写入的库
-  - 每份快照落盘即 integrity_check + 数据新鲜度抽查, sha256 记入 manifest
-  - GFS保留: 最近30份 ∪ 最近12个ISO周各1份(周内最新) ∪ 最近12个月各1份
-  - 高危操作前置快照: sector.py calc 前自动打 pre-calc 标签
+类型 (B1): daily | weekly | manual | pre-calc | pre-restore
+保留: 每资产每类型留最近 N 份(可配), 每资产最新一份永不删; 内容未变化自动跳过。
+日志: backups/backup.log 文件 + 调用方(服务)另行落 backup_runs 表。
 
 用法:
-  python backup.py now  [-t tag]        # 立即快照(sha与最近一次相同则跳过)
-  python backup.py daily                # now + prune (任务计划程序每日入口)
-  python backup.py prune                # GFS清理
+  python backup.py now  [-t type]        # 立即快照全部资产(默认manual)
+  python backup.py daily                # now -t daily + prune (CLI应急入口)
+  python backup.py weekly               # now -t weekly + prune
+  python backup.py prune                # 按类型滚动清理
   python backup.py list                 # 备份清单
   python backup.py verify [--all|文件名] # integrity + 新鲜度校验
   python backup.py restore <文件名> --yes  # 校验→pre-restore快照→原子替换
@@ -25,7 +24,6 @@ import sys
 import time
 from pathlib import Path
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 BASE = Path(__file__).resolve().parent
 ROOT = BASE.parent
 
@@ -40,8 +38,32 @@ ASSETS = {
 }
 BACKUP_DIR = ROOT / "backups"
 MANIFEST = BACKUP_DIR / "manifest.json"
+LOG_FILE = BACKUP_DIR / "backup.log"
 
-DAILY_N, WEEKLY_N, MONTHLY_N = 30, 12, 12
+# 类型滚动保留(每资产每类型份数); 服务端从设置读取后传入
+RETENTION = {"daily": 14, "weekly": 8, "manual": 5, "pre": 10}
+TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-restore")
+
+
+def _norm_type(btype: str) -> str:
+    btype = (btype or "manual").strip()
+    return btype if btype in TYPES else "manual"
+
+
+def _retention_of(btype: str, retention: dict) -> int:
+    return int(retention.get("pre") if btype.startswith("pre") else retention.get(btype, 5))
+
+
+def _log(msg: str):
+    """双写: 控制台 + backups/backup.log"""
+    line = f"{dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {msg}"
+    print(f"[backup] {msg}")
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 def _sha256(p: Path) -> str:
@@ -54,7 +76,12 @@ def _sha256(p: Path) -> str:
 
 def _load_manifest() -> dict:
     if MANIFEST.exists():
-        return json.loads(MANIFEST.read_text(encoding="utf-8"))
+        m = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        for e in m.get("entries", []):        # 旧版兼容: tag→type 归一
+            if "type" not in e:
+                t = e.get("tag") or ""
+                e["type"] = "pre" if t.startswith("pre") else (t if t in TYPES else "daily")
+        return m
     return {"entries": []}
 
 
@@ -95,15 +122,16 @@ def _integrity_ok(p: Path) -> bool:
         return False
 
 
-def snapshot(asset: str, tag: str = "") -> dict | None:
+def snapshot(asset: str, btype: str = "manual") -> dict | None:
     """单资产快照: 在线备份→校验→sha去重→落manifest; 缺失/未变化返回None"""
     kind, src = ASSETS[asset]
+    btype = _norm_type(btype)
     if not src.exists():
-        print(f"[backup] 跳过 {asset}: {src} 不存在")
+        _log(f"= 跳过 {asset}: {src} 不存在")
         return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = dt.datetime.now()
-    stem = f"{asset}_{ts.strftime('%Y%m%d_%H%M%S')}" + (f"_{tag}" if tag else "")
+    stem = f"{asset}_{ts.strftime('%Y%m%d_%H%M%S')}_{btype}"
     tmp = BACKUP_DIR / (stem + ".part")
 
     if kind == "sqlite":
@@ -114,10 +142,9 @@ def snapshot(asset: str, tag: str = "") -> dict | None:
         finally:
             s.close()
             d.close()
-        ok = _integrity_ok(tmp)
-        if not ok:
+        if not _integrity_ok(tmp):
             tmp.unlink(missing_ok=True)
-            print(f"[backup] ✗ {asset} 快照完整性校验失败, 已丢弃")
+            _log(f"✗ {asset} [{btype}] 快照完整性校验失败, 已丢弃")
             return None
         ext, stats = "db", _db_stats(tmp, asset)
     else:
@@ -129,53 +156,66 @@ def snapshot(asset: str, tag: str = "") -> dict | None:
     last = next((e for e in reversed(m["entries"]) if e["asset"] == asset), None)
     if last and last["sha256"] == sha:
         tmp.unlink(missing_ok=True)
-        print(f"[backup] = {asset} 未变化, 跳过 ({sha[:12]})")
+        _log(f"= {asset} [{btype}] 未变化, 跳过 ({sha[:12]})")
         return None
 
     final = BACKUP_DIR / f"{stem}.{ext}"
     tmp.replace(final)
     entry = {"file": final.name, "asset": asset, "kind": kind, "sha256": sha,
              "size": final.stat().st_size, "time": ts.strftime("%Y-%m-%d %H:%M:%S"),
-             "date": ts.strftime("%Y%m%d"), "tag": tag,
+             "date": ts.strftime("%Y%m%d"), "type": btype,
              "integrity": "ok" if kind == "sqlite" else "-", "stats": stats}
     m["entries"].append(entry)
     _save_manifest(m)
-    print(f"[backup] + {final.name} ({final.stat().st_size / 1048576:.1f} MB"
-          + (f", {stats.get('sector_scores') or stats.get('sentiment') or ''}" if stats else "") + ")")
+    fresh = stats.get("sector_scores") or stats.get("sentiment") or ""
+    _log(f"+ {final.name} ({final.stat().st_size / 1048576:.1f} MB{', ' + fresh if fresh else ''})")
     return entry
 
 
-def prune():
-    """GFS清理: 每资产保留 最近DAILY_N份 ∪ 最近WEEKLY_N个ISO周各最新1份 ∪ 最近MONTHLY_N个月各最新1份"""
+def run_all(btype: str = "manual", retention: dict | None = None) -> dict:
+    """编程接口(B1): 全资产快照+清理, 返回结构化结果供服务落 backup_runs"""
+    t0 = time.time()
+    files, err = [], None
+    try:
+        for a in ASSETS:
+            e = snapshot(a, btype)
+            if e:
+                files.append({"file": e["file"], "asset": a, "size": e["size"]})
+        prune(retention)
+    except Exception as ex:  # noqa: BLE001
+        err = f"{type(ex).__name__}: {ex}"
+        _log(f"✗ [{btype}] 异常: {err}")
+    return {"btype": _norm_type(btype), "status": "fail" if err else "ok",
+            "files": files, "files_n": len(files),
+            "total_mb": round(sum(f["size"] for f in files) / 1048576, 1),
+            "duration_s": round(time.time() - t0, 1), "error": err}
+
+
+def prune(retention: dict | None = None):
+    """类型滚动清理: 每资产每类型留最近N份; 每资产最新一份永不删"""
+    retention = retention or RETENTION
     m = _load_manifest()
-    keep_files = set()
+    removed = 0
     for asset in ASSETS:
         ents = sorted((e for e in m["entries"] if e["asset"] == asset),
                       key=lambda e: (e["date"], e["time"]), reverse=True)
         if not ents:
             continue
-        prot = set(e["file"] for e in ents[:DAILY_N])
-        weeks, months = [], []
-        for e in ents:                       # 降序: 每桶最先遇到的是该桶最新一份
-            d = dt.datetime.strptime(e["date"], "%Y%m%d").date()
-            wk, mo = d.isocalendar()[:2], d.strftime("%Y%m")
-            if wk not in [w for w, _ in weeks]:
-                weeks.append((wk, e["file"]))
-            if mo not in [x for x, _ in months]:
-                months.append((mo, e["file"]))
-        prot |= set(f for _, f in weeks[:WEEKLY_N])
-        prot |= set(f for _, f in months[:MONTHLY_N])
-        keep_files |= prot
-    removed = 0
-    for e in list(m["entries"]):
-        if e["file"] not in keep_files:
-            p = BACKUP_DIR / e["file"]
-            if p.exists():
-                p.unlink()
-            m["entries"].remove(e)
-            removed += 1
+        keep = {ents[0]["file"]}                     # 最新一份保底
+        by_type = {}
+        for e in ents:                               # 降序, 每类型取前N
+            by_type.setdefault(e["type"], []).append(e)
+        for t, lst in by_type.items():
+            keep |= {e["file"] for e in lst[:_retention_of(t, retention)]}
+        for e in ents:
+            if e["file"] not in keep:
+                p = BACKUP_DIR / e["file"]
+                if p.exists():
+                    p.unlink()
+                m["entries"].remove(e)
+                removed += 1
     _save_manifest(m)
-    print(f"[backup] prune: 保留 {len(m['entries'])} 份, 清理 {removed} 份")
+    _log(f"prune: 保留 {len(m['entries'])} 份, 清理 {removed} 份")
 
 
 def verify(target: str = "--all") -> bool:
@@ -184,7 +224,7 @@ def verify(target: str = "--all") -> bool:
     ents = ([e for e in m["entries"] if e["file"] == target] if target != "--all"
             else m["entries"])
     if not ents:
-        print(f"[backup] 无匹配备份: {target}")
+        _log(f"✗ 无匹配备份: {target}")
         return False
     all_ok = True
     for e in ents:
@@ -204,8 +244,8 @@ def verify(target: str = "--all") -> bool:
                     issues.append(f"新鲜度查询失败: {ex}")
         ok = not issues
         all_ok &= ok
-        print(f"[backup] {'✓' if ok else '✗'} {e['file']} "
-              f"({e['time']}{', ' + e['tag'] if e['tag'] else ''}) {'; '.join(issues)}")
+        _log(f"{'✓' if ok else '✗'} {e['file']} ({e['time']}[{e.get('type', '')}])"
+             f"{' ' + '; '.join(issues) if issues else ''}")
     return all_ok
 
 
@@ -214,33 +254,31 @@ def restore(fname: str, yes: bool = False) -> bool:
     m = _load_manifest()
     e = next((x for x in m["entries"] if x["file"] == fname), None)
     if not e:
-        print(f"[backup] manifest中找不到 {fname}")
+        _log(f"✗ manifest中找不到 {fname}")
         return False
     if not verify(fname):
-        print(f"[backup] 校验未通过, 拒绝恢复")
+        _log("✗ 校验未通过, 拒绝恢复")
         return False
     if not yes and input(f"确认用 {fname} 覆盖 {ASSETS[e['asset']][1]} ? [y/N] ").lower() != "y":
-        print("[backup] 已取消")
+        _log("= 已取消恢复")
         return False
-    snapshot(e["asset"], tag="pre-restore")           # 恢复前兜底
+    snapshot(e["asset"], "pre-restore")              # 恢复前兜底
     src = BACKUP_DIR / fname
     dst = Path(ASSETS[e["asset"]][1])
     tmp = dst.with_suffix(dst.suffix + ".part")
     shutil.copy2(src, tmp)
     tmp.replace(dst)
-    print(f"[backup] 已恢复 {fname} → {dst}")
+    _log(f"↺ 已恢复 {fname} → {dst}")
     return True
 
 
-def cmd_now(tag=""):
-    for a in ASSETS:
-        snapshot(a, tag)
-
-
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="核心资产备份")
-    ap.add_argument("cmd", choices=["now", "daily", "prune", "list", "verify", "restore"])
-    ap.add_argument("-t", "--tag", default="")
+    ap.add_argument("cmd", choices=["now", "daily", "weekly", "prune", "list",
+                                    "verify", "restore"])
+    ap.add_argument("-t", "--tag", default="manual", help="备份类型 daily|weekly|manual")
     ap.add_argument("target", nargs="?", default=None,
                     help="verify/restore 的备份文件名; verify 省略时校验全部")
     ap.add_argument("--all", dest="verify_all", action="store_true", help="verify 校验全部")
@@ -248,17 +286,16 @@ def main():
     args = ap.parse_args()
     t0 = time.time()
     if args.cmd == "now":
-        cmd_now(args.tag)
-    elif args.cmd == "daily":
-        cmd_now()
-        prune()
+        run_all(args.tag)
+    elif args.cmd in ("daily", "weekly"):
+        run_all(args.cmd)
     elif args.cmd == "prune":
         prune()
     elif args.cmd == "list":
         m = _load_manifest()
         for e in sorted(m["entries"], key=lambda x: (x["date"], x["asset"]), reverse=True):
-            print(f"  {e['time']}  {e['file']:<44} {e['size'] / 1048576:>8.1f}MB "
-                  f"{'[' + e['tag'] + ']' if e['tag'] else '':<12} {e['integrity']}")
+            print(f"  {e['time']}  {e['file']:<46} {e['size'] / 1048576:>8.1f}MB "
+                  f"[{e.get('type', '')}] {e['integrity']}")
         print(f"  共 {len(m['entries'])} 份")
     elif args.cmd == "verify":
         t = args.target if (args.target and not args.verify_all) else "--all"

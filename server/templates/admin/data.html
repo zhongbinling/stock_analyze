@@ -34,6 +34,34 @@
 </section>
 
 <section class="card">
+  <h2>数据备份</h2>
+  <div class="row-flex" style="margin-bottom:6px">
+    <span class="hint" id="bkState">加载中…</span>
+    <span class="hint" id="bkDisk"></span>
+    <button class="btn small" id="btnBkVerify">校验全部备份</button>
+  </div>
+  <div class="row-flex">
+    <select class="input narrow" id="bkType">
+      <option value="manual">手动备份</option>
+      <option value="daily">日备份</option>
+      <option value="weekly">周备份</option>
+    </select>
+    <button class="btn primary" id="btnBkRun">立即备份</button>
+    <span class="hint" id="bkRunMsg"></span>
+  </div>
+  <div class="row-flex" style="margin-top:8px">
+    <label class="chk"><input type="checkbox" id="bkEnabled"> 自动备份</label>
+    <span>日备 <input class="input narrow" id="bkDailyCron" placeholder="18:35"></span>
+    <span>周备 <input class="input narrow" id="bkWeeklyCron" placeholder="fri 18:45" style="width:92px"></span>
+    <span>保留 日<input class="input narrow" id="bkDailyN" style="width:44px"> 周<input class="input narrow" id="bkWeeklyN" style="width:44px"> 手动<input class="input narrow" id="bkManualN" style="width:44px"></span>
+    <button class="btn" id="btnBkSettings">保存备份策略</button>
+    <span class="hint" id="bkSetMsg"></span>
+  </div>
+  <p class="hint">备份含 sentiment/app 库与密钥配置；内容未变化自动跳过；按类型滚动保留。恢复前自动打 pre-restore 快照；app.db 需停服命令行恢复。</p>
+  <table class="table" id="bkTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
   <h2>手动更新</h2>
   <div class="row-flex">
     <button class="btn primary" id="btnUpdate">增量更新数据（抓取＋重算评分）</button>
@@ -172,7 +200,79 @@ async function poll(quick) {
   pollTimer = setTimeout(() => poll(), (j.running || j.queued > 0) ? 2500 : 15000);
 }
 
-$('btnRefresh').onclick = () => { loadDatasets(); poll(true); };
-loadDatasets(); loadStrategy(); loadSources(); poll(true);
+$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); };
+
+/* ── B1: 数据备份 ── */
+async function loadBackups() {
+  try {
+    const d = await api('/admin/api/backups');
+    const lo = d.last_ok || {};
+    $('bkState').innerHTML = (d.backed_today
+        ? `<span class="ok">今日已备份</span>`
+        : `<span class="bad">今日尚未备份</span>`)
+      + ` · 日备最近 ${esc(lo.daily || '--')} · 周备最近 ${esc(lo.weekly || '--')} · 手动最近 ${esc(lo.manual || '--')}`;
+    $('bkDisk').textContent = `磁盘占用 ${d.disk_mb} MB / ${d.files_n} 份`;
+    $('bkTable').innerHTML = '<tr><th>时间</th><th>类型</th><th>触发</th><th>文件数</th><th>大小</th><th>耗时</th><th>状态</th><th></th></tr>' +
+      (d.runs.length ? d.runs.map(r => `<tr><td class="hint">${esc(r.at)}</td><td>${esc(r.btype)}</td>
+        <td class="hint">${esc(r.trigger)}</td><td>${r.files_n}</td><td>${r.total_mb} MB</td>
+        <td>${r.duration ?? ''}s</td>
+        <td class="${r.status === 'done' ? 'ok' : r.status === 'running' ? 'hint' : 'bad'}" title="${esc(r.error)}">${r.status === 'done' ? '✓' : r.status === 'running' ? '…' : '✗ ' + esc(r.error).slice(0, 30)}</td>
+        <td>${r.status === 'done' ? `<button class="btn small" data-restore="1">恢复</button>` : ''}</td></tr>`).join('')
+      : '<tr><td colspan="8" class="hint">暂无备份记录</td></tr>');
+    document.querySelectorAll('#bkTable [data-restore]').forEach((b, i) => b.onclick = () => bkRestore(d.runs[i]));
+  } catch (e) { $('bkState').textContent = '加载失败: ' + e.message; }
+}
+async function loadBkSettings() {
+  try {
+    const s = await api('/admin/api/strategy');
+    $('bkEnabled').checked = s.backup_enabled === '1';
+    $('bkDailyCron').value = s.backup_daily_cron;
+    $('bkWeeklyCron').value = s.backup_weekly_cron;
+    $('bkDailyN').value = s.backup_daily_n;
+    $('bkWeeklyN').value = s.backup_weekly_n;
+    $('bkManualN').value = s.backup_manual_n;
+  } catch (e) {}
+}
+$('btnBkSettings').onclick = async () => {
+  try { const r = await api('/admin/api/backup/settings', {method: 'POST', body: JSON.stringify({
+      backup_enabled: $('bkEnabled').checked ? '1' : '0',
+      backup_daily_cron: $('bkDailyCron').value.trim(),
+      backup_weekly_cron: $('bkWeeklyCron').value.trim(),
+      backup_daily_n: $('bkDailyN').value.trim(),
+      backup_weekly_n: $('bkWeeklyN').value.trim(),
+      backup_manual_n: $('bkManualN').value.trim(),
+    })});
+    $('bkSetMsg').textContent = r.msg;
+  } catch (e) { $('bkSetMsg').textContent = e.message; }
+};
+$('btnBkRun').onclick = async () => {
+  const btn = $('btnBkRun');
+  btn.disabled = true; btn.textContent = '⏳ 已提交…'; $('bkRunMsg').textContent = '';
+  try {
+    const r = await api('/admin/api/backup/run', {method: 'POST', body: JSON.stringify({type: $('bkType').value})});
+    $('bkRunMsg').textContent = r.msg;
+    setTimeout(loadBackups, 3000); setTimeout(loadBackups, 10000);
+  } catch (e) { $('bkRunMsg').textContent = e.message; }
+  btn.disabled = false; btn.textContent = '立即备份';
+};
+$('btnBkVerify').onclick = async () => {
+  const btn = $('btnBkVerify');
+  btn.disabled = true; btn.textContent = '⏳ 校验中…';
+  try { const r = await api('/admin/api/backup/verify', {method: 'POST'});
+    $('bkRunMsg').textContent = r.msg;
+  } catch (e) { $('bkRunMsg').textContent = '校验失败: ' + e.message; }
+  btn.disabled = false; btn.textContent = '校验全部备份';
+};
+async function bkRestore(run) {
+  if (!run.files || !run.files.length) return;
+  const f = prompt('确认恢复？恢复前会自动对当前数据打 pre-restore 快照。\n备份文件(可编辑):', run.files[0].file || run.files[0]);
+  if (!f) return;
+  try {
+    const r = await api('/admin/api/backup/restore', {method: 'POST', body: JSON.stringify({file: f})});
+    $('bkRunMsg').textContent = r.msg;
+  } catch (e) { $('bkRunMsg').textContent = e.message; }
+}
+
+loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); poll(true);
 </script>
 {% endblock %}
