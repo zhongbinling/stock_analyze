@@ -35,6 +35,9 @@ def raw_connect():
       ts_code TEXT, trade_date TEXT, open REAL, high REAL, low REAL, close REAL,
       pre_close REAL, change REAL, pct_chg REAL, vol REAL, amount REAL,
       PRIMARY KEY(ts_code, trade_date))""")
+    # 聚合按 trade_date 查询(PK前缀是ts_code走不了索引) — 无索引时每日全表扫,
+    # 实测聚合1.1s/日; 建索引后毫秒级(1600万行建索引约1-2分钟, 仅首次)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_tradedate ON daily(trade_date)")
     return conn
 
 
