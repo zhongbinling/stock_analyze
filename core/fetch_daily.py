@@ -457,18 +457,18 @@ def backfill_tushare(start: str = "20200102"):
 
 # ---------------------------------------------------------------- D1-2: 统一补全入口
 
-# dataset: (标签, [(表, 计数列None=全行, 日期列)], 执行函数(start))
+# dataset: (标签, [(表, 计数列None=全行, 日期列)], 执行函数(start), 默认起始日)
 # 增量度量=执行前后按日计数差集, 不改既有回补函数内部; 重复执行幂等(函数自身跳过已有日期)
 BACKFILLS = {
     "zt_est": ("涨停家数·估算回补(2012-2019)", [("mood_raw", "zt_count", "date")],
-               lambda start: backfill_zt_est(start)),
+               lambda start: backfill_zt_est(start), "20120101"),
     "zt_ts": ("涨停结构·tushare回补(2020起)",
               [("mood_raw", "zt_count", "date"), ("sector_pool_stat", None, "date")],
-              lambda start: backfill_tushare(start)),
+              lambda start: backfill_tushare(start), "20200102"),
     "breadth": ("涨跌家数·tushare回补(2018起)", [("mood_raw", "up_count", "date")],
-                lambda start: breadth_from_tushare(start)),
+                lambda start: breadth_from_tushare(start), "20180102"),
     "calendar": ("交易日历·刷新", [("calendar", None, "cal_date")],
-                 lambda start: fetch_calendar()),
+                 lambda start: fetch_calendar(), "20240101"),
 }
 
 
@@ -480,16 +480,19 @@ def _count_by_date(conn, table, col, date_col) -> dict:
     return dict(conn.execute(q).fetchall())
 
 
-def run_backfill(dataset, start="20200102") -> dict:
-    """统一补全: 前置快照 → 执行 → 逐日增量度量 → 结构化结果(服务端落 data_backfill_log)"""
+def run_backfill(dataset, start=None) -> dict:
+    """统一补全: 前置快照 → 执行 → 逐日增量度量 → 结构化结果(服务端落 data_backfill_log)
+
+    start 省略时用该数据集的默认起始日(zt_est 2012/breadth 2018/zt_ts 2020)。
+    """
     t0 = time.time()
     spec = BACKFILLS.get(dataset)
     if not spec:
         return {"dataset": dataset, "label": "", "status": "fail",
                 "error": f"未知数据集: {dataset}", "days": [], "rows_written": 0,
                 "date_from": None, "date_to": None, "duration_s": 0}
-    label, targets, fn = spec
-    iso_start = norm_date(start)
+    label, targets, fn, def_start = spec
+    iso_start = norm_date(start or def_start)
     try:
         from backup import snapshot
         snapshot("sentiment", "pre-backfill")
@@ -547,7 +550,7 @@ def main():
     args = ap.parse_args()
 
     if args.backfill:
-        r = run_backfill(args.backfill, args.start or "20200102")
+        r = run_backfill(args.backfill, args.start)   # start空 → 数据集默认起始日
         print("@@BACKFILL@@ " + json.dumps(r, ensure_ascii=False))
         return
 

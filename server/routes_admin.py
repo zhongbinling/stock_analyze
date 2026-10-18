@@ -360,7 +360,7 @@ def api_backfill_run():
     from server import jobs
     d = request.get_json(force=True) or {}
     dataset = str(d.get("dataset", "")).strip()
-    start = str(d.get("start", "")).strip() or "20200102"
+    start = str(d.get("start", "")).strip() or jobs.BACKFILL_DEFAULT_START.get(dataset, "")
     if dataset not in jobs.BACKFILL_DATASETS:
         return jsonify({"ok": False, "msg": f"dataset 应为 {'/'.join(jobs.BACKFILL_DATASETS)}"}), 400
     if not _START_RE.match(start):
@@ -377,6 +377,7 @@ def api_backfill_run():
 def api_backfill_logs():
     dataset = request.args.get("dataset", "").strip()
     date = request.args.get("date", "").strip()
+    date_alt = date.replace("-", "") if date else ""      # 兼容紧凑格式(calendar 的 cal_date)
     q = DataBackfillLog.query
     if dataset:
         q = q.filter_by(dataset=dataset)
@@ -384,7 +385,7 @@ def api_backfill_logs():
     out = []
     for r in rows:
         days = json.loads(r.days_json or "[]")
-        if date and not any(x.get("date") == date for x in days):
+        if date and not any(x.get("date") in (date, date_alt) for x in days):
             continue                      # 按(数据集×日期)反查: 只留写过该日的记录
         out.append({"id": r.id, "dataset": r.dataset, "label": r.label or "",
                     "date_from": r.date_from, "date_to": r.date_to,

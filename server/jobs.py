@@ -344,6 +344,10 @@ BACKFILL_DATASETS = {"zt_est": "涨停家数·估算回补(2012-2019)",
                      "zt_ts": "涨停结构·tushare回补(2020起)",
                      "breadth": "涨跌家数·tushare回补(2018起)",
                      "calendar": "交易日历·刷新"}
+# 默认起始日(与 core BACKFILLS 第4元素保持同步): start 留空时使用, 避免统一默认
+# 20200102 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
+BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
+                          "breadth": "20180102", "calendar": "20240101"}
 
 
 def task_backfill(dataset: str, start: str, trigger: str = "manual"):

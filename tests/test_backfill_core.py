@@ -58,7 +58,7 @@ def _fake_writer(dates=DATES):
 
 def test_run_backfill_happy_path(bf):
     bf["monkeypatch"].setitem(FD.BACKFILLS, "zt_ts",
-                              ("测试", FD.BACKFILLS["zt_ts"][1], _fake_writer()))
+                              ("测试", FD.BACKFILLS["zt_ts"][1], _fake_writer(), "20260901"))
     r = FD.run_backfill("zt_ts", "20260901")
     assert r["status"] == "ok" and r["error"] is None
     assert r["rows_written"] == 9                       # 3日 × (1 mood + 2 pool)
@@ -79,7 +79,7 @@ def test_run_backfill_executor_raises(bf):
     def boom(start):
         raise RuntimeError("tushare挂了")
     bf["monkeypatch"].setitem(FD.BACKFILLS, "zt_ts",
-                              ("测试", FD.BACKFILLS["zt_ts"][1], boom))
+                              ("测试", FD.BACKFILLS["zt_ts"][1], boom, "20260901"))
     r = FD.run_backfill("zt_ts", "20260901")
     assert r["status"] == "fail" and "RuntimeError" in r["error"]
 
@@ -87,19 +87,31 @@ def test_run_backfill_executor_raises(bf):
 def test_run_backfill_self_reported_failure(bf):
     """执行函数返回False(内部吞错型, 如calendar网络失败) → status fail"""
     bf["monkeypatch"].setitem(FD.BACKFILLS, "calendar",
-                              ("测试", FD.BACKFILLS["calendar"][1], lambda start: False))
+                              ("测试", FD.BACKFILLS["calendar"][1], lambda start: False, "20240101"))
     r = FD.run_backfill("calendar", "20240101")
     assert r["status"] == "fail" and "自报失败" in r["error"]
 
 
 def test_run_backfill_idempotent_second_run(bf):
     bf["monkeypatch"].setitem(FD.BACKFILLS, "zt_ts",
-                              ("测试", FD.BACKFILLS["zt_ts"][1], _fake_writer()))
+                              ("测试", FD.BACKFILLS["zt_ts"][1], _fake_writer(), "20260901"))
     FD.run_backfill("zt_ts", "20260901")
     r2 = FD.run_backfill("zt_ts", "20260901")           # 再跑: 前置计数已含 → 增量0
     assert r2["status"] == "ok"
     assert r2["rows_written"] == 0 and r2["days"] == []
     assert r2["date_from"] == "2026-09-01"              # 无写入回落请求起始
+
+
+def test_run_backfill_default_start_per_dataset(bf):
+    """start 省略 → 用数据集默认起始(zt_est=2012, 而非统一2020)"""
+    seen = []
+    bf["monkeypatch"].setitem(
+        FD.BACKFILLS, "zt_est",
+        ("测试", FD.BACKFILLS["zt_est"][1],
+         lambda start: seen.append(start), "20120101"))
+    r = FD.run_backfill("zt_est")                    # 不传 start
+    assert seen == ["20120101"]
+    assert r["status"] == "ok" and r["date_from"] == "2012-01-01"  # 无写入回落默认起始
 
 
 def test_count_by_date_where_col(bf):

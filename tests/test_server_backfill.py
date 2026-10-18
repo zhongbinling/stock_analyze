@@ -97,6 +97,24 @@ def test_api_backfill_run_enqueues(app):
     assert item["kind"] == "backfill" and item["target"] == "calendar"
 
 
+def test_api_backfill_run_empty_start_uses_dataset_default(app):
+    """start 留空 → 数据集默认起始(zt_est=20120101), 避免统一默认漏掉目标区间"""
+    app["client"].post("/admin/api/backfill/run", json={"dataset": "zt_est", "start": ""})
+    from server import jobs
+    item = jobs._q.get_nowait()
+    starts = [c for c in app["state"]["cmds"][-1]] if app["state"]["cmds"] else []
+    assert jobs.queue_size() == 0                     # 已取出
+    with app["app"].app_context():
+        from server.models import Job  # noqa: F401
+    # 闭包内 start 已固化为默认值: 执行任务验证 CLI 参数
+    lines = []
+    with app["app"].app_context():
+        rc = item["fn"](lines.append)
+    assert rc == 0
+    assert "--start" in app["state"]["cmds"][0]
+    assert app["state"]["cmds"][0][app["state"]["cmds"][0].index("--start") + 1] == "20120101"
+
+
 def test_api_backfill_logs_and_date_lookup(app):
     from server.models import DataBackfillLog
     with app["app"].app_context():
@@ -119,3 +137,18 @@ def test_api_backfill_logs_and_date_lookup(app):
                                     {"date": "2026-03-17", "rows": 5}]
     j = c.get("/admin/api/backfill/logs?date=2026-12-31").get_json()
     assert j["logs"] == []
+
+
+def test_api_backfill_logs_compact_date_lookup(app):
+    """calendar 数据集的 days 为紧凑 cal_date 格式 → ISO 反查也能命中"""
+    from server.models import DataBackfillLog
+    import datetime as _dt
+    with app["app"].app_context():
+        s = app["app"].extensions["sqlalchemy"].session
+        s.add(DataBackfillLog(dataset="calendar", label="日历", status="done",
+                              rows_written=3, date_from="20260301", date_to="20260331",
+                              days_json=json.dumps([{"date": "20260315", "rows": 3}]),
+                              started_at=_dt.datetime.now()))
+        s.commit()
+    j = app["client"].get("/admin/api/backfill/logs?date=2026-03-15").get_json()
+    assert len(j["logs"]) == 1 and j["logs"][0]["dataset"] == "calendar"
