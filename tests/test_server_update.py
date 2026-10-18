@@ -132,6 +132,34 @@ def test_backfill_no_recalc_when_nothing_written(app):
     assert app["jobs"].queue_size() == 0
 
 
+def test_backfill_recalc_enqueue_failure_message(app):
+    """队列满 → 入队失败, 日志明示'入队失败'而非自相矛盾的'已入队'"""
+    with app["app"].app_context():
+        app["jobs"].set_setting("backfill_recalc", "1")
+    while app["jobs"].enqueue("noop", lambda a: 0)[0]:   # 填满队列(上限20); 注意enqueue返回元组恒真
+        pass
+    collected = []
+    from server import jobs
+    result = {"dataset": "zt_ts", "status": "ok", "date_from": "2026-09-24",
+              "date_to": "2026-09-28", "rows_written": 9,
+              "days": [{"date": "2026-09-24", "rows": 9}], "duration_s": 1.0, "error": None}
+    orig = jobs._run
+
+    def fake(cmd, append, cwd=None, env_extra=None):
+        append("@@BACKFILL@@ " + json.dumps(result, ensure_ascii=False))
+        return 0
+    jobs._run = fake
+    try:
+        with app["app"].app_context():
+            jobs.task_backfill("zt_ts", "20200102", "manual")(collected.append)
+    finally:
+        jobs._run = orig
+    joined = "\n".join(collected)
+    assert "入队失败" in joined and "已自动入队" not in joined
+    while not jobs._q.empty():                        # 清理, 不污染后续
+        jobs._q.get_nowait()
+
+
 def test_strategy_partial_update(app):
     c = app["client"]
     r = c.post("/admin/api/strategy", json={"backfill_recalc": "0"})

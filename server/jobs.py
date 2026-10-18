@@ -427,7 +427,8 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual"):
         if (log.status == "done" and (log.rows_written or 0) > 0
                 and get_setting("backfill_recalc", "1") == "1"):
             ok2, msg2 = enqueue("recalc", task_recalc, trigger="schedule")
-            append(f"> 基础数据已更新({log.rows_written}行), 已自动入队评分重算: {msg2}")
+            append(f"> 基础数据已更新({log.rows_written}行), "
+                   + (f"已自动入队评分重算" if ok2 else f"⚠ 评分重算入队失败: {msg2}"))
         return 0 if log.status == "done" else 1
     return fn
 
