@@ -470,6 +470,58 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+def backfill_sector_history(start="20120101"):
+    """D1-5: 板块日线历史回补(东财beg参数). 幂等: 只补早于现有最早日的增量段;
+    板块已有数据早于等于start则跳过请求. 熔断: 连续10次失败(push2his限流) /
+    连续5次网络异常快速失败. [i/N]进度兼容D1-4运行态解析."""
+    import sectors as _sec
+    conn = connect()
+    codes = _sec._enabled_industries(conn)
+    if not codes:
+        print("[sec-hist] 无启用板块, 先刷新清单")
+        return True
+    iso_want = norm_date(start)
+    todo = []
+    for c in codes:
+        first = conn.execute("SELECT MIN(date) FROM sector_daily WHERE code=?",
+                             (c,)).fetchone()[0]
+        if not first or first > iso_want:
+            todo.append(c)
+    print(f"[sec-hist] {len(todo)}/{len(codes)} 板块需回补至 {iso_want} 前"
+          f" (beg={ymd(iso_want)})")
+    if not todo:
+        return True
+    t0, fails, err_streak = time.time(), 0, 0
+    for i, code in enumerate(todo, 1):
+        try:
+            df = em_api.sector_kline(code, beg=ymd(iso_want))
+            err_streak = 0
+            if not df.empty:
+                _sec._upsert_bars(conn, code, df)
+                fails = 0
+            else:
+                fails += 1
+        except Exception as e:  # noqa: BLE001
+            fails += 1
+            err_streak += 1
+            if fails == 1:
+                print(f"  ✗ {code}: {e}")
+            if err_streak >= 5:
+                print("  ✗✗ 连续5次异常(多为网络), 中断")
+                break
+        if fails >= 10:
+            print("  ✗✗ 连续10次失败(push2his可能限流), 中断; 稍后重跑续传")
+            break
+        time.sleep(_sec.SLEEP)
+        if i % 25 == 0:
+            conn.commit()
+            print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")
+    conn.commit()
+    lo = conn.execute("SELECT MIN(date) FROM sector_daily").fetchone()[0]
+    print(f"[sec-hist] 结束 {time.time()-t0:.0f}s, sector_daily 最早 {lo}")
+    return True
+
+
 # ---------------------------------------------------------------- D1-2: 统一补全入口
 
 # dataset: (标签, [(表, 计数列None=全行, 日期列)], 执行函数(start), 默认起始日)
@@ -484,6 +536,9 @@ BACKFILLS = {
                 lambda start: breadth_from_tushare(start), "20180102"),
     "calendar": ("交易日历·刷新", [("calendar", None, "cal_date")],
                  lambda start: fetch_calendar(), "20240101"),
+    "sector_history": ("板块日线·历史回补(东财, 目标2012起)",
+                       [("sector_daily", None, "date")],
+                       lambda start: backfill_sector_history(start), "20120101"),
 }
 
 
