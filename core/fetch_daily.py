@@ -471,6 +471,12 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+def backfill_sw_pool(start="20050101"):
+    """D1-6 P2: 涨停结构(SW层级+全市场est2段) — sw_pool.run"""
+    import sw_pool
+    return sw_pool.run(start)
+
+
 def backfill_sw_breadth(start="20050101"):
     """D1-6 P1: 板块涨跌家数(SW层级) — raw_daily.run(raw回补+聚合)"""
     import raw_daily
@@ -548,6 +554,9 @@ BACKFILLS = {
                        lambda start: backfill_sector_history(start), "20120101"),
     "sw_breadth": ("板块涨跌家数·SW层级(2005起)", [("sw_breadth", None, "date")],
                    lambda start: backfill_sw_breadth(start), "20050101"),
+    "sw_pool": ("涨停结构·SW层级(2005起, 含全市场段)", [("sw_pool", None, "date"),
+              ("mood_raw", "zt_count", "date")],
+              lambda start: backfill_sw_pool(start), "20050101"),
 }
 
 
