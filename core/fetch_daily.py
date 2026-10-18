@@ -9,6 +9,7 @@
 """
 import argparse
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -470,6 +471,12 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+def backfill_sw_breadth(start="20050101"):
+    """D1-6 P1: 板块涨跌家数(SW层级) — raw_daily.run(raw回补+聚合)"""
+    import raw_daily
+    return raw_daily.run(start)
+
+
 def backfill_sector_history(start="20120101"):
     """D1-5: 板块日线历史回补(东财beg参数). 幂等: 只补早于现有最早日的增量段;
     板块已有数据早于等于start则跳过请求. 熔断: 连续10次失败(push2his限流) /
@@ -539,6 +546,8 @@ BACKFILLS = {
     "sector_history": ("板块日线·历史回补(东财, 目标2012起)",
                        [("sector_daily", None, "date")],
                        lambda start: backfill_sector_history(start), "20120101"),
+    "sw_breadth": ("板块涨跌家数·SW层级(2005起)", [("sw_breadth", None, "date")],
+                   lambda start: backfill_sw_breadth(start), "20050101"),
 }
 
 
@@ -547,7 +556,10 @@ def _count_by_date(conn, table, col, date_col) -> dict:
     if col:
         q += f" WHERE {col} IS NOT NULL"
     q += " GROUP BY 1"
-    return dict(conn.execute(q).fetchall())
+    try:
+        return dict(conn.execute(q).fetchall())
+    except sqlite3.Error:
+        return {}                    # 表未建(首次补全, fn执行时才建表) → 视为空
 
 
 def run_backfill(dataset, start=None) -> dict:
