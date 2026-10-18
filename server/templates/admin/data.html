@@ -97,10 +97,14 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 async function loadDatasets() {
   try {
     const d = await api('/admin/api/datasets');
-    $('dsTable').innerHTML = '<tr><th>数据集</th><th>来源</th><th>行数</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
+    const pctCls = c => c == null ? 'hint' : c >= 100 ? 'ok' : c >= 95 ? 'bad' : 'bad';
+    $('dsTable').innerHTML = '<tr><th>数据集</th><th>来源</th><th>行数</th><th>板块数</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th>说明</th></tr>' +
       d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
+        <td>${t.codes ?? '--'}</td>
         <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
-        <td class="${t.health === 'ok' ? 'ok' : t.health === 'warn' ? 'bad' : 'bad'}">${t.health === 'ok' ? '正常' : '注意'}</td>
+        <td class="${pctCls(t.completeness)}">${t.completeness == null ? '--' : t.completeness + '%'}</td>
+        <td class="${t.missing_n ? 'bad' : 'hint'}" title="${esc((t.missing_recent || []).join(', '))}">${t.missing_n ? `缺 ${t.missing_n} 天` : '—'}</td>
+        <td class="${t.health === 'ok' ? 'ok' : 'bad'}">${t.health === 'ok' ? '正常' : t.health === 'warn' ? '注意' : '异常'}</td>
         <td class="hint">${esc(t.note || '')}</td></tr>`).join('');
     // D2-2: 评分数据状态
     $('scoreTable').innerHTML = '<tr><th>评分类型</th><th>来源</th><th>行数</th><th>板块数</th><th>覆盖交易日</th><th>区间</th><th>健康</th><th>说明</th></tr>' +

@@ -140,10 +140,51 @@ def score_datasets() -> list:
         con.close()
 
 
+# ---- D1-1: 数据资产注册表 (代码级清单; 第四阶段运维动态注册时再迁 app.db) ----
+# (code, 名称, 表, 日期口径where, 来源, 陈旧阈值天, 基础说明)
+_ASSET_DATE_TABLES = [
+    ("index", "指数日线(上证+深综)", "index_daily", None, "东财/腾讯", 4,
+     "三源回退·上证为评分主力指数"),
+    ("pool", "涨停复盘池(同花顺口径)", "mood_raw", "zt_count IS NOT NULL", "同花顺", 4,
+     "源历史约一年滚动·2012-2019为估算回补"),
+    ("breadth", "当日涨跌家数", "mood_raw", "up_count IS NOT NULL", "乐咕(可选)", 4,
+     "仅最新一天可得, 不参与评分历史分量"),
+    ("sector_daily", "板块日线", "sector_daily", None, "东财push2his", 4,
+     "涨跌家数采集日起积累"),
+    ("sector_pool", "板块涨停聚合(THS行业)", "sector_pool_stat", None, "同花顺", 4,
+     "tushare行业聚合·2020起(东财池每日增量补充)"),
+    ("sector_fflow", "板块资金流", "sector_fundflow", None, "东财fflow", 7,
+     "约最近120日滚动"),
+    ("margin", "融资融券(tushare)", "margin_daily", None, "tushare", 7, ""),
+]
+_HEALTH_RANK = {"ok": 0, "warn": 1, "bad": 2}
+
+
+def _norm_date(s) -> str:
+    """calendar.cal_date(YYYYMMDD) → YYYY-MM-DD"""
+    s = str(s)
+    if len(s) == 8 and "-" not in s:
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def _expected_days(con, first, last, primary) -> list:
+    """区间内交易日(完成度基准): 优先交易日历(is_open=1), 回退主力指数日期"""
+    if not first or not last:
+        return []
+    rows = con.execute(
+        "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date>=? AND cal_date<=?",
+        (first.replace("-", ""), last.replace("-", ""))).fetchall()
+    if rows:
+        return [_norm_date(r[0]) for r in rows]
+    return [r[0] for r in con.execute(
+        "SELECT DISTINCT date FROM index_daily WHERE code=? AND date>=? AND date<=? ORDER BY date",
+        (primary, first, last))]
+
+
 def datasets() -> list:
-    """数据集状态列表(数据管理页)"""
+    """数据集状态列表(数据管理页) — D1-1 注册表驱动: 区间/行数/完成度%/缺口明细"""
     cfg = _core_cfg()
-    today = time.strftime("%Y-%m-%d")
     con = _conn()
     if con is None:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,
@@ -152,97 +193,96 @@ def datasets() -> list:
     out = []
     try:
         primary = cfg["index"]["primary"]
-        for code, label in ((primary, "指数日线·上证"), (cfg["index"]["secondary"], "指数日线·深证综指")):
-            rows, first, last = con.execute(
-                "SELECT COUNT(*), MIN(date), MAX(date) FROM index_daily WHERE code=?",
-                (code,)).fetchone()
-            stale = _stale_days(last)
-            out.append({"code": f"index:{code}", "name": label, "source": "东财/腾讯",
-                        "rows": rows, "first": first, "last": last,
-                        "health": "ok" if stale <= 4 else "warn",
-                        "note": f"距今日 {stale} 天"})
+        for code, name, table, where, source, stale_max, base_note in _ASSET_DATE_TABLES:
+            try:
+                cond = f" WHERE {where}" if where else ""
+                rows, first, last = con.execute(
+                    f"SELECT COUNT(*), MIN(date), MAX(date) FROM {table}{cond}").fetchone()
+                have = {r[0] for r in con.execute(
+                    f"SELECT DISTINCT date FROM {table}{cond}")}
+                expected = _expected_days(con, first, last, primary)
+                missing = [d for d in expected if d not in have]
+                completeness = (round((len(expected) - len(missing)) / len(expected) * 100)
+                                if expected else None)
+                codes = None
+                if table in ("sector_daily", "sector_pool_stat", "sector_fundflow"):
+                    codes = con.execute(
+                        f"SELECT COUNT(DISTINCT code) FROM {table}{cond}").fetchone()[0]
+                # 健康 = 陈旧度 与 完成度 取差者; 有缺失交易日(<100)即warn, <80 bad
+                h = "ok" if _stale_days(last) <= stale_max else "warn"
+                if completeness is not None:
+                    if completeness < 80:
+                        h = "bad"
+                    elif missing:
+                        h = "warn"
+                note = base_note
+                if missing:
+                    note = (f"缺 {len(missing)} 天(近期: {','.join(missing[-3:])})"
+                            + (f"·{base_note}" if base_note else ""))
+                extra = ""
+                if table == "margin_daily":
+                    rzrq = con.execute(
+                        "SELECT rzrqye FROM margin_daily ORDER BY date DESC LIMIT 1").fetchone()
+                    extra = f"·最新两融余额 {(rzrq[0] or 0) / 1e12:.2f}万亿" if rzrq and rzrq[0] else ""
+                out.append({"code": code, "name": name, "source": source,
+                            "rows": rows or 0, "codes": codes,
+                            "first": first, "last": last,
+                            "completeness": completeness,
+                            "missing_n": len(missing), "missing_recent": missing[-10:],
+                            "health": h, "note": (note + extra) or "--"})
+            except sqlite3.Error:
+                continue                    # 该表未建(旧库)时跳过
 
-        ps = str(cfg.get("pool_start", ""))
-        pool_start = f"{ps[:4]}-{ps[4:6]}-{ps[6:8]}" if ps else "2000-01-01"
-        have = {r[0] for r in con.execute("SELECT date FROM mood_raw WHERE zt_count IS NOT NULL")}
-        idx_dates = [r[0] for r in con.execute(
-            "SELECT date FROM index_daily WHERE code=? AND date>=? ORDER BY date",
-            (primary, pool_start))]
-        missing = [d for d in idx_dates if d not in have and d <= today]
-        rows, last = con.execute(
-            "SELECT COUNT(*), MAX(date) FROM mood_raw WHERE zt_count IS NOT NULL").fetchone()
-        out.append({"code": "pool", "name": "涨停复盘池(同花顺口径)", "source": "同花顺",
-                    "rows": rows, "first": pool_start, "last": last,
-                    "health": "warn" if len(missing) > 3 else "ok",
-                    "note": f"缺失 {len(missing)} 天(源历史自 {pool_start} 起, 仅约一年滚动)"
-                            + (f"; 近期缺: {','.join(missing[-3:])}" if missing else "")})
-
-        # 情绪分/板块温度等评分数据状态 → score_datasets()(D2-2 评分状态卡)
-
-        rows, last = con.execute(
-            "SELECT COUNT(*), MAX(date) FROM mood_raw WHERE up_count IS NOT NULL").fetchone()
-        out.append({"code": "breadth", "name": "当日涨跌家数", "source": "乐咕(可选)",
-                    "rows": rows or 0, "first": None, "last": last,
-                    "health": "ok",
-                    "note": "仅最新一天可得, 不参与评分历史分量"})
-
-        # ---- S5: 板块数据底座 ----
+        # ---- 非日期型资产 ----
         try:
             n_ind, n_con = con.execute(
                 "SELECT SUM(kind='industry'), SUM(kind='concept') FROM sectors").fetchone()
             out.append({"code": "sectors", "name": "板块清单(东财BK)", "source": "东财clist",
-                        "rows": (n_ind or 0) + (n_con or 0), "first": None,
-                        "last": con.execute("SELECT MAX(updated_at) FROM sectors").fetchone()[0],
+                        "rows": (n_ind or 0) + (n_con or 0), "codes": None,
+                        "first": None, "last": con.execute(
+                            "SELECT MAX(updated_at) FROM sectors").fetchone()[0],
+                        "completeness": None, "missing_n": 0, "missing_recent": [],
                         "health": "ok" if (n_ind or 0) >= 100 else "warn",
                         "note": f"行业{n_ind or 0}(启用) + 概念{n_con or 0}(停用)"})
-            rows, codes, first, last = con.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT code), MIN(date), MAX(date) FROM sector_daily").fetchone()
-            out.append({"code": "sector_daily", "name": "板块日线", "source": "东财push2his",
-                        "rows": rows or 0, "first": first, "last": last,
-                        "health": "ok" if _stale_days(last) <= 4 else "warn",
-                        "note": f"{codes} 板块; 涨跌家数采集日起积累"})
-            rows, last = con.execute(
-                "SELECT COUNT(*), MAX(date) FROM sector_pool_stat").fetchone()
-            out.append({"code": "sector_pool", "name": "板块涨停聚合(THS行业)", "source": "同花顺",
-                        "rows": rows or 0, "first": None, "last": last,
-                        "health": "ok" if _stale_days(last) <= 4 else "warn",
-                        "note": "tushare行业聚合·2020起(东财池每日增量补充)"})
-            rows, codes, last = con.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT code), MAX(date) FROM sector_fundflow").fetchone()
-            out.append({"code": "sector_fflow", "name": "板块资金流", "source": "东财fflow",
-                        "rows": rows or 0, "first": None, "last": last,
-                        "health": "ok" if _stale_days(last) <= 7 else "warn",
-                        "note": f"{codes or 0} 板块·约最近120日·周频刷新"})
-            # 板块温度按 BK/SW1/SW2 分类的状态 → score_datasets()(D2-2)
-            last = con.execute("SELECT MAX(date) FROM sector_scores").fetchone()[0]
-            if last is None:
-                out.append({"code": "sector_scores", "name": "板块温度(S6)", "source": "本系统计算",
-                            "rows": 0, "first": None, "last": None,
-                            "health": "bad", "note": "无数据, 请先执行数据更新+重算"})
-        except sqlite3.Error:
-            pass                    # 板块表未建(旧库)时跳过该组
-
-        # ---- tushare 数据源状态 ----
-        try:
-            ts_token = (CORE / "data" / "tushare_token.txt")
-            rows, first, last = con.execute(
-                "SELECT COUNT(*), MIN(cal_date), MAX(cal_date) FROM calendar").fetchone()
-            out.append({"code": "tushare_cal", "name": "交易日历(tushare)", "source": "tushare",
-                        "rows": rows or 0, "first": first, "last": last,
-                        "health": "ok" if rows else "warn",
-                        "note": f"token{'已配置' if ts_token.exists() and ts_token.read_text(encoding='utf-8').strip() else '未配置'}"
-                                "·limit_list_d等需更高积分"})
-            rows, first, last = con.execute(
-                "SELECT COUNT(*), MIN(date), MAX(date) FROM margin_daily").fetchone()
-            latest_rzrq = con.execute(
-                "SELECT rzrqye FROM margin_daily ORDER BY date DESC LIMIT 1").fetchone()
-            out.append({"code": "margin", "name": "融资融券(tushare)", "source": "tushare",
-                        "rows": rows or 0, "first": first, "last": last,
-                        "health": "ok" if (last and _stale_days(last) <= 7) else "warn",
-                        "note": (f"最新两融余额 {(latest_rzrq[0] or 0) / 1e12:.2f}万亿" if latest_rzrq and latest_rzrq[0] else "--")
-                                + "·每日随更新链增量"})
         except sqlite3.Error:
             pass
+        try:
+            ts_token = CORE / "data" / "tushare_token.txt"
+            has_token = ts_token.exists() and ts_token.read_text(encoding="utf-8").strip()
+            rows, first, last = con.execute(
+                "SELECT COUNT(*), MIN(cal_date), MAX(cal_date) FROM calendar").fetchone()
+            out.append({"code": "calendar", "name": "交易日历(tushare)", "source": "tushare",
+                        "rows": rows or 0, "codes": None,
+                        "first": _norm_date(first) if first else None,
+                        "last": _norm_date(last) if last else None,
+                        "completeness": None, "missing_n": 0, "missing_recent": [],
+                        "health": "ok" if rows else "warn",
+                        "note": f"完成度基准·token{'已配置' if has_token else '未配置'}"})
+        except sqlite3.Error:
+            pass
+        # 申万映射 L1/L2/L3(表存在才显示; L3 构建归专项)
+        _lvl_cn = {"sw1": "一级", "sw2": "二级", "sw3": "三级"}
+        for lvl, label in (("sw1", "申万一级映射"), ("sw2", "申万二级映射"), ("sw3", "申万三级映射")):
+            t = f"{lvl}_map"
+            exists = con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
+            if not exists:
+                out.append({"code": lvl, "name": label, "source": "tushare投票",
+                            "rows": 0, "codes": None, "first": None, "last": None,
+                            "completeness": None, "missing_n": 0, "missing_recent": [],
+                            "health": "warn", "note": "未构建(见L3专项计划)"})
+                continue
+            try:
+                rows = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                sws = con.execute(f"SELECT COUNT(DISTINCT {lvl}_name) FROM {t}").fetchone()[0]
+                bks = con.execute(f"SELECT COUNT(DISTINCT bk_code) FROM {t}").fetchone()[0]
+                out.append({"code": lvl, "name": label, "source": "tushare投票",
+                            "rows": rows, "codes": bks, "first": None, "last": None,
+                            "completeness": None, "missing_n": 0, "missing_recent": [],
+                            "health": "ok" if rows else "warn",
+                            "note": f"{sws} 个{_lvl_cn[lvl]} · 覆盖 {bks} 个东财BK"})
+            except sqlite3.Error:
+                pass
         return out
     except sqlite3.Error as e:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,
