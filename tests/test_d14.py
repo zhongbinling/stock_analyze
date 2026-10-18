@@ -66,6 +66,7 @@ def test_template_has_running_branch_and_cn_map():
     assert "JOB_TARGET_CN" in html and "zt_ts:" in html          # 存量代码→可读名映射
     assert "… 运行中" in html                                     # running三分支(不再是✗)
     assert "rg.pct" in html                                       # 进度百分比展示
+    assert "bfLive" in html                                       # 运行态独立元素(不覆盖按钮反馈)
 
 
 # ── core 侧: 回补循环快速失败 ──

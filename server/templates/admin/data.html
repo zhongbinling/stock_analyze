@@ -79,6 +79,7 @@
     <span>起始 <input class="input narrow" id="bfStart" placeholder="留空=推荐起始"></span>
     <button class="btn primary" id="btnBfRun">开始补全</button>
     <span class="hint" id="bfMsg"></span>
+    <span class="hint" id="bfLive"></span>
   </div>
   <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照; 板块日线/资金流/两融为增量型, 随每日更新链积累。</p>
   <div class="row-flex" style="margin:4px 0">
@@ -345,7 +346,8 @@ async function loadBackfillLogs(dataset = '', date = '') {
     if (date) qs.set('date', date);
     const d = await api('/admin/api/backfill/logs' + (qs.toString() ? '?' + qs : ''));
     const rg = d.running;
-    if (rg) $('bfMsg').innerHTML = `<span class="hint">补全运行中: ${esc(rg.target)} ${rg.n}/${rg.total} (${rg.pct}%)</span>`;
+    $('bfLive').innerHTML = rg
+      ? `<span class="hint">补全运行中: ${esc(rg.target)} ${rg.n}/${rg.total} (${rg.pct}%)</span>` : '';
     $('bfTable').innerHTML = '<tr><th>时间</th><th>数据集</th><th>区间</th><th>写入行数</th><th>写入天数</th><th>触发</th><th>状态</th><th>说明</th></tr>' +
       (d.logs.length ? d.logs.map(l => {
         const days = (l.days || []).map(x => `${x.date}:${x.rows}行`).join(', ');
