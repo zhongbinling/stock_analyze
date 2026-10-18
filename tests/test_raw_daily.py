@@ -23,7 +23,8 @@ def env(tmp_path, monkeypatch):
 
     sent = sqlite3.connect(str(sent_p))
     sent.executescript("""
-      CREATE TABLE index_daily(code TEXT, date TEXT, close REAL, PRIMARY KEY(code, date));
+      CREATE TABLE index_daily(code TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL,
+  volume REAL, amount REAL, pct_chg REAL, PRIMARY KEY(code, date));
       CREATE TABLE mood_raw(date TEXT PRIMARY KEY, up_count INTEGER, down_count INTEGER);
       CREATE TABLE sw_components(index_code TEXT, level TEXT, industry_name TEXT,
         con_code TEXT, in_date TEXT, out_date TEXT, is_new TEXT,
@@ -35,7 +36,7 @@ def env(tmp_path, monkeypatch):
     sent.execute("INSERT INTO sw_components VALUES('801120.SI','L1','食品饮料','000600.SH','19900101',NULL,'Y')")
     for d in ("2005-01-04", "2005-01-05", "2005-01-06", "2005-01-07",
               "2005-01-10", "2005-01-11"):
-        sent.execute("INSERT INTO index_daily VALUES('1.000001',?,1000)", (d,))
+        sent.execute("INSERT INTO index_daily VALUES('1.000001',?,1,1,1,1000,1,1,0)", (d,))
     sent.execute("INSERT INTO mood_raw VALUES('2005-01-06', 2, 1)")
     sent.commit()
     sent.close()
@@ -126,6 +127,25 @@ def test_registry_entry(env, monkeypatch):
     assert r["status"] == "ok"
     assert r["rows_written"] == 6                       # sw_breadth 逐日增量度量
     assert r["date_from"] == "2005-01-04"
+
+
+def test_index_backfill_writes_iso_dates(env, monkeypatch):
+    """回归: index_daily 补抓必须写ISO日期(曾因YMD直插污染date列致score.py NaT崩溃)"""
+    import pandas as pd
+    # 夹具index_daily首日2005-01-04 > start 2004-01-01 → 触发补抓
+    def fake_call(api, fields="", **kw):
+        if api == "index_daily":
+            return pd.DataFrame([{"trade_date": "20040102", "open": 1, "high": 1,
+                                  "low": 1, "close": 1, "vol": 1, "amount": 1, "pct_chg": 0.0}])
+        if api == "daily":
+            return pd.DataFrame()
+        raise AssertionError(kw)
+    monkeypatch.setattr(T, "call", fake_call)
+    RD.backfill("20040101")
+    conn = sqlite3.connect(str(env["sent"]))
+    fmt = conn.execute("SELECT date FROM index_daily WHERE date LIKE '2004%'").fetchone()
+    conn.close()
+    assert fmt == ("2004-01-02",)                       # ISO, 非YMD
 
 
 def test_calibrate_reports(env, capsys):

@@ -69,10 +69,10 @@ def _ensure_index_daily(start):
                 break
             if df is None or df.empty:
                 continue
-            rows = [("1.000001", r["trade_date"], r["open"], r["high"], r["low"],
+            rows = [("1.000001", _iso(r["trade_date"]), r["open"], r["high"], r["low"],
                      r["close"], r["vol"], r["amount"], r["pct_chg"])
                     for _, r in df.iterrows()
-                    if str(r["trade_date"]) not in have_ymd]
+                    if str(r["trade_date"]).replace("-", "") not in have_ymd]
             if rows:
                 conn.executemany(
                     "INSERT OR REPLACE INTO index_daily(code,date,open,high,low,close,volume,amount,pct_chg) "
