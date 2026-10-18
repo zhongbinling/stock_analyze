@@ -8,6 +8,7 @@
 首次回补约 300 个交易日需 15~30 分钟, 支持断点续跑(重跑自动跳过已有日期)。
 """
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -240,11 +241,14 @@ def fetch_sectors():
 
 
 def fetch_calendar():
-    """同步交易日历(tushare, 可选): 过去2年+未来6个月 → calendar 表"""
+    """同步交易日历(tushare, 可选): 过去2年+未来6个月 → calendar 表
+
+    返回 True/False 供补全入口感知成败(主链每日调用忽略返回值, 行为不变)。
+    """
     try:
         import tushare_api
         if not tushare_api.has_token():
-            return
+            return True
         from datetime import date
         start = (date.today().replace(year=date.today().year - 2)).strftime("%Y%m%d")
         end = (date.today().replace(year=date.today().year + 1)).strftime("%Y1231")
@@ -259,8 +263,10 @@ def fetch_calendar():
         conn.commit()
         n_open = conn.execute("SELECT COUNT(*) FROM calendar WHERE is_open=1").fetchone()[0]
         print(f"[calendar] tushare 交易日历: {len(df)} 天({df['cal_date'].min()}~{df['cal_date'].max()}), 交易日{n_open}")
+        return True
     except Exception as e:  # noqa: BLE001
         print(f"[calendar] 失败(不影响主流程): {type(e).__name__}: {e}")
+        return False
 
 
 def fetch_tushare_mood_today():
@@ -449,6 +455,79 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+# ---------------------------------------------------------------- D1-2: 统一补全入口
+
+# dataset: (标签, [(表, 计数列None=全行, 日期列)], 执行函数(start))
+# 增量度量=执行前后按日计数差集, 不改既有回补函数内部; 重复执行幂等(函数自身跳过已有日期)
+BACKFILLS = {
+    "zt_est": ("涨停家数·估算回补(2012-2019)", [("mood_raw", "zt_count", "date")],
+               lambda start: backfill_zt_est(start)),
+    "zt_ts": ("涨停结构·tushare回补(2020起)",
+              [("mood_raw", "zt_count", "date"), ("sector_pool_stat", None, "date")],
+              lambda start: backfill_tushare(start)),
+    "breadth": ("涨跌家数·tushare回补(2018起)", [("mood_raw", "up_count", "date")],
+                lambda start: breadth_from_tushare(start)),
+    "calendar": ("交易日历·刷新", [("calendar", None, "cal_date")],
+                 lambda start: fetch_calendar()),
+}
+
+
+def _count_by_date(conn, table, col, date_col) -> dict:
+    q = f"SELECT {date_col}, COUNT(*) FROM {table}"
+    if col:
+        q += f" WHERE {col} IS NOT NULL"
+    q += " GROUP BY 1"
+    return dict(conn.execute(q).fetchall())
+
+
+def run_backfill(dataset, start="20200102") -> dict:
+    """统一补全: 前置快照 → 执行 → 逐日增量度量 → 结构化结果(服务端落 data_backfill_log)"""
+    t0 = time.time()
+    spec = BACKFILLS.get(dataset)
+    if not spec:
+        return {"dataset": dataset, "label": "", "status": "fail",
+                "error": f"未知数据集: {dataset}", "days": [], "rows_written": 0,
+                "date_from": None, "date_to": None, "duration_s": 0}
+    label, targets, fn = spec
+    iso_start = norm_date(start)
+    try:
+        from backup import snapshot
+        snapshot("sentiment", "pre-backfill")
+    except Exception as e:  # noqa: BLE001
+        print(f"[backfill] pre-backfill快照失败(继续): {e}")
+    conn = connect()
+    try:
+        pre = {t: _count_by_date(conn, t, c, dcol) for t, c, dcol in targets}
+    finally:
+        conn.close()
+    err = None
+    try:
+        ret = fn(ymd(iso_start))
+        if ret is False:            # 执行函数自报失败(内部吞错型, 如 calendar 网络失败)
+            err = "执行函数自报失败(详见任务日志)"
+    except Exception as e:  # noqa: BLE001
+        err = f"{type(e).__name__}: {e}"
+        print(f"[backfill] ✗ 执行异常: {err}")
+    conn = connect()
+    try:
+        per_day = {}
+        for t, c, dcol in targets:
+            post = _count_by_date(conn, t, c, dcol)
+            for d, n in post.items():
+                delta = n - pre[t].get(d, 0)
+                if delta > 0:
+                    per_day[d] = per_day.get(d, 0) + delta
+    finally:
+        conn.close()
+    days = [{"date": d, "rows": n} for d, n in sorted(per_day.items())]
+    return {"dataset": dataset, "label": label,
+            "status": "fail" if err else "ok",
+            "date_from": days[0]["date"] if days else iso_start,
+            "date_to": days[-1]["date"] if days else iso_start,
+            "rows_written": sum(n for n in per_day.values()),
+            "days": days, "duration_s": round(time.time() - t0, 1), "error": err}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default=None, help="池回补起始日 YYYYMMDD (默认取 config pool_start)")
@@ -463,7 +542,14 @@ def main():
                     help="涨跌家数历史回补(tushare daily_basic), 默认20180102起")
     ap.add_argument("--zt-est-backfill", nargs="?", const="20120101", metavar="START",
                     help="涨停/跌停家数估算回补(daily pct_chg), 默认20120101起")
+    ap.add_argument("--backfill", metavar="DATASET",
+                    help="D1-2 只跑数据补全(不走常规抓取链): " + "|".join(BACKFILLS))
     args = ap.parse_args()
+
+    if args.backfill:
+        r = run_backfill(args.backfill, args.start or "20200102")
+        print("@@BACKFILL@@ " + json.dumps(r, ensure_ascii=False))
+        return
 
     cfg = load_cfg()
     fetch_index(cfg, args.index_start or cfg["index_start"])

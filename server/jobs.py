@@ -337,7 +337,57 @@ def task_generate(def_id, scheduled=False):
     return fn
 
 
-# ---------------------------------------------------------------- 调度器
+# ---------------------------------------------------------------- D1-2/D1-3: 数据补全
+
+# 与 core/fetch_daily.py BACKFILLS 的 dataset 键一致(路由校验复用; 不import fetch_daily避免拉起pandas)
+BACKFILL_DATASETS = {"zt_est": "涨停家数·估算回补(2012-2019)",
+                     "zt_ts": "涨停结构·tushare回补(2020起)",
+                     "breadth": "涨跌家数·tushare回补(2018起)",
+                     "calendar": "交易日历·刷新"}
+
+
+def task_backfill(dataset: str, start: str, trigger: str = "manual"):
+    """返回补全任务函数(闭包): subprocess 跑统一CLI, 解析结果JSON → 落 DataBackfillLog"""
+    def fn(append):
+        from server.models import DataBackfillLog
+        log = DataBackfillLog(dataset=dataset, label=BACKFILL_DATASETS.get(dataset, dataset),
+                              status="running", trigger=trigger, started_at=_now())
+        db.session.add(log)
+        db.session.commit()
+        append(f"[{utcnow_str()}] 补全开始: {dataset} 自 {start}")
+        lines = []
+
+        def tee(l):
+            lines.append(l)
+            append(l)
+
+        rc = _run([sys.executable, "-u", "fetch_daily.py",
+                   "--backfill", dataset, "--start", str(start)], tee)
+        result = None
+        for line in reversed(lines[-5:]):          # 末尾找结果协议行
+            if line.startswith("@@BACKFILL@@ "):
+                try:
+                    result = json.loads(line[len("@@BACKFILL@@ "):])
+                except json.JSONDecodeError:
+                    pass
+                break
+        if rc == 0 and result is None:
+            rc = 1
+            append("! 未找到补全结果行(@@BACKFILL@@)")
+        log.status = ("done" if rc == 0 and result and result.get("status") == "ok" else "fail")
+        if result:
+            log.date_from = result.get("date_from")
+            log.date_to = result.get("date_to")
+            log.rows_written = result.get("rows_written") or 0
+            log.days_json = json.dumps(result.get("days") or [], ensure_ascii=False)
+            log.duration_s = result.get("duration_s")
+            log.error = (result.get("error") or "")[:255] or None
+            append(f"[{utcnow_str()}] 补全结束: {log.status} "
+                   f"(写入 {log.rows_written} 行 / {len(result.get('days') or [])} 天)")
+        log.finished_at = _now()
+        db.session.commit()
+        return 0 if log.status == "done" else 1
+    return fn
 
 def _parse_hhmm(s, dh, dm):
     m = re.match(r"^(\d{1,2}):(\d{2})$", str(s or ""))
@@ -348,6 +398,8 @@ def _parse_hhmm(s, dh, dm):
         return h, mi
     return dh, dm
 
+
+# ---------------------------------------------------------------- 调度器
 
 def scheduler_running() -> bool:
     return _scheduler is not None

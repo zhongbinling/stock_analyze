@@ -137,3 +137,22 @@ class BackupRun(db.Model):
     files_json = db.Column(db.Text)                        # [{file,asset,size}]
     started_at = db.Column(db.DateTime)
     finished_at = db.Column(db.DateTime)
+
+
+class DataBackfillLog(db.Model):
+    """数据补全日志 (D1-3): 按(数据集×日期)可反查——数据异常定位与清理重补的依据"""
+    __tablename__ = "data_backfill_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    dataset = db.Column(db.String(16), nullable=False, index=True)   # zt_est|zt_ts|breadth|calendar
+    label = db.Column(db.String(48))
+    date_from = db.Column(db.String(10))
+    date_to = db.Column(db.String(10))
+    rows_written = db.Column(db.Integer, default=0)
+    status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
+    trigger = db.Column(db.String(8), default="manual")
+    days_json = db.Column(db.Text)                         # [{date,rows}…] 逐日写入明细
+    duration_s = db.Column(db.Float)
+    error = db.Column(db.String(255))
+    started_at = db.Column(db.DateTime)
+    finished_at = db.Column(db.DateTime)

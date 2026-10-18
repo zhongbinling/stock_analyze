@@ -11,7 +11,8 @@ from flask_login import current_user, login_user
 from server import ROOT, db
 from server.auth import audit, level_name, require_level
 from server.forms import LoginForm, ResetPwForm, UserAddForm
-from server.models import AdminLog, BackupRun, DataSource, Job, User, ViewDef, ViewRun
+from server.models import (AdminLog, BackupRun, DataBackfillLog, DataSource, Job,
+                           User, ViewDef, ViewRun)
 
 bp_admin = Blueprint("admin", __name__, url_prefix="/admin")
 
@@ -346,6 +347,52 @@ def api_backup_restore():
     audit("backup_restore" if ok else "backup_restore_reject", target=fname)
     return jsonify({"ok": ok, "msg": "已恢复(恢复前已自动快照 pre-restore)" if ok
                                      else "恢复失败, 详见 backup.log"}), (200 if ok else 500)
+
+
+# ---------------- D1-2/D1-3: 数据补全 ----------------
+
+_START_RE = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
+
+
+@bp_admin.post("/api/backfill/run")
+@require_level(7)
+def api_backfill_run():
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    dataset = str(d.get("dataset", "")).strip()
+    start = str(d.get("start", "")).strip() or "20200102"
+    if dataset not in jobs.BACKFILL_DATASETS:
+        return jsonify({"ok": False, "msg": f"dataset 应为 {'/'.join(jobs.BACKFILL_DATASETS)}"}), 400
+    if not _START_RE.match(start):
+        return jsonify({"ok": False, "msg": "start 应为 YYYYMMDD 或 YYYY-MM-DD"}), 400
+    ok, msg = jobs.enqueue("backfill", jobs.task_backfill(dataset, start, "manual"),
+                           target=dataset, trigger="manual")
+    audit("backfill_run_enqueue" if ok else "backfill_run_reject",
+          target=dataset, detail=f"start={start}; {msg}")
+    return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
+
+
+@bp_admin.get("/api/backfill/logs")
+@require_level(7)
+def api_backfill_logs():
+    dataset = request.args.get("dataset", "").strip()
+    date = request.args.get("date", "").strip()
+    q = DataBackfillLog.query
+    if dataset:
+        q = q.filter_by(dataset=dataset)
+    rows = q.order_by(DataBackfillLog.id.desc()).limit(50).all()
+    out = []
+    for r in rows:
+        days = json.loads(r.days_json or "[]")
+        if date and not any(x.get("date") == date for x in days):
+            continue                      # 按(数据集×日期)反查: 只留写过该日的记录
+        out.append({"id": r.id, "dataset": r.dataset, "label": r.label or "",
+                    "date_from": r.date_from, "date_to": r.date_to,
+                    "rows_written": r.rows_written, "status": r.status,
+                    "trigger": r.trigger or "", "duration": r.duration_s,
+                    "error": r.error or "", "days": days,
+                    "at": r.started_at.strftime("%m-%d %H:%M:%S") if r.started_at else ""})
+    return jsonify({"logs": out})
 
 
 @bp_admin.get("/api/sources")
