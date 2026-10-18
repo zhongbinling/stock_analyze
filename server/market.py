@@ -75,6 +75,31 @@ def _stale_days(last: str) -> int:
         return 99
 
 
+def pipeline_stats() -> dict:
+    """更新链各步关键计数(D2-1 分步日志): 轻量只读, 返回 {key: {rows,last}}"""
+    con = _conn()
+    if con is None:
+        return {}
+    try:
+        out = {}
+
+        def q(key, sql):
+            try:
+                out[key] = con.execute(sql).fetchone()
+            except sqlite3.Error:
+                out[key] = (0, None)
+        q("index", "SELECT COUNT(*), MAX(date) FROM index_daily")
+        q("mood", "SELECT COUNT(*), MAX(date) FROM mood_raw")
+        q("sentiment", "SELECT COUNT(*), MAX(date) FROM sentiment")
+        q("sector_daily", "SELECT COUNT(*), MAX(date) FROM sector_daily")
+        q("bk", "SELECT COUNT(*), MAX(date) FROM sector_scores WHERE code LIKE 'BK%'")
+        q("sw1", "SELECT COUNT(*), MAX(date) FROM sector_scores WHERE code LIKE 'SW1_%'")
+        q("sw2", "SELECT COUNT(*), MAX(date) FROM sector_scores WHERE code LIKE 'SW2_%'")
+        return {k: {"rows": r[0] or 0, "last": r[1]} for k, r in out.items()}
+    finally:
+        con.close()
+
+
 def score_datasets() -> list:
     """评分数据状态(D2-2): 每类评分数据的区间/行数/最新/健康
 

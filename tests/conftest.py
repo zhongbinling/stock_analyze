@@ -127,6 +127,10 @@ def server_app(tmp_path, monkeypatch):
     app = SV.create_app()
     app.config["WTF_CSRF_ENABLED"] = False
     app.config["TESTING"] = True
+    # 全局任务队列排空(前序测试自动入队的 recalc 等残留会污染 queue_size 断言)
+    from server import jobs as _jobs
+    while not _jobs._q.empty():
+        _jobs._q.get_nowait()
     with app.app_context():
         SV.db.create_all()
         from server.models import User

@@ -80,7 +80,11 @@
     <button class="btn primary" id="btnBfRun">开始补全</button>
     <span class="hint" id="bfMsg"></span>
   </div>
-  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照; 板块日线/资金流/两融为增量型, 随每日更新链积累。补全完成后建议到「手动更新」重算评分。</p>
+  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照; 板块日线/资金流/两融为增量型, 随每日更新链积累。</p>
+  <div class="row-flex" style="margin:4px 0">
+    <label class="chk"><input type="checkbox" id="bfRecalc"> 补全后自动重算评分（score + 板块温度，保证视图生成用到完整评分）</label>
+    <span class="hint" id="bfRecalcMsg"></span>
+  </div>
   <div class="row-flex" style="margin:4px 0">
     <span>按日期反查 <input class="input narrow" id="bfDate" placeholder="2026-03-14"></span>
     <button class="btn small" id="btnBfQuery">查该日被哪些补全写过</button>
@@ -145,6 +149,8 @@ async function loadStrategy() {
     $('autoGenerate').checked = s.auto_generate === '1';
     $('updateCron').value = s.update_cron;
     $('generateCron').value = s.generate_cron;
+    const bf = document.getElementById('bfRecalc');
+    if (bf) bf.checked = s.backfill_recalc !== '0';   // D2-3 默认开
   } catch (e) {}
 }
 $('btnStrategy').onclick = async () => {
@@ -229,14 +235,29 @@ async function poll(quick) {
     btn.disabled = false;
     btn.textContent = '增量更新数据（抓取＋重算评分）';
   }
-  $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th></tr>' +
+  $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th><th></th></tr>' +
     (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(t.target)}</td>
       <td class="hint">${esc(t.trigger)}</td>
       <td class="${t.status === 'done' ? 'ok' : 'bad'}">${t.status === 'done' ? '✓ 成功' : '✗ 失败'}</td>
-      <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td></tr>`).join('')
-      : '<tr><td colspan="7" class="hint">暂无任务</td></tr>');
+      <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td>
+      <td><button class="btn small" data-joblog="${t.id}">日志</button></td></tr>`).join('')
+      : '<tr><td colspan="8" class="hint">暂无任务</td></tr>');
+  document.querySelectorAll('#jobTable [data-joblog]').forEach(b =>
+    b.onclick = () => toggleJobLog(parseInt(b.dataset.joblog), b));
   clearTimeout(pollTimer);
   pollTimer = setTimeout(() => poll(), (j.running || j.queued > 0) ? 2500 : 15000);
+}
+
+async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下钻
+  const cur = btn.closest('tr').nextElementSibling;
+  if (cur && cur.dataset.jobdetail) { cur.remove(); return; }
+  try {
+    const j = await api(`/admin/api/job/${jid}`);
+    const tr = document.createElement('tr');
+    tr.dataset.jobdetail = '1';
+    tr.innerHTML = `<td colspan="8"><pre class="logpre" style="max-height:280px;overflow:auto">${esc(j.log || '(无日志)')}</pre></td>`;
+    btn.closest('tr').after(tr);
+  } catch (e) { alert('加载失败: ' + e.message); }
 }
 
 $('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); };
@@ -346,6 +367,15 @@ $('btnBfRun').onclick = async () => {
   btn.disabled = false; btn.textContent = '开始补全';
 };
 $('btnBfQuery').onclick = () => loadBackfillLogs('', $('bfDate').value.trim());
+
+/* D2-3: 补全后自动重算开关(onchange 即存, strategy 部分更新) */
+$('bfRecalc').onchange = async () => {
+  try {
+    const r = await api('/admin/api/strategy', {method: 'POST', body: JSON.stringify({
+      backfill_recalc: $('bfRecalc').checked ? '1' : '0'})});
+    $('bfRecalcMsg').textContent = r.msg;
+  } catch (e) { $('bfRecalcMsg').textContent = e.message; }
+};
 
 loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); poll(true);
 </script>

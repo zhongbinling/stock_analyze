@@ -51,6 +51,8 @@ DEFAULT_SETTINGS = {
     "backup_daily_n": "14",
     "backup_weekly_n": "8",
     "backup_manual_n": "5",
+    # D2-3: 补全后自动重算评分
+    "backfill_recalc": "1",
 }
 
 SOURCES_SEED = [
@@ -219,15 +221,46 @@ def _run(cmd, append, cwd=CORE, env_extra=None):
 
 # ---------------------------------------------------------------- 任务定义
 
+# ---------------------------------------------------------------- D2-1: 更新链分步执行
+
+def _run_steps(append, steps):
+    """分步执行: 每步分隔线+耗时+增量计数(pipeline_stats前后差); 失败即中止"""
+    import server.market as market
+    pre = market.pipeline_stats()
+    n = len(steps)
+    for i, (name, cmd, keys) in enumerate(steps, 1):
+        append(f"━━━━ [{i}/{n}] {name} ({' '.join(cmd)}) ━━━━")
+        t0 = time.time()
+        rc = _run([sys.executable, "-u"] + cmd, append)
+        if rc:
+            append(f"━━━━ [{i}/{n}] {name} ✗ 失败, 中止后续步骤 ({time.time() - t0:.1f}s) ━━━━")
+            return rc
+        post = market.pipeline_stats()
+        grown = [f"{k} +{post.get(k, {}).get('rows', 0) - pre.get(k, {}).get('rows', 0)}行"
+                 f"(最新 {post.get(k, {}).get('last')})"
+                 for k in keys
+                 if post.get(k, {}).get("rows", 0) > pre.get(k, {}).get("rows", 0)]
+        append(f"━━━━ [{i}/{n}] {name} ✓ ({time.time() - t0:.1f}s)"
+               f"{'; ' + ', '.join(grown) if grown else ''} ━━━━")
+        pre = post
+    return 0
+
+
 def task_update(append):
-    """增量更新: 抓取(指数+涨停池+板块) → 重算评分(大盘+板块温度)"""
-    rc = _run([sys.executable, "-u", "fetch_daily.py"], append)
-    if rc:
-        return rc
-    rc = _run([sys.executable, "-u", "score.py"], append)
-    if rc:
-        return rc
-    return _run([sys.executable, "-u", "sector.py", "calc"], append)
+    """增量更新三步链(D2-1): 抓取 → 大盘评分 → 板块温度(含SW聚合)"""
+    return _run_steps(append, [
+        ("抓取", ["fetch_daily.py"], ("index", "mood", "sector_daily")),
+        ("大盘评分", ["score.py"], ("sentiment",)),
+        ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
+    ])
+
+
+def task_recalc(append):
+    """D2-3: 评分重算(不抓取): 补全后联动, 保证视图生成用到完整评分"""
+    return _run_steps(append, [
+        ("大盘评分", ["score.py"], ("sentiment",)),
+        ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
+    ])
 
 
 # ---------------------------------------------------------------- B1 备份任务
@@ -390,6 +423,11 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual"):
                    f"(写入 {log.rows_written} 行 / {len(result.get('days') or [])} 天)")
         log.finished_at = _now()
         db.session.commit()
+        # D2-3: 有实际写入且开关开 → 自动入队评分重算(独立job, 历史清晰)
+        if (log.status == "done" and (log.rows_written or 0) > 0
+                and get_setting("backfill_recalc", "1") == "1"):
+            ok2, msg2 = enqueue("recalc", task_recalc, trigger="schedule")
+            append(f"> 基础数据已更新({log.rows_written}行), 已自动入队评分重算: {msg2}")
         return 0 if log.status == "done" else 1
     return fn
 

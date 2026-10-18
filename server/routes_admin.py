@@ -210,21 +210,39 @@ def api_strategy_get():
 def api_strategy_set():
     from server import jobs
     d = request.get_json(force=True) or {}
+    # D2-3: 部分更新 — 只校验/保存本次出现的键(兼容旧全量提交与新开关单独保存)
+    keys = ("auto_update", "update_cron", "auto_generate", "generate_cron", "backfill_recalc")
+    present = [k for k in keys if k in d]
+    if not present:
+        return jsonify({"ok": False, "msg": "无可保存的设置项"}), 400
     errs = []
-    for k in ("update_cron", "generate_cron"):
-        if not _HHMM_RE.match(str(d.get(k, "")).strip()):
+    for k in present:
+        v = str(d.get(k)).strip()
+        if k in ("update_cron", "generate_cron") and not _HHMM_RE.match(v):
             errs.append(f"{k} 应为 HH:MM")
-    for k in ("auto_update", "auto_generate"):
-        if str(d.get(k)) not in ("0", "1"):
+        if k in ("auto_update", "auto_generate", "backfill_recalc") and v not in ("0", "1"):
             errs.append(f"{k} 应为 0/1")
     if errs:
         return jsonify({"ok": False, "msg": "; ".join(errs)}), 400
-    for k in ("auto_update", "update_cron", "auto_generate", "generate_cron"):
+    for k in present:
         jobs.set_setting(k, str(d.get(k)).strip())
     jobs.reschedule()
-    audit("strategy_update", detail=f"更新{d.get('update_cron')} 生成{d.get('generate_cron')}"
-                                    f" 自动更新={d.get('auto_update')} 自动生成={d.get('auto_generate')}")
+    audit("strategy_update", detail="; ".join(f"{k}={d.get(k)}" for k in present))
     return jsonify({"ok": True, "msg": "已保存并生效"})
+
+
+@bp_admin.get("/api/job/<int:jid>")
+@require_level(7)
+def api_job_log(jid):
+    """D2-1: 任务历史下钻 — jobpoll 仅当前任务, 此处取任意历史任务完整日志"""
+    j = db.session.get(Job, jid)
+    if not j:
+        return jsonify({"ok": False, "msg": "任务不存在"}), 404
+    return jsonify({"id": j.id, "kind": j.kind, "target": j.target or "",
+                    "trigger": j.trigger, "status": j.status, "rc": j.rc,
+                    "duration": j.duration_s,
+                    "at": j.started_at.strftime("%Y-%m-%d %H:%M:%S") if j.started_at else "",
+                    "log": j.log or ""})
 
 
 # ---------------- B1: 数据备份 ----------------
