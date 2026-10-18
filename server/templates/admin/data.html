@@ -97,7 +97,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 async function loadDatasets() {
   try {
     const d = await api('/admin/api/datasets');
-    const pctCls = c => c == null ? 'hint' : c >= 100 ? 'ok' : c >= 95 ? 'bad' : 'bad';
+    const pctCls = c => c == null ? 'hint' : (c >= 100 ? 'ok' : 'bad');
     $('dsTable').innerHTML = '<tr><th>数据集</th><th>来源</th><th>行数</th><th>板块数</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th>说明</th></tr>' +
       d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
         <td>${t.codes ?? '--'}</td>

@@ -169,14 +169,26 @@ def _norm_date(s) -> str:
 
 
 def _expected_days(con, first, last, primary) -> list:
-    """区间内交易日(完成度基准): 优先交易日历(is_open=1), 回退主力指数日期"""
+    """区间内交易日(完成度基准)。
+
+    日历**完整覆盖**区间时用日历; 否则(部分覆盖/表缺失/旧行少)回退主力指数日期
+    量全区间——避免静默只量日历覆盖的那一小段。回退时指数自身恒为100%(自为基准,
+    其缺口会体现在其他数据集的完成度上)。
+    """
     if not first or not last:
         return []
-    rows = con.execute(
-        "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date>=? AND cal_date<=?",
-        (first.replace("-", ""), last.replace("-", ""))).fetchall()
-    if rows:
-        return [_norm_date(r[0]) for r in rows]
+    lo, hi = first.replace("-", ""), last.replace("-", "")
+    try:
+        cov = con.execute(
+            "SELECT MIN(cal_date), MAX(cal_date) FROM calendar WHERE is_open=1").fetchone()
+        if cov and cov[0] and cov[0] <= lo and cov[1] >= hi:
+            rows = con.execute(
+                "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date>=? AND cal_date<=?",
+                (lo, hi)).fetchall()
+            if rows:
+                return [_norm_date(r[0]) for r in rows]
+    except sqlite3.Error:
+        pass                        # 日历表缺失(旧库) → 回退指数基准
     return [r[0] for r in con.execute(
         "SELECT DISTINCT date FROM index_daily WHERE code=? AND date>=? AND date<=? ORDER BY date",
         (primary, first, last))]

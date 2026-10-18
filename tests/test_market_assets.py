@@ -133,6 +133,31 @@ def test_fallback_when_calendar_empty(assets):
     assert _by_code(ds, "index")["completeness"] == 100
 
 
+def test_partial_calendar_coverage_falls_back(assets):
+    """日历只覆盖区间尾部 → 不静默收窄度量窗口, 回退指数基准量全区间"""
+    conn = sqlite3.connect(str(assets["path"]))
+    conn.execute("DELETE FROM calendar WHERE cal_date < '20260901'")
+    conn.commit()
+    conn.close()
+    ds = assets["market"].datasets()
+    # 与全日历口径同结论: 板块缺口3天仍在; 指数以自身为基准恒100
+    assert _by_code(ds, "sector_daily")["missing_n"] == 3
+    assert _by_code(ds, "index")["completeness"] == 100
+
+
+def test_calendar_table_missing_keeps_all_assets(assets):
+    """旧库无 calendar 表 → 资产行不塌缩(回退基准), 全部12项仍在"""
+    conn = sqlite3.connect(str(assets["path"]))
+    conn.execute("DROP TABLE calendar")
+    conn.commit()
+    conn.close()
+    codes = [d["code"] for d in assets["market"].datasets()]
+    for c in ("index", "pool", "breadth", "sector_daily", "sector_pool",
+              "sector_fflow", "margin", "sectors", "sw1", "sw2", "sw3"):
+        assert c in codes, f"日历表缺失导致 {c} 消失"
+    assert _by_code(assets["market"].datasets(), "sector_daily")["missing_n"] == 3
+
+
 def test_sw_map_rows_and_sw3_placeholder(assets):
     ds = assets["market"].datasets()
     s1 = _by_code(ds, "sw1")
