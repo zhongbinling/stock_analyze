@@ -17,19 +17,8 @@ import backup as BK  # noqa: E402
 
 
 @pytest.fixture()
-def app_env(tmp_path, monkeypatch):
-    """临时 server 配置/app.db + 临时备份资产 → Flask test client(登录管理员)"""
-    data = tmp_path / "data"
-    data.mkdir()
-    cfg = tmp_path / "config"
-    cfg.mkdir()
-    (cfg / "server.yaml").write_text(
-        f"server: {{host: 127.0.0.1, port: 8599}}\n"
-        f"app: {{theme_default: light}}\n"
-        f"data: {{app_db: '{(data / 'app.db').as_posix()}', secret_key_file: '{(data / 'secret.key').as_posix()}'}}\n"
-        f"scheduler: {{enabled: false}}\n", encoding="utf-8")
-
-    # 备份资产 → tmp(仅1个小sqlite, 其余缺失路径)
+def app_env(server_app, tmp_path, monkeypatch):
+    """server_app(共享) + 备份资产指向 tmp(仅1个小sqlite, 其余缺失)"""
     sent = tmp_path / "sentiment.db"
     conn = sqlite3.connect(str(sent))
     conn.execute("CREATE TABLE sentiment(date TEXT PRIMARY KEY, score REAL)")
@@ -41,25 +30,7 @@ def app_env(tmp_path, monkeypatch):
     monkeypatch.setattr(BK, "BACKUP_DIR", bdir)
     monkeypatch.setattr(BK, "MANIFEST", bdir / "manifest.json")
     monkeypatch.setattr(BK, "LOG_FILE", bdir / "backup.log")
-
-    import server as SV
-    monkeypatch.setattr(SV, "SERVER_CFG", cfg / "server.yaml")
-    monkeypatch.setenv("SA_NO_JOBS", "1")       # 不启动工作线程/调度器, 便于断言队列
-    app = SV.create_app()
-    app.config["WTF_CSRF_ENABLED"] = False
-    app.config["TESTING"] = True
-    with app.app_context():
-        SV.db.create_all()
-        from server.models import User
-        u = User(username="admin_t", level=9)
-        u.set_password("x")
-        SV.db.session.add(u)
-        SV.db.session.commit()
-        uid = u.id
-    client = app.test_client()
-    with client.session_transaction() as s:
-        s["_user_id"] = str(uid)
-    return {"app": app, "client": client, "sent": sent, "bdir": bdir}
+    return {**server_app, "sent": sent, "bdir": bdir}
 
 
 def _runs(app):

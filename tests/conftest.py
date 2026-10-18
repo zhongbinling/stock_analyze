@@ -41,6 +41,12 @@ def build_fixture_db(path: Path):
     dates30 = _dates(30)
     dates40 = _dates(40)
 
+    # D2-2: index_daily(主力指数到最新日, 作评分健康基准)
+    conn.execute("""CREATE TABLE index_daily(code TEXT, date TEXT, open REAL, high REAL,
+      low REAL, close REAL, amount REAL, PRIMARY KEY(code, date))""")
+    for d in dates40:
+        conn.execute("INSERT INTO index_daily VALUES('1.000001',?,3000,3010,2990,3005,3e11)", (d,))
+
     boards = {  # code: (name, 起始分, 每日步长) — BK0001 升温, BK0002 修复, BK0003 含 NULL
         "BK0001": ("半导体", 20, 1.4),
         "BK0002": ("白酒", -40, 0.7),
@@ -96,3 +102,40 @@ def fixture_html(fixture_db, tmp_path_factory):
     finally:
         SV.DB = old_db
     return out
+
+
+@pytest.fixture()
+def server_app(tmp_path, monkeypatch):
+    """共享 Flask 测试应用: 临时配置/app.db + 登录管理员(level 9) 的 test client
+
+    - SA_NO_JOBS=1: 不启动工作线程/调度器, 便于断言队列
+    - WTF_CSRF 关闭; session 预置 _user_id
+    """
+    import server as SV
+    data = tmp_path / "data"
+    data.mkdir()
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "server.yaml").write_text(
+        f"server: {{host: 127.0.0.1, port: 8599}}\n"
+        f"app: {{theme_default: light}}\n"
+        f"data: {{app_db: '{(data / 'app.db').as_posix()}', "
+        f"secret_key_file: '{(data / 'secret.key').as_posix()}'}}\n"
+        f"scheduler: {{enabled: false}}\n", encoding="utf-8")
+    monkeypatch.setattr(SV, "SERVER_CFG", cfg / "server.yaml")
+    monkeypatch.setenv("SA_NO_JOBS", "1")
+    app = SV.create_app()
+    app.config["WTF_CSRF_ENABLED"] = False
+    app.config["TESTING"] = True
+    with app.app_context():
+        SV.db.create_all()
+        from server.models import User
+        u = User(username="admin_t", level=9)
+        u.set_password("x")
+        SV.db.session.add(u)
+        SV.db.session.commit()
+        uid = u.id
+    client = app.test_client()
+    with client.session_transaction() as s:
+        s["_user_id"] = str(uid)
+    return {"app": app, "client": client, "tmp": tmp_path}

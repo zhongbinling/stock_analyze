@@ -162,7 +162,8 @@ def generate_page():
 @require_level(7)
 def api_datasets():
     from server import market
-    return jsonify({"datasets": market.datasets()})
+    return jsonify({"datasets": market.datasets(),
+                    "scores": market.score_datasets()})   # D2-2 评分数据状态
 
 
 @bp_admin.post("/api/update")

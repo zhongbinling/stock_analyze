@@ -75,6 +75,67 @@ def _stale_days(last: str) -> int:
         return 99
 
 
+def score_datasets() -> list:
+    """评分数据状态(D2-2): 每类评分数据的区间/行数/最新/健康
+
+    健康基准=行情最新日期(index_daily 主力指数MAX): 评分未跟上行情即warn。
+    """
+    con = _conn()
+    if con is None:
+        return [{"code": "score:db", "name": "评分数据", "source": "--", "rows": 0,
+                 "first": None, "last": None, "health": "bad", "note": "行情库不存在"}]
+    try:
+        base = latest_index_date()          # 行情最新日期(健康基准)
+        out = []
+
+        def _lag(last):
+            if not base or not last:
+                return 0
+            try:
+                from datetime import date
+                b = date(*map(int, base.split("-")))
+                l = date(*map(int, last.split("-")))
+                return (b - l).days
+            except ValueError:
+                return 0
+
+        rows, first, last = con.execute(
+            "SELECT COUNT(*), MIN(date), MAX(date) FROM sentiment").fetchone()
+        lag = _lag(last)
+        out.append({"code": "score:sentiment", "name": "大盘情绪分", "source": "score.py",
+                    "rows": rows or 0, "first": first, "last": last, "codes": 1, "days": rows or 0,
+                    "health": ("bad" if not last else "warn" if lag > 0 else "ok"),
+                    "note": ("无数据" if not last else
+                             f"{'=' if lag == 0 else f'落后行情 ' + str(lag) + ' 天'}·重算评分后刷新")})
+
+        for code, pat, name in (("score:bk", "BK%", "板块温度·行业板块"),
+                                ("score:sw1", "SW1_%", "板块温度·申万一级聚合"),
+                                ("score:sw2", "SW2_%", "板块温度·申万二级聚合")):
+            rows, codes, days, first, last = con.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT code), COUNT(DISTINCT date), "
+                "MIN(date), MAX(date) FROM sector_scores WHERE code LIKE ?",
+                (pat,)).fetchone()
+            lag = _lag(last)
+            note = ("" if not last else
+                    ("=" if lag == 0 else f"落后行情 {lag} 天"))
+            if code == "score:bk":
+                comp_last = con.execute(
+                    "SELECT MAX(date) FROM sector_scores WHERE components IS NOT NULL "
+                    "AND code LIKE 'BK%'").fetchone()[0]
+                note += f"·分量明细覆盖至 {comp_last or '--'}(保留260日)"
+            out.append({"code": code, "name": name, "source": "sector.py calc",
+                        "rows": rows or 0, "first": first, "last": last,
+                        "codes": codes or 0, "days": days or 0,
+                        "health": ("bad" if not last else "warn" if lag > 0 else "ok"),
+                        "note": note or "无数据"})
+        return out
+    except sqlite3.Error as e:
+        return [{"code": "score:db", "name": "评分数据", "source": "--", "rows": 0,
+                 "first": None, "last": None, "health": "bad", "note": f"读取失败: {e}"}]
+    finally:
+        con.close()
+
+
 def datasets() -> list:
     """数据集状态列表(数据管理页)"""
     cfg = _core_cfg()
@@ -112,11 +173,7 @@ def datasets() -> list:
                     "note": f"缺失 {len(missing)} 天(源历史自 {pool_start} 起, 仅约一年滚动)"
                             + (f"; 近期缺: {','.join(missing[-3:])}" if missing else "")})
 
-        rows, last = con.execute("SELECT COUNT(*), MAX(date) FROM sentiment").fetchone()
-        out.append({"code": "sentiment", "name": "情绪分(评分结果)", "source": "本系统计算",
-                    "rows": rows or 0, "first": None,
-                    "last": last, "health": "ok" if (last and _stale_days(last) <= 4) else "warn",
-                    "note": "重算评分后刷新"})
+        # 情绪分/板块温度等评分数据状态 → score_datasets()(D2-2 评分状态卡)
 
         rows, last = con.execute(
             "SELECT COUNT(*), MAX(date) FROM mood_raw WHERE up_count IS NOT NULL").fetchone()
@@ -152,12 +209,12 @@ def datasets() -> list:
                         "rows": rows or 0, "first": None, "last": last,
                         "health": "ok" if _stale_days(last) <= 7 else "warn",
                         "note": f"{codes or 0} 板块·约最近120日·周频刷新"})
-            rows, codes, last = con.execute(
-                "SELECT COUNT(*), COUNT(DISTINCT code), MAX(date) FROM sector_scores").fetchone()
-            out.append({"code": "sector_scores", "name": "板块温度(S6)", "source": "本系统计算",
-                        "rows": rows or 0, "first": None, "last": last,
-                        "health": "ok" if _stale_days(last) <= 4 else "warn",
-                        "note": f"{codes} 板块纵向温度+横向排名"})
+            # 板块温度按 BK/SW1/SW2 分类的状态 → score_datasets()(D2-2)
+            last = con.execute("SELECT MAX(date) FROM sector_scores").fetchone()[0]
+            if last is None:
+                out.append({"code": "sector_scores", "name": "板块温度(S6)", "source": "本系统计算",
+                            "rows": 0, "first": None, "last": None,
+                            "health": "bad", "note": "无数据, 请先执行数据更新+重算"})
         except sqlite3.Error:
             pass                    # 板块表未建(旧库)时跳过该组
 

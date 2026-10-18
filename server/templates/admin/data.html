@@ -12,6 +12,12 @@
 </section>
 
 <section class="card">
+  <h2>评分数据状态</h2>
+  <p class="hint">健康基准=行情最新日期：评分未跟上行情即标黄（重算评分后恢复）；板块温度分量明细仅保留近 260 日。</p>
+  <table class="table" id="scoreTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
   <h2>更新策略</h2>
   <div class="row-flex">
     <label class="chk"><input type="checkbox" id="autoUpdate"> 自动更新数据</label>
@@ -95,6 +101,13 @@ async function loadDatasets() {
       d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
         <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
         <td class="${t.health === 'ok' ? 'ok' : t.health === 'warn' ? 'bad' : 'bad'}">${t.health === 'ok' ? '正常' : '注意'}</td>
+        <td class="hint">${esc(t.note || '')}</td></tr>`).join('');
+    // D2-2: 评分数据状态
+    $('scoreTable').innerHTML = '<tr><th>评分类型</th><th>来源</th><th>行数</th><th>板块数</th><th>覆盖交易日</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
+      (d.scores || []).map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
+        <td>${t.codes ?? '--'}</td><td>${t.days ?? '--'}</td>
+        <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
+        <td class="${t.health === 'ok' ? 'ok' : 'bad'}">${t.health === 'ok' ? '✓ 正常' : t.health === 'warn' ? '落后' : '✗ 异常'}</td>
         <td class="hint">${esc(t.note || '')}</td></tr>`).join('');
   } catch (e) { $('dsTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
 }
