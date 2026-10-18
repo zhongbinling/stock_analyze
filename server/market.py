@@ -89,8 +89,11 @@ def score_datasets() -> list:
         out = []
 
         def _lag(last):
-            if not base or not last:
+            """落后行情天数; 行情基准缺失时回落自然日陈旧度口径(>4天视为落后)"""
+            if not last:
                 return 0
+            if not base:
+                return 0 if _stale_days(last) <= 4 else _stale_days(last)
             try:
                 from datetime import date
                 b = date(*map(int, base.split("-")))
@@ -103,10 +106,11 @@ def score_datasets() -> list:
             "SELECT COUNT(*), MIN(date), MAX(date) FROM sentiment").fetchone()
         lag = _lag(last)
         out.append({"code": "score:sentiment", "name": "大盘情绪分", "source": "score.py",
-                    "rows": rows or 0, "first": first, "last": last, "codes": 1, "days": rows or 0,
+                    "rows": rows or 0, "first": first, "last": last, "codes": None,
+                    "days": rows or 0,
                     "health": ("bad" if not last else "warn" if lag > 0 else "ok"),
                     "note": ("无数据" if not last else
-                             f"{'=' if lag == 0 else f'落后行情 ' + str(lag) + ' 天'}·重算评分后刷新")})
+                             f"{'与行情同步' if lag == 0 else f'落后行情 {lag} 天'}·重算评分后刷新")})
 
         for code, pat, name in (("score:bk", "BK%", "板块温度·行业板块"),
                                 ("score:sw1", "SW1_%", "板块温度·申万一级聚合"),
@@ -117,8 +121,8 @@ def score_datasets() -> list:
                 (pat,)).fetchone()
             lag = _lag(last)
             note = ("" if not last else
-                    ("=" if lag == 0 else f"落后行情 {lag} 天"))
-            if code == "score:bk":
+                    ("与行情同步" if lag == 0 else f"落后行情 {lag} 天"))
+            if code == "score:bk" and last:
                 comp_last = con.execute(
                     "SELECT MAX(date) FROM sector_scores WHERE components IS NOT NULL "
                     "AND code LIKE 'BK%'").fetchone()[0]
