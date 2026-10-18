@@ -124,10 +124,11 @@ def backfill_zt_est(start="20120101"):
         print("[zt-est] 无缺失日期")
         return
     print(f"[zt-est] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo)*0.7/60:.0f} 分钟")
-    t0, empty = time.time(), 0
+    t0, empty, err_streak = time.time(), 0, 0
     for i, d in enumerate(todo, 1):
         try:
             df = tushare_api.call("daily", "ts_code,pct_chg", trade_date=d.replace("-", ""))
+            err_streak = 0
             if df.empty:
                 empty += 1
                 if empty >= 5:
@@ -140,6 +141,10 @@ def backfill_zt_est(start="20120101"):
                 upsert_mood(conn, d, zt_count=zt, dt_count=dt_, zt_source="est")
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {d}: {e}")
+            err_streak += 1
+            if err_streak >= 5:
+                print("  ✗✗ 连续5次异常(多为网络), 中断")
+                break
             time.sleep(2)
         if i % 50 == 0:
             conn.commit()
@@ -184,11 +189,12 @@ def breadth_from_tushare(start="20180102"):
         print("[breadth-ts] 无缺失日期")
         return
     print(f"[breadth-ts] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo)*0.7/60:.0f} 分钟")
-    t0, empty = time.time(), 0
+    t0, empty, err_streak = time.time(), 0, 0
     for i, d in enumerate(todo, 1):
         try:
             df = tushare_api.call("daily", "ts_code,pct_chg",
                              trade_date=d.replace("-", ""))
+            err_streak = 0
             if df.empty:
                 empty += 1
                 if empty >= 5:
@@ -203,6 +209,10 @@ def breadth_from_tushare(start="20180102"):
                 upsert_mood(conn, d, up_count=up, down_count=down)
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {d}: {e}")
+            err_streak += 1
+            if err_streak >= 5:
+                print("  ✗✗ 连续5次异常(多为网络), 中断")
+                break
             time.sleep(2)
         if i % 50 == 0:
             conn.commit()
@@ -396,14 +406,19 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] {len(todo)} 天 ({todo[0]} ~ {todo[-1]}), 预计 {len(todo) * 0.8 / 60:.0f} 分钟")
     import sectors as _sec
     import pandas as pd
-    empty, prev_u, t0 = 0, None, time.time()
+    empty, prev_u, t0, err_streak = 0, None, time.time(), 0
     for i, d in enumerate(todo, 1):
         try:
             df = tushare_api.limit_list_d(d.replace("-", ""))
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {d}: {e}")
+            err_streak += 1
+            if err_streak >= 5:
+                print("  ✗✗ 连续5次异常(多为网络), 中断")
+                break
             time.sleep(2)
             continue
+        err_streak = 0
         if df.empty:
             empty += 1
             if empty >= 5:

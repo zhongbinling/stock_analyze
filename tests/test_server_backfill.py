@@ -94,7 +94,7 @@ def test_api_backfill_run_enqueues(app):
     from server import jobs
     assert jobs.queue_size() == 1
     item = jobs._q.get_nowait()
-    assert item["kind"] == "backfill" and item["target"] == "calendar"
+    assert item["kind"] == "backfill" and item["target"] == "交易日历·刷新"  # D1-4: 可读名
 
 
 def test_api_backfill_run_empty_start_uses_dataset_default(app):

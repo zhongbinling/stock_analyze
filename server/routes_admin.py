@@ -384,7 +384,7 @@ def api_backfill_run():
     if not _START_RE.match(start):
         return jsonify({"ok": False, "msg": "start 应为 YYYYMMDD 或 YYYY-MM-DD"}), 400
     ok, msg = jobs.enqueue("backfill", jobs.task_backfill(dataset, start, "manual"),
-                           target=dataset, trigger="manual")
+                           target=jobs.BACKFILL_DATASETS[dataset], trigger="manual")
     audit("backfill_run_enqueue" if ok else "backfill_run_reject",
           target=dataset, detail=f"start={start}; {msg}")
     return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
@@ -411,7 +411,16 @@ def api_backfill_logs():
                     "trigger": r.trigger or "", "duration": r.duration_s,
                     "error": r.error or "", "days": days,
                     "at": r.started_at.strftime("%m-%d %H:%M:%S") if r.started_at else ""})
-    return jsonify({"logs": out})
+    # D1-4: 当前运行中的补全进度(解析回补循环既有的 [n/N] 日志输出)
+    running = None
+    cur = Job.query.filter_by(kind="backfill", status="running").order_by(Job.id.desc()).first()
+    if cur and cur.log:
+        m = re.findall(r"\[(\d+)/(\d+)\]", cur.log)
+        if m:
+            n, tot = int(m[-1][0]), int(m[-1][1])
+            running = {"target": cur.target or "", "n": n, "total": tot,
+                       "pct": round(n / tot * 100) if tot else 0}
+    return jsonify({"logs": out, "running": running})
 
 
 @bp_admin.get("/api/sources")

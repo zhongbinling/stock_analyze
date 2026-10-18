@@ -391,7 +391,7 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual"):
                               status="running", trigger=trigger, started_at=_now())
         db.session.add(log)
         db.session.commit()
-        append(f"[{utcnow_str()}] 补全开始: {dataset} 自 {start}")
+        append(f"[{utcnow_str()}] 补全开始: {dataset} 自 {start}")   # dataset代码留痕(target为中文)
         lines = []
 
         def tee(l):
@@ -426,7 +426,7 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual"):
         # D2-3: 有实际写入且开关开 → 自动入队评分重算(独立job, 历史清晰)
         if (log.status == "done" and (log.rows_written or 0) > 0
                 and get_setting("backfill_recalc", "1") == "1"):
-            ok2, msg2 = enqueue("recalc", task_recalc, trigger="schedule")
+            ok2, msg2 = enqueue("recalc", task_recalc, target="评分重算", trigger="schedule")
             append(f"> 基础数据已更新({log.rows_written}行), "
                    + (f"已自动入队评分重算" if ok2 else f"⚠ 评分重算入队失败: {msg2}"))
         return 0 if log.status == "done" else 1
@@ -545,10 +545,30 @@ _app_ref = None
 
 
 def ensure_started(app):
-    """种子数据 + 工作线程 + 调度器(一次)"""
+    """种子数据 + 中断任务标记 + 工作线程 + 调度器(一次)"""
     global _app_ref
     _app_ref = app
     with app.app_context():
         seed_defaults()
+        _mark_interrupted()
     ensure_worker(app)
     start_scheduler(app)
+
+
+def _mark_interrupted():
+    """D1-4: 进程重启后, 上一进程遗留的 running 任务标记为失败(否则永久残留running)"""
+    from server.models import BackupRun, DataBackfillLog, Job
+    now = _now()
+    for j in Job.query.filter_by(status="running").all():
+        j.status = "fail"
+        j.finished_at = now
+        j.log = (j.log or "") + f"\n[{utcnow_str()}] ⚠ 服务重启, 任务中断"
+    for r in DataBackfillLog.query.filter_by(status="running").all():
+        r.status = "fail"
+        r.error = "服务重启, 任务中断"
+        r.finished_at = now
+    for b in BackupRun.query.filter_by(status="running").all():
+        b.status = "fail"
+        b.error = "服务重启, 任务中断"
+        b.finished_at = now
+    db.session.commit()
