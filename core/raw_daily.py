@@ -38,10 +38,6 @@ def raw_connect():
     return conn
 
 
-def _ymd(iso):
-    return iso.replace("-", "")
-
-
 def _iso(d):
     s = str(d)
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 else s
@@ -49,15 +45,15 @@ def _iso(d):
 
 # ---------------------------------------------------------------- 交易日底座
 
-def _ensure_index_daily(start_ymd):
+def _ensure_index_daily(start):
     """交易日序列(2005起): sentiment.index_daily 已覆盖段直接用;
     缺失段按 tushare index_daily(000001.SH) 逐年补, 并 upsert 进 index_daily(联动情绪底座)"""
     conn = connect()
     have = [r[0] for r in conn.execute(
         "SELECT DISTINCT date FROM index_daily WHERE code='1.000001' AND date>=? ORDER BY date",
-        (_iso(start_ymd),))]
+        (_iso(start),))]
     have_ymd = {d.replace("-", "") for d in have}
-    lo = _iso(start_ymd)
+    lo = _iso(start)
     if not have or min(have) > lo:
         print(f"[raw] index_daily 自 {min(have) if have else '--'} 补至 {lo}")
         years = range(int(lo[:4]), time.localtime().tm_year + 1)
@@ -91,15 +87,16 @@ def _ensure_index_daily(start_ymd):
 
 def backfill(start="20050101") -> bool:
     conn = raw_connect()
-    days_all = _ensure_index_daily(_ymd(start)) if "-" not in str(start) else _ensure_index_daily(start)
+    days_all = _ensure_index_daily(start)     # 内部已做 YMD/ISO 归一
     have = {r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM daily")}
     todo = [d.replace("-", "") for d in days_all if d.replace("-", "") not in have]
     print(f"[raw] {len(todo)}/{len(days_all)} 日待补 ({start} 起)")
     if not todo:
         conn.close()
         return True
-    t0, err_streak = time.time(), 0
+    t0, err_streak, failed = time.time(), 0, 0
     for i, d in enumerate(todo, 1):
+        ok_day = False
         try:
             df = T.call("daily", _DAILY_FIELDS, trade_date=d)
             err_streak = 0
@@ -108,6 +105,9 @@ def backfill(start="20050101") -> bool:
                     "INSERT OR REPLACE INTO daily VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     [tuple(r) for r in df.itertuples(index=False)])
                 conn.commit()
+                ok_day = True
+            elif df is not None:
+                ok_day = True                      # 空数据(非交易日/未出数)不算失败
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {d}: {e}")
             err_streak += 1
@@ -116,11 +116,14 @@ def backfill(start="20050101") -> bool:
                 conn.close()
                 return False
             time.sleep(2)
+        if not ok_day:
+            failed += 1
         if i % 50 == 0:
             print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")
     n = conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
     conn.close()
-    print(f"[raw] 结束 {time.time()-t0:.0f}s, 共 {n} 行")
+    print(f"[raw] 结束 {time.time()-t0:.0f}s, 共 {n} 行"
+          + (f", 失败 {failed} 日(重跑自愈)" if failed else ""))
     return True
 
 
