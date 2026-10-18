@@ -217,9 +217,10 @@ async function loadBackups() {
         <td class="hint">${esc(r.trigger)}</td><td>${r.files_n}</td><td>${r.total_mb} MB</td>
         <td>${r.duration ?? ''}s</td>
         <td class="${r.status === 'done' ? 'ok' : r.status === 'running' ? 'hint' : 'bad'}" title="${esc(r.error)}">${r.status === 'done' ? '✓' : r.status === 'running' ? '…' : '✗ ' + esc(r.error).slice(0, 30)}</td>
-        <td>${r.status === 'done' ? `<button class="btn small" data-restore="1">恢复</button>` : ''}</td></tr>`).join('')
+        <td>${r.status === 'done' ? `<button class="btn small" data-restore="${r.id}">恢复</button>` : ''}</td></tr>`).join('')
       : '<tr><td colspan="8" class="hint">暂无备份记录</td></tr>');
-    document.querySelectorAll('#bkTable [data-restore]').forEach((b, i) => b.onclick = () => bkRestore(d.runs[i]));
+    document.querySelectorAll('#bkTable [data-restore]').forEach(b =>
+      b.onclick = () => bkRestore(d.runs.find(r => r.id === parseInt(b.dataset.restore))));
   } catch (e) { $('bkState').textContent = '加载失败: ' + e.message; }
 }
 async function loadBkSettings() {

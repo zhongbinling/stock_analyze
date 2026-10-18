@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """B1 服务端备份测试: task_backup 落库 / API(入队·列表·设置校验·恢复守卫) / 周备cron解析"""
 import json
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -149,6 +150,53 @@ def test_api_backup_restore_guards(app_env):
     # 路径穿越 → 拒
     r = c.post("/admin/api/backup/restore", json={"file": "../evil.db"})
     assert r.status_code == 400
+    # 正在运行的任务(已出队, queue_size=0) → 拒
+    from server.models import Job
+    with app_env["app"].app_context():
+        db_s = app_env["app"].extensions["sqlalchemy"]
+        db_s.session.add(Job(kind="update", status="running"))
+        db_s.session.commit()
+    r = c.post("/admin/api/backup/restore", json={"file": sent_file})
+    assert r.status_code == 409 and "任务" in r.get_json()["msg"]
+    with app_env["app"].app_context():
+        Job.query.filter_by(status="running").delete()
+        db_s.session.commit()
+
+
+def test_api_backup_settings_rejects_out_of_range(app_env):
+    c = app_env["client"]
+    base = {"backup_enabled": "1", "backup_daily_cron": "19:00",
+            "backup_weekly_cron": "fri 19:10",
+            "backup_daily_n": "10", "backup_weekly_n": "6", "backup_manual_n": "3"}
+    for k, v, frag in [("backup_daily_cron", "25:99", "HH:MM"),
+                       ("backup_daily_cron", "9:5", "HH:MM"),
+                       ("backup_weekly_cron", "fri 25:00", "HH:MM"),
+                       ("backup_weekly_cron", "fri 08:60", "HH:MM")]:
+        bad = dict(base, **{k: v})
+        r = c.post("/admin/api/backup/settings", json=bad)
+        assert r.status_code == 400 and frag in r.get_json()["msg"], f"{k}={v} 未被拦截"
+
+
+def test_data_html_restore_button_binds_by_run_id():
+    """恢复按钮必须按 run id 绑定(修复: 按钮序号与 runs 下标错位会恢复错文件)"""
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert 'data-restore="${r.id}"' in html
+    assert "runs.find(r => r.id === parseInt(b.dataset.restore))" in html
+    assert "forEach((b, i)" not in html
+
+
+def test_data_html_script_syntax():
+    """模板内嵌 JS 语法门禁(node 解析)"""
+    import shutil
+    import subprocess
+    if not shutil.which("node"):
+        pytest.skip("node 不可用")
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    m = re.search(r"<script>([\s\S]*?)</script>", html)
+    assert m, "data.html 缺 script 块"
+    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", m.group(1)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"JS 语法错误: {r.stderr[:500]}"
 
 
 def test_weekly_cron_parse():

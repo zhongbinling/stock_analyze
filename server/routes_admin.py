@@ -291,11 +291,15 @@ def api_backup_settings():
     errs = []
     if str(d.get("backup_enabled")) not in ("0", "1"):
         errs.append("backup_enabled 应为 0/1")
-    if not re.match(r"^\d{1,2}:\d{2}$", str(d.get("backup_daily_cron", "")).strip()):
-        errs.append("日备时刻应为 HH:MM")
+    dc = str(d.get("backup_daily_cron", "")).strip()
+    if not re.match(r"^\d{1,2}:\d{2}$", dc) \
+            or not (0 <= int(dc.split(":")[0]) <= 23 and 0 <= int(dc.split(":")[1]) <= 59):
+        errs.append("日备时刻应为 HH:MM (00:00~23:59)")
     wk = str(d.get("backup_weekly_cron", "")).strip()
-    if not re.match(r"^\S+\s+\d{1,2}:\d{2}$", wk) or wk.split()[0].lower() not in jobs._WEEKDAYS:
-        errs.append("周备应为 '周几 HH:MM' (如 fri 18:45 / 周五 18:45)")
+    wk_m = re.match(r"^(\S+)\s+(\d{1,2}):(\d{2})$", wk)
+    if not wk_m or wk_m.group(1).lower() not in jobs._WEEKDAYS \
+            or not (0 <= int(wk_m.group(2)) <= 23 and 0 <= int(wk_m.group(3)) <= 59):
+        errs.append("周备应为 '周几 HH:MM' (如 fri 18:45 / 周五 18:45, 时刻00:00~23:59)")
     for k in ("backup_daily_n", "backup_weekly_n", "backup_manual_n"):
         v = str(d.get(k, "")).strip()
         if not (v.isdigit() and 1 <= int(v) <= 365):
@@ -335,7 +339,7 @@ def api_backup_restore():
     if e["asset"] == "app":
         return jsonify({"ok": False, "msg": "app.db 为服务自身数据库, 请停服后用命令行恢复: "
                                             "cd core && python backup.py restore <文件> --yes"}), 409
-    if jobs.queue_size() > 0:
+    if jobs.queue_size() > 0 or Job.query.filter_by(status="running").count() > 0:
         return jsonify({"ok": False, "msg": "有任务运行/排队中, 为避免写冲突请稍后再试"}), 409
     ok = bk.restore(fname, yes=True)
     audit("backup_restore" if ok else "backup_restore_reject", target=fname)
