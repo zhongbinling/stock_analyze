@@ -289,16 +289,27 @@ def update_daily(conn=None, auto_backfill=True):
                .strftime("%Y%m%d")) if last else HIST_BEG
         codes = _enabled_industries(conn)
         t0 = time.time()
-        ok_n = 0
-        for code in codes:
+        ok_n, fails = 0, 0
+        for i, code in enumerate(codes, 1):
             try:
                 df = em_api.sector_kline(code, beg=beg)
                 if not df.empty:
                     _upsert_bars(conn, code, df)
                     ok_n += 1
-            except Exception:  # noqa: BLE001
-                pass
+                    fails = 0
+                else:
+                    fails += 1
+            except Exception as e:  # noqa: BLE001
+                fails += 1
+                if fails == 1:
+                    print(f"  ✗ {code} 日线失败: {e}")
+            if fails >= 10:      # 熔断: push2his限流/不可达时快速跳过, 不再逐板块爬超时
+                print(f"  ✗✗ 连续{fails}次失败(push2his可能限流), 跳过本次日线增量; 稍后重跑续传")
+                break
             time.sleep(SLEEP)
+            if i % 50 == 0:
+                conn.commit()
+                print(f"  [{i}/{len(codes)}] {ok_n}成功 {time.time()-t0:.0f}s")
         conn.commit()
         print(f"[sectors] 增量日线: {ok_n}/{len(codes)} 板块至 {today} ({time.time()-t0:.0f}s)")
         refresh_fundflow(conn)
