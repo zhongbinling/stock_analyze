@@ -82,7 +82,7 @@ def load_frames(conn):
 
 # ---------------------------------------------------------------- 单板块计算
 
-def _calc_sw1(conn, allsc):
+def _calc_sw1(conn, allsc, table="sector_scores"):
     """S2.1-C: 按申万一级聚合板块温度 → 写入 sector_scores (code='SW1_'+名称)"""
     sw1 = conn.execute("SELECT bk_code, sw1_name FROM sw1_map").fetchall()
     if not sw1:
@@ -102,7 +102,7 @@ def _calc_sw1(conn, allsc):
     agg["rank_pct"] = None
     agg["components"] = None
     conn.executemany(
-        "INSERT OR REPLACE INTO sector_scores(date,code,score,rank_pct,stage,components) "
+        f"INSERT OR REPLACE INTO {table}(date,code,score,rank_pct,stage,components) "
         "VALUES(?,?,?,?,?,?)",
         [(r["date"], r["code"], float(r["score"]), None, r["stage"], None)
          for _, r in agg.iterrows()])
@@ -112,7 +112,7 @@ def _calc_sw1(conn, allsc):
           f" (最新 {agg['date'].max()}, {len(latest)} 行)")
 
 
-def _calc_sw2(conn, allsc):
+def _calc_sw2(conn, allsc, table="sector_scores"):
     """S3-E: 按申万二级聚合板块温度 → 写入 sector_scores (code='SW2_'+名称)"""
     try:
         sw2 = conn.execute("SELECT bk_code, sw2_name FROM sw2_map").fetchall()
@@ -134,7 +134,7 @@ def _calc_sw2(conn, allsc):
     agg["rank_pct"] = None
     agg["components"] = None
     conn.executemany(
-        "INSERT OR REPLACE INTO sector_scores(date,code,score,rank_pct,stage,components) "
+        f"INSERT OR REPLACE INTO {table}(date,code,score,rank_pct,stage,components) "
         "VALUES(?,?,?,?,?,?)",
         [(r["date"], r["code"], float(r["score"]), None, r["stage"], None)
          for _, r in agg.iterrows()])
@@ -237,18 +237,20 @@ def calc_all(conn=None):
     allsc["rank_pct"] = allsc.groupby("date")["score"].rank(pct=True) * 100
     allsc["stage"] = allsc["score"].apply(stage_of)
 
-    conn.execute("DELETE FROM sector_scores")
+    from db import atomic_swap, make_staging
+    st = make_staging(conn, "sector_scores")          # D1-7: staging→原子切换
     conn.executemany(
-        "INSERT OR REPLACE INTO sector_scores(date,code,score,rank_pct,stage,components) "
+        f"INSERT OR REPLACE INTO {st}(date,code,score,rank_pct,stage,components) "
         "VALUES(?,?,?,?,?,?)",
         [(r["date"], r["code"], float(r["score"]),
           None if pd.isna(r["rank_pct"]) else round(float(r["rank_pct"]), 1),
           r["stage"], r["components"] if r["components"] else None)
          for _, r in allsc.iterrows()])
     conn.commit()
-    _calc_sw1(conn, allsc)
-    _calc_sw2(conn, allsc)
-    conn.execute("VACUUM")         # 回收历史components空间
+    _calc_sw1(conn, allsc, table=st)
+    _calc_sw2(conn, allsc, table=st)
+    atomic_swap(conn, "sector_scores")                # 校验+单事务切换
+    conn.execute("VACUUM")         # 回收空间(切换后)
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "
           f"({time.time()-t0:.1f}s, 最新 {allsc['date'].max()})")
     return allsc

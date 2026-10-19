@@ -120,6 +120,44 @@ def upsert_mood(conn, date, **kw):
     conn.commit()
 
 
+# ---------------- D1-7: 全量重建的 staging 原子切换 ----------------
+
+def make_staging(conn, table):
+    """建/清空 staging 表(动态复制schema); 返回表名"""
+    st = f"{table}_staging"
+    conn.execute(f"DROP TABLE IF EXISTS {st}")
+    conn.execute(f"CREATE TABLE {st} AS SELECT * FROM {table} WHERE 0")
+    conn.commit()
+    return st
+
+
+def atomic_swap(conn, table, min_keep=0.95):
+    """staging→正式 原子切换(D1-7): 校验(非空/行数≥旧×min_keep/最新日期不回退)
+    → 单事务 RENAME 三连; 校验不过抛 RuntimeError 保留旧表(旧表全程可读)。"""
+    st = f"{table}_staging"
+    n_old = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    n_new = conn.execute(f"SELECT COUNT(*) FROM {st}").fetchone()[0]
+    d_old = conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()[0]
+    d_new = conn.execute(f"SELECT MAX(date) FROM {st}").fetchone()[0]
+    why = []
+    if n_new == 0:
+        why.append("staging 为空")
+    if n_old and n_new < n_old * min_keep:
+        why.append(f"行数 {n_new} < 旧 {n_old}×{min_keep}")
+    if d_old and (not d_new or str(d_new) < str(d_old)):
+        why.append(f"最新日期回退 {d_old}→{d_new}")
+    if why:
+        raise RuntimeError(f"[swap] {table} 校验不过, 保留旧表: {'; '.join(why)}")
+    conn.commit()                                    # 清理隐式事务, 确保切换原子
+    cur = conn.cursor()
+    cur.execute("BEGIN")
+    cur.execute(f"ALTER TABLE {table} RENAME TO {table}_old")
+    cur.execute(f"ALTER TABLE {st} RENAME TO {table}")
+    cur.execute(f"DROP TABLE {table}_old")
+    conn.commit()
+    print(f"[swap] {table}: {n_old} → {n_new} 行 (原子切换)")
+
+
 def get_mood_dates(conn) -> set:
     rows = conn.execute("SELECT date FROM mood_raw WHERE zt_count IS NOT NULL").fetchall()
     return {r[0] for r in rows}

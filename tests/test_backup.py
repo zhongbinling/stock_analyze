@@ -217,7 +217,10 @@ def test_pre_calc_hook_fires(env, monkeypatch):
     for d in ["2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28", "2026-09-29"]:
         conn.execute("INSERT INTO sector_daily VALUES('BK0001',?,100,101,102,99,1e6,80,20)", (d,))
     conn.commit()
-    S.calc_all(conn)                                 # 5行数据: 预热期NaN → 0行入库, 不崩
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="为空"):
+        S.calc_all(conn)                             # 5行预热期NaN→0行 → D1-7拒绝切换空表
+    # 前置钩子已触发; 旧表(空)未被破坏
     assert ("sentiment", "pre-calc") in calls
     assert conn.execute("SELECT COUNT(*) FROM sector_scores WHERE score IS NULL").fetchone()[0] == 0
     conn.close()

@@ -122,18 +122,21 @@ def compute(cfg=None, conn=None):
 
 
 def save_to_db(conn, score_df, comp):
+    """D1-7: 全量写 staging → 校验 → 原子切换(重建期间旧表全程可读, 崩溃零影响)"""
+    from db import atomic_swap, make_staging
+    st = make_staging(conn, "sentiment")
     cur = conn.cursor()
-    cur.execute("DELETE FROM sentiment")
     for i, row in score_df.iterrows():
         if pd.isna(row["score"]):
             continue
         cj = {k: (None if pd.isna(v) else round(float(v), 1))
               for k, v in comp.iloc[i].items()}
         cur.execute(
-            "INSERT INTO sentiment(date,score,stage,components) VALUES(?,?,?,?)",
+            f"INSERT INTO {st}(date,score,stage,components) VALUES(?,?,?,?)",
             (row["date"].strftime("%Y-%m-%d"), round(float(row["score"]), 1),
              row["stage"], json.dumps(cj, ensure_ascii=False)))
     conn.commit()
+    atomic_swap(conn, "sentiment")
 
 
 def main():
