@@ -31,6 +31,7 @@ def test_limit_ratio_board_and_date():
     assert SP.limit_ratio("300750.SZ", "20200821") == Decimal("0.10")   # 创业板改革前
     assert SP.limit_ratio("300750.SZ", "20200824") == Decimal("0.20")   # 改革后
     assert SP.limit_ratio("688001.SH", "20190722") == Decimal("0.20")   # 科创板
+    assert SP.limit_ratio("689009.SH", "20210101") == Decimal("0.20")   # 科创板CDR
     assert SP.limit_ratio("830001.BJ", "20220101") == Decimal("0.30")   # 北交所
     assert SP.limit_ratio("600519.SH", "20260101") == Decimal("0.10")
 

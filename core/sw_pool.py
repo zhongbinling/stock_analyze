@@ -34,7 +34,7 @@ def limit_ratio(ts_code: str, d_ymd: str) -> Decimal:
     c = ts_code.split(".")[0]
     if c.startswith(("300", "301")):
         return Decimal("0.20") if d_ymd >= "20200824" else Decimal("0.10")
-    if c.startswith("688"):
+    if c.startswith(("688", "689")):                 # 科创板(689=CDR, 如九号公司)
         return Decimal("0.20") if d_ymd >= "20190722" else Decimal("0.10")
     if c.startswith(("83", "87", "88", "43", "92")):
         return Decimal("0.30")                      # 北交所
