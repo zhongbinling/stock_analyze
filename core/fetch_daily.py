@@ -471,6 +471,12 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+def backfill_sw_daily(start="19990101"):
+    """D1-6 P4: SW行业指数日线(官方回溯~2012-08) — sw_bars.backfill"""
+    import sw_bars
+    return sw_bars.backfill(start)
+
+
 def backfill_sw_fflow(start="20070101"):
     """D1-6 P3: 主力资金流(SW层级, 2007+) — sw_fflow.run"""
     import sw_fflow
@@ -565,6 +571,8 @@ BACKFILLS = {
               lambda start: backfill_sw_pool(start), "20050101"),
     "sw_fflow": ("主力资金流·SW层级(2007起)", [("sw_fflow", None, "date")],
               lambda start: backfill_sw_fflow(start), "20070101"),
+    "sw_daily": ("SW行业指数日线(官方~2012-08起)", [("sw_daily", None, "date")],
+              lambda start: backfill_sw_daily(start), "19990101"),
 }
 
 

@@ -21,7 +21,9 @@ import json
 import shutil
 import sqlite3
 import sys
+import tempfile
 import time
+import zlib
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -30,6 +32,8 @@ ROOT = BASE.parent
 # 资产清单: key -> (kind, path); 缺失告警跳过(各环境资产集不同)
 ASSETS = {
     "sentiment": ("sqlite", BASE / "data" / "sentiment.db"),
+    # P4: raw个股库(~2.5GB) — 资产级策略: 仅周备/手动 + zlib压缩 + keep=4(见RAW_POLICY)
+    "raw_daily": ("sqlite", BASE / "data" / "raw_daily.db"),
     "app": ("sqlite", ROOT / "data" / "app.db"),
     "secret": ("file", ROOT / "data" / "secret.key"),
     "token": ("file", BASE / "data" / "tushare_token.txt"),
@@ -42,6 +46,9 @@ LOG_FILE = BACKUP_DIR / "backup.log"
 
 # 类型滚动保留(每资产每类型份数); 服务端从设置读取后传入
 RETENTION = {"daily": 14, "weekly": 8, "manual": 5, "pre": 10}
+# 资产级策略(P4): raw_daily 仅周备/手动快照(日备自动跳过, 避免14×2.5GB),
+# zlib压缩存.db.z(标准库稳快 ~2.5GB→~1.2GB), 每类型keep=4独立滚动
+RAW_POLICY = {"raw_daily": {"types": ("weekly", "manual"), "keep": 4, "compress": True}}
 TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-restore")
 
 
@@ -126,6 +133,10 @@ def snapshot(asset: str, btype: str = "manual") -> dict | None:
     """单资产快照: 在线备份→校验→sha去重→落manifest; 缺失/未变化返回None"""
     kind, src = ASSETS[asset]
     btype = _norm_type(btype)
+    pol = RAW_POLICY.get(asset)
+    if pol and btype not in pol["types"]:
+        _log(f"= {asset} 跳过{btype}快照(策略仅 {pol['types']})")
+        return None
     if not src.exists():
         _log(f"= 跳过 {asset}: {src} 不存在")
         return None
@@ -160,7 +171,16 @@ def snapshot(asset: str, btype: str = "manual") -> dict | None:
         return None
 
     final = BACKUP_DIR / f"{stem}.{ext}"
-    tmp.replace(final)
+    if pol and pol.get("compress"):                 # P4: zlib流式压缩存 .db.z
+        final = BACKUP_DIR / f"{stem}.{ext}.z"
+        with open(tmp, "rb") as fi, open(final, "wb") as fo:
+            zo = zlib.compressobj(6)
+            for chunk in iter(lambda: fi.read(1 << 20), b""):
+                fo.write(zo.compress(chunk))
+            fo.write(zo.flush())
+        tmp.unlink(missing_ok=True)
+    else:
+        tmp.replace(final)
     entry = {"file": final.name, "asset": asset, "kind": kind, "sha256": sha,
              "size": final.stat().st_size, "time": ts.strftime("%Y-%m-%d %H:%M:%S"),
              "date": ts.strftime("%Y%m%d"), "type": btype,
@@ -192,7 +212,8 @@ def run_all(btype: str = "manual", retention: dict | None = None) -> dict:
 
 
 def prune(retention: dict | None = None):
-    """类型滚动清理: 每资产每类型留最近N份; 每资产最新一份永不删"""
+    """类型滚动清理: 每资产每类型留最近N份; 每资产最新一份永不删;
+    RAW_POLICY资产用自己的keep覆盖每类型份数"""
     retention = retention or RETENTION
     m = _load_manifest()
     removed = 0
@@ -205,8 +226,10 @@ def prune(retention: dict | None = None):
         by_type = {}
         for e in ents:                               # 降序, 每类型取前N
             by_type.setdefault(e["type"], []).append(e)
+        pol = RAW_POLICY.get(asset, {})
         for t, lst in by_type.items():
-            keep |= {e["file"] for e in lst[:_retention_of(t, retention)]}
+            n = pol.get("keep", _retention_of(t, retention))
+            keep |= {e["file"] for e in lst[:n]}
         for e in ents:
             if e["file"] not in keep:
                 p = BACKUP_DIR / e["file"]
@@ -233,11 +256,15 @@ def verify(target: str = "--all") -> bool:
         if not p.exists():
             issues.append("文件缺失")
         else:
-            if _sha256(p) != e["sha256"]:
-                issues.append("sha256不一致(内容被改动)")
-            if e["kind"] == "sqlite":
-                if not _integrity_ok(p):
+            plain = _decompress_if(p)               # .db.z → 临时明文
+            try:
+                if _sha256(plain) != e["sha256"]:
+                    issues.append("sha256不一致(内容被改动)")
+                if e["kind"] == "sqlite" and not _integrity_ok(plain):
                     issues.append("integrity_check失败")
+            finally:
+                if plain != p:
+                    plain.unlink(missing_ok=True)
                 try:
                     _db_stats(p, e["asset"])
                 except sqlite3.DatabaseError as ex:
@@ -247,6 +274,20 @@ def verify(target: str = "--all") -> bool:
         _log(f"{'✓' if ok else '✗'} {e['file']} ({e['time']}[{e.get('type', '')}])"
              f"{' ' + '; '.join(issues) if issues else ''}")
     return all_ok
+
+
+def _decompress_if(p: Path) -> Path:
+    """zlib压缩备份(.z) → 解压到临时明文文件; 非压缩原样返回"""
+    if not str(p).endswith(".z"):
+        return p
+    plain = p.with_suffix("")                       # xxx.db.z → xxx.db(临时)
+    plain = plain.with_name(plain.name + ".v.tmp")
+    with open(p, "rb") as fi, open(plain, "wb") as fo:
+        d = zlib.decompressobj()
+        for chunk in iter(lambda: fi.read(1 << 20), b""):
+            fo.write(d.decompress(chunk))
+        fo.write(d.flush())
+    return plain
 
 
 def restore(fname: str, yes: bool = False) -> bool:
@@ -259,15 +300,18 @@ def restore(fname: str, yes: bool = False) -> bool:
     if not verify(fname):
         _log("✗ 校验未通过, 拒绝恢复")
         return False
+    src_z = BACKUP_DIR / fname
+    src_plain = _decompress_if(src_z)               # 压缩备份先解压
     if not yes and input(f"确认用 {fname} 覆盖 {ASSETS[e['asset']][1]} ? [y/N] ").lower() != "y":
         _log("= 已取消恢复")
         return False
     snapshot(e["asset"], "pre-restore")              # 恢复前兜底
-    src = BACKUP_DIR / fname
     dst = Path(ASSETS[e["asset"]][1])
     tmp = dst.with_suffix(dst.suffix + ".part")
-    shutil.copy2(src, tmp)
+    shutil.copy2(src_plain, tmp)
     tmp.replace(dst)
+    if src_plain != src_z:
+        src_plain.unlink(missing_ok=True)
     _log(f"↺ 已恢复 {fname} → {dst}")
     return True
 
