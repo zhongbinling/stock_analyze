@@ -47,7 +47,7 @@ def env(tmp_path, monkeypatch):
         d = kw["trade_date"]
         return pd.DataFrame(
             [{"ts_code": c, "trade_date": d, "buy_elg_amount": be, "sell_elg_amount": se,
-              "buy_big_amount": bb, "sell_big_amount": sb} for c, be, se, bb, sb in days.get(d, [])])
+              "buy_lg_amount": bb, "sell_lg_amount": sb} for c, be, se, bb, sb in days.get(d, [])])
     monkeypatch.setattr(T, "call", fake_call)
 
     import raw_daily as RD

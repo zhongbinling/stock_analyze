@@ -21,7 +21,7 @@ from db import connect  # noqa: E402
 from raw_daily import raw_connect  # noqa: E402
 from sw_components import members_on  # noqa: E402
 
-_FIELDS = "ts_code,trade_date,buy_elg_amount,sell_elg_amount,buy_big_amount,sell_big_amount"
+_FIELDS = "ts_code,trade_date,buy_elg_amount,sell_elg_amount,buy_lg_amount,sell_lg_amount"  # tushare大单是lg(large)非big
 
 
 def _iso(d):
@@ -34,7 +34,7 @@ def backfill(start="20070101") -> bool:
     raw = raw_connect()
     raw.execute("""CREATE TABLE IF NOT EXISTS moneyflow(
       ts_code TEXT, trade_date TEXT, buy_elg_amount REAL, sell_elg_amount REAL,
-      buy_big_amount REAL, sell_big_amount REAL,
+      buy_lg_amount REAL, sell_lg_amount REAL,
       PRIMARY KEY(ts_code, trade_date))""")
     raw.execute("CREATE INDEX IF NOT EXISTS idx_mf_tradedate ON moneyflow(trade_date)")
     sent = connect()
@@ -109,8 +109,8 @@ def agg(start="20070101") -> bool:
                 inv.setdefault(m, []).append(idx)
         agg_ = {}
         for ts, be, se, bb, sb in raw.execute(
-                "SELECT ts_code, buy_elg_amount, sell_elg_amount, buy_big_amount, "
-                "sell_big_amount FROM moneyflow WHERE trade_date=?", (d,)):
+                "SELECT ts_code, buy_elg_amount, sell_elg_amount, buy_lg_amount, "
+                "sell_lg_amount FROM moneyflow WHERE trade_date=?", (d,)):
             for idx in inv.get(ts, ()):
                 v = ((be or 0) + (bb or 0) - (se or 0) - (sb or 0)) * 10000   # 万元→元
                 agg_[idx] = agg_.get(idx, 0.0) + v
