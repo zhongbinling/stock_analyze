@@ -36,6 +36,13 @@ def backfill(start="20070101") -> bool:
       ts_code TEXT, trade_date TEXT, buy_elg_amount REAL, sell_elg_amount REAL,
       buy_lg_amount REAL, sell_lg_amount REAL,
       PRIMARY KEY(ts_code, trade_date))""")
+    # schema守卫: IF NOT EXISTS会掩盖旧schema漂移(列名修订后旧表不重建→错位写入)
+    cols = {r[1] for r in raw.execute("PRAGMA table_info(moneyflow)")}
+    need = {"ts_code", "trade_date", "buy_elg_amount", "sell_elg_amount",
+            "buy_lg_amount", "sell_lg_amount"}
+    if not need <= cols:
+        raise RuntimeError(f"[fflow-raw] moneyflow 列缺失 {need - cols}(旧schema), "
+                           "先执行列名修复: ALTER TABLE ... RENAME COLUMN")
     raw.execute("CREATE INDEX IF NOT EXISTS idx_mf_tradedate ON moneyflow(trade_date)")
     sent = connect()
     days_all = [r[0].replace("-", "") for r in sent.execute(

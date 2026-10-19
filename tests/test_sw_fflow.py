@@ -104,3 +104,16 @@ def test_registry(env, monkeypatch):
     assert r["status"] == "ok"
     assert r["rows_written"] == 3                            # sw_fflow 3行
     assert r["date_from"] == "2007-01-04"
+
+
+def test_schema_guard_against_stale_table(env, monkeypatch):
+    """旧schema表(buy_big列)存在时, IF NOT EXISTS不重建 → 守卫应报错而非错位写入"""
+    import raw_daily as RD
+    raw = sqlite3.connect(str(env["raw"]))
+    raw.execute("""CREATE TABLE moneyflow(ts_code TEXT, trade_date TEXT,
+      buy_elg_amount REAL, sell_elg_amount REAL,
+      buy_big_amount REAL, sell_big_amount REAL, PRIMARY KEY(ts_code, trade_date))""")
+    raw.commit()
+    raw.close()
+    with pytest.raises(RuntimeError, match="列缺失"):
+        SF.backfill("20070101")
