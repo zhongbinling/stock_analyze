@@ -249,7 +249,7 @@ def calc_all(conn=None):
     conn.commit()
     _calc_sw1(conn, allsc, table=st)
     _calc_sw2(conn, allsc, table=st)
-    atomic_swap(conn, "sector_scores")                # 校验+单事务切换
+    atomic_swap(conn, "sector_scores", idx_cols=(("date", "code"),))  # 复合索引
     conn.execute("VACUUM")         # 回收空间(切换后)
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "
           f"({time.time()-t0:.1f}s, 最新 {allsc['date'].max()})")

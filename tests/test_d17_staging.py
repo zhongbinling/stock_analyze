@@ -37,6 +37,21 @@ def test_atomic_swap_success(tdb):
     # 旧表与staging均不存在(已RENAME+DROP)
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='sentiment_old'").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='sentiment_staging'").fetchone()[0] == 0
+    # 索引已重建(staging CREATE AS丢PK/索引——review修复)
+    idx = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sentiment'").fetchall()
+    assert ("ix_sentiment_date",) in idx
+
+
+def test_atomic_swap_composite_index(tdb):
+    conn, _ = tdb
+    conn.execute("CREATE TABLE sector_scores(date TEXT, code TEXT, score REAL)")
+    st = DB.make_staging(conn, "sector_scores")
+    conn.execute(f"INSERT INTO {st} VALUES('2026-01-05','BK0001',1.0)")
+    conn.commit()
+    DB.atomic_swap(conn, "sector_scores", idx_cols=(("date", "code"),))
+    idx = conn.execute("SELECT name FROM sqlite_master WHERE type='index' "
+                       "AND tbl_name='sector_scores'").fetchall()
+    assert ("ix_sector_scores_date_code",) in idx
 
 
 def test_atomic_swap_validation_too_few_rows(tdb):

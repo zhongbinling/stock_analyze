@@ -131,9 +131,10 @@ def make_staging(conn, table):
     return st
 
 
-def atomic_swap(conn, table, min_keep=0.95):
+def atomic_swap(conn, table, min_keep=0.95, idx_cols=("date",)):
     """staging→正式 原子切换(D1-7): 校验(非空/行数≥旧×min_keep/最新日期不回退)
-    → 单事务 RENAME 三连; 校验不过抛 RuntimeError 保留旧表(旧表全程可读)。"""
+    → 单事务 RENAME 三连; 校验不过抛 RuntimeError 保留旧表(旧表全程可读)。
+    idx_cols: 切换后重建索引(staging CREATE AS 会丢PK/索引, 左前缀覆盖常用查询)。"""
     st = f"{table}_staging"
     n_old = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     n_new = conn.execute(f"SELECT COUNT(*) FROM {st}").fetchone()[0]
@@ -155,7 +156,12 @@ def atomic_swap(conn, table, min_keep=0.95):
     cur.execute(f"ALTER TABLE {st} RENAME TO {table}")
     cur.execute(f"DROP TABLE {table}_old")
     conn.commit()
-    print(f"[swap] {table}: {n_old} → {n_new} 行 (原子切换)")
+    for cols in (idx_cols or ()):                    # 重建查询索引(唯一性由全量重建保证)
+        cols = (cols,) if isinstance(cols, str) else tuple(cols)
+        name = f"ix_{table}_{'_'.join(cols)}"
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table}({','.join(cols)})")
+    conn.commit()
+    print(f"[swap] {table}: {n_old} → {n_new} 行 (原子切换, 索引已重建)")
 
 
 def get_mood_dates(conn) -> set:
