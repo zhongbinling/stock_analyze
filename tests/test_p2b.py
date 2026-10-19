@@ -132,8 +132,10 @@ def test_build_est_does_not_overwrite_official(tmp_path, monkeypatch):
     SP.build("20050101", refresh=True)
     conn = sqlite3.connect(str(sent_p))
     r = conn.execute("SELECT zt_count, source FROM sw_pool WHERE date='2005-01-04'").fetchone()
+    idx = conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sw_pool'").fetchall()
     conn.close()
     assert r == (9, "official")                        # official保留, est不清空幂等集
+    assert ("idx_swpool_date",) in idx                 # review修复: 逐日DELETE需date索引
 
 
 def test_build_refresh_only_nonofficial(tmp_path, monkeypatch):

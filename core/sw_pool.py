@@ -94,6 +94,9 @@ def build(start="20050101", refresh=False) -> bool:
       zt_count INTEGER, dt_count INTEGER, zb_count INTEGER,
       lb_max INTEGER, lb2_count INTEGER, source TEXT,
       PRIMARY KEY(level, index_code, date))""")
+    # 逐日DELETE WHERE date=? 在PK(level,index,date)走不了前缀→全表扫O(n²)
+    # (refresh实测43分钟的根因), date索引使其毫秒级
+    sent.execute("CREATE INDEX IF NOT EXISTS idx_swpool_date ON sw_pool(date)")
     meta = {ic: (lv, nm) for ic, lv, nm in sent.execute(
         "SELECT index_code, level, industry_name FROM sw_components "
         "GROUP BY index_code, level, industry_name")}
