@@ -47,13 +47,14 @@ def limit_price(pre: float, ratio: Decimal, up=True) -> float:
     return float(v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def _day_flags(rows, d_ymd):
-    """rows: (ts_code, pre_close, close, high) → {ts: (zt, dt, zb)}"""
+def _day_flags(rows, d_ymd, st=None):
+    """rows: (ts_code, pre_close, close, high) → {ts: (zt, dt, zb)};
+    st=当日ST股集合(成员测试), 集内股票按 ST 限幅 5%(P9)"""
     out = {}
     for ts, pre, close, high in rows:
         if not pre or pre <= 0 or close is None:
             continue
-        r = limit_ratio(ts, d_ymd)
+        r = Decimal("0.05") if (st and ts in st) else limit_ratio(ts, d_ymd)
         up_p = limit_price(pre, r, True)
         dn_p = limit_price(pre, r, False)
         zt = abs(close - up_p) < _EPS
@@ -65,8 +66,28 @@ def _day_flags(rows, d_ymd):
     return out
 
 
-def build(start="20050101") -> bool:
-    """本地raw全量估算 → sw_pool(est) 三层级 + mood_raw 2005-2012缺失日填充"""
+def _st_sets_by_day(days, conn) -> dict:
+    """事件扫掠: ST名称区间 → 每交易日ST股集合(替代逐股逐日闭包, O(days+intervals))"""
+    import bisect
+    try:
+        ivs = [(str(s), str(e) if e else None, ts) for ts, s, e in conn.execute(
+            "SELECT ts_code, start_date, end_date FROM name_hist WHERE name LIKE '%ST%'")]
+    except Exception:  # noqa: BLE001        # name_hist 未建 → 无ST感知
+        return {}
+    out = [set() for _ in days]
+    for s, e, ts in ivs:
+        if not s:
+            continue
+        lo = bisect.bisect_left(days, s)
+        hi = bisect.bisect_right(days, e) if e else len(days)
+        for i in range(lo, hi):
+            out[i].add(ts)
+    return dict(zip(days, out))
+
+
+def build(start="20050101", refresh=False) -> bool:
+    """本地raw全量估算 → sw_pool(est) 三层级 + mood_raw 填充;
+    refresh=True(P2b口径统一): est/est2/缺失日重刷, 官方段(zt_source IS NULL)不动"""
     sent = connect()
     sent.execute("""CREATE TABLE IF NOT EXISTS sw_pool(
       level TEXT, index_code TEXT, industry_name TEXT, date TEXT,
@@ -76,19 +97,27 @@ def build(start="20050101") -> bool:
     meta = {ic: (lv, nm) for ic, lv, nm in sent.execute(
         "SELECT index_code, level, industry_name FROM sw_components "
         "GROUP BY index_code, level, industry_name")}
-    have_mood = {r[0].replace("-", "") for r in sent.execute(
-        "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL")}
+    if refresh:
+        have_mood = {r[0].replace("-", "") for r in sent.execute(
+            "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL AND zt_source IS NULL")}
+        print("[pool] refresh模式: 官方段不动, est/est2/缺失日重刷")
+    else:
+        have_mood = {r[0].replace("-", "") for r in sent.execute(
+            "SELECT date FROM mood_raw WHERE zt_count IS NOT NULL")}
     raw = raw_connect()
     days = [r[0] for r in raw.execute(
         "SELECT DISTINCT trade_date FROM daily WHERE trade_date>=? ORDER BY trade_date",
         (str(start).replace("-", ""),))]
+    st_sets = _st_sets_by_day(days, sent)       # 事件扫掠逐日ST集合(P9)
+    if st_sets:
+        print(f"[pool] ST感知: 覆盖 {sum(len(v) for v in st_sets.values())} 个股日")
     print(f"[pool] 估算 {len(days)} 日 ({start} 起, 本地raw)")
     t0 = time.time()
     prev_streak, prev_zt_n = {}, 0
     for i, d in enumerate(days, 1):
         rows = raw.execute(
             "SELECT ts_code, pre_close, close, high FROM daily WHERE trade_date=?", (d,)).fetchall()
-        flags = _day_flags(rows, d)
+        flags = _day_flags(rows, d, st=st_sets.get(d))
         streak = {ts: (prev_streak.get(ts, 0) + 1 if f[0] else 0)
                   for ts, f in flags.items()}
         # 全市场聚合 → mood_raw(仅缺失日)
@@ -127,8 +156,11 @@ def build(start="20050101") -> bool:
                 if zb:
                     a[2] += 1
         d_iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        # 只写est行: 先清当日est再插; IGNORE让位official行(同PK时官方优先,
+        # 避免覆盖导致overlay幂等集清空→全量官方API重拉——refresh实测踩过)
+        sent.execute("DELETE FROM sw_pool WHERE date=? AND source='est'", (d_iso,))
         sent.executemany(
-            "INSERT OR REPLACE INTO sw_pool VALUES(?,?,?,?,?,?,?,?,?, 'est')",
+            "INSERT OR IGNORE INTO sw_pool VALUES(?,?,?,?,?,?,?,?,?, 'est')",
             [(meta[idx][0], idx, meta[idx][1], d_iso, a[0], a[1], a[2], a[3], a[4])
              for idx, a in agg.items() if idx in meta])
         if i % 100 == 0:
@@ -264,11 +296,15 @@ def check():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["build", "overlay", "run", "validate", "check"])
+    ap.add_argument("cmd", choices=["build", "overlay", "run", "refresh", "validate", "check"])
     ap.add_argument("--start", default="20050101")
     args = ap.parse_args()
     if args.cmd == "build":
         sys.exit(0 if build(args.start) else 1)
+    if args.cmd == "refresh":                       # P2b: ST感知重刷+口径统一
+        from sw_names import build as build_names
+        build_names()
+        sys.exit(0 if (build(args.start, refresh=True) and overlay()) else 1)
     if args.cmd == "overlay":
         sys.exit(0 if overlay(args.start) else 1)
     if args.cmd == "run":
