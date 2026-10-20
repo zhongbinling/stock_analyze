@@ -48,7 +48,8 @@ LOG_FILE = BACKUP_DIR / "backup.log"
 RETENTION = {"daily": 14, "weekly": 8, "manual": 5, "pre": 10}
 # 资产级策略(P4): raw_daily 仅周备/手动快照(日备自动跳过, 避免14×2.5GB),
 # zlib压缩存.db.z(标准库稳快 ~2.5GB→~1.2GB), 每类型keep=4独立滚动
-RAW_POLICY = {"raw_daily": {"types": ("weekly", "manual"), "keep": 4, "compress": True}}
+RAW_POLICY = {"raw_daily": {"types": ("weekly", "manual", "pre-restore"), "keep": 4,
+               "compress": True}}
 TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-restore")
 
 
@@ -173,12 +174,14 @@ def snapshot(asset: str, btype: str = "manual") -> dict | None:
     final = BACKUP_DIR / f"{stem}.{ext}"
     if pol and pol.get("compress"):                 # P4: zlib流式压缩存 .db.z
         final = BACKUP_DIR / f"{stem}.{ext}.z"
-        with open(tmp, "rb") as fi, open(final, "wb") as fo:
+        zpart = final.with_name(final.name + ".part")   # 原子写: 防半压缩孤儿
+        with open(tmp, "rb") as fi, open(zpart, "wb") as fo:
             zo = zlib.compressobj(6)
             for chunk in iter(lambda: fi.read(1 << 20), b""):
                 fo.write(zo.compress(chunk))
             fo.write(zo.flush())
         tmp.unlink(missing_ok=True)
+        zpart.replace(final)
     else:
         tmp.replace(final)
     entry = {"file": final.name, "asset": asset, "kind": kind, "sha256": sha,

@@ -139,6 +139,14 @@ def test_raw_keep_rolling(bk_env, monkeypatch):
     assert len(files) == 4                            # keep=4
 
 
+def test_raw_pre_restore_snapshot_allowed(bk_env):
+    """pre-restore 对 raw 必须兜底(review修复: 曾被policy跳过)"""
+    e = BK.snapshot("raw_daily", "pre-restore")
+    assert e is not None and e["file"].endswith(".db.z")
+    # pre-calc 仍排除(避免每次全量重算压缩2.5GB)
+    assert BK.snapshot("raw_daily", "pre-calc") is None
+
+
 def test_raw_restore_decompress(bk_env):
     e = BK.snapshot("raw_daily", "weekly")
     conn = sqlite3.connect(str(bk_env["raw"]))
