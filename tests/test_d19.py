@@ -87,6 +87,44 @@ def test_composite_idempotent(env):
     assert n == 4                                # 2指数 × 2日, PK不重复
 
 
+def test_fetch_sw_daily_wired_and_tolerant(tmp_path, monkeypatch):
+    """D1-9#5: SW底座每日增量入链 + 单步失败不阻塞"""
+    import fetch_daily as FD
+    calls = []
+
+    def mk(n, ok=True):
+        def f(start=""):
+            calls.append(n)
+            if not ok:
+                raise RuntimeError(f"{n}挂了")
+            return ok
+        return f
+    import types
+    mods = {"raw_daily": types.SimpleNamespace(backfill=mk("raw"), agg=mk("agg")),
+            "sw_pool": types.SimpleNamespace(build=mk("pool-est"), overlay=mk("pool-official")),
+            "sw_fflow": types.SimpleNamespace(backfill=mk("fflow-b"), agg=mk("fflow-a")),
+            "sw_index_comp": types.SimpleNamespace(build=mk("sic"))}
+    import builtins
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name in mods:
+            return mods[name]
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert FD.fetch_sw_daily(lookback=10) is True
+    assert set(calls) == {"raw", "agg", "pool-est", "pool-official", "fflow-b", "fflow-a", "sic"}
+    # 单步失败容错: pool挂 → 其余仍执行
+    calls.clear()
+    mods["sw_pool"] = types.SimpleNamespace(build=mk("pool-est", ok=False),
+                                            overlay=mk("pool-official"))
+    assert FD.fetch_sw_daily() is True
+    assert "sic" in calls and "pool-est" in calls   # 失败步记录但链继续
+    # 主链接入断言
+    src = Path(FD.__file__).read_text(encoding="utf-8")
+    assert "fetch_sw_daily()" in src.split("def main")[1]
+
+
 def test_sector_sw_weights_parity():
     """D1-9: SW行分量对齐 — weights剔除ud_ratio/fflow"""
     import sector as S

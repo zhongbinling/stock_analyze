@@ -471,6 +471,28 @@ def backfill_tushare(start: str = "20200102"):
     print(f"[ts-backfill] 完成 {time.time()-t0:.0f}s")
 
 
+def fetch_sw_daily(lookback=10):
+    """D1-9#5: SW底座每日增量 — raw/pool/breadth/fflow/等权指数 近N日刷新
+    (幂等: 各步按已有日/整年覆盖); 失败不阻塞主链。"""
+    import time as _t
+    from datetime import date, timedelta
+    start = (date.today() - timedelta(days=lookback)).strftime("%Y%m%d")
+    for name, fn in (("raw", lambda: __import__("raw_daily").backfill(start)),
+                     ("breadth", lambda: __import__("raw_daily").agg(start)),
+                     ("pool-est", lambda: __import__("sw_pool").build(start)),
+                     ("pool-official", lambda: __import__("sw_pool").overlay(start)),
+                     ("fflow", lambda: __import__("sw_fflow").backfill(start)
+                      and __import__("sw_fflow").agg(start)),
+                     ("sic", lambda: __import__("sw_index_comp").build(start))):
+        try:
+            t0 = _t.time()
+            ok = fn()
+            print(f"[sw-daily] {name}: {'✓' if ok else '✗'} ({_t.time()-t0:.0f}s)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[sw-daily] {name}: 失败(不阻塞) {type(e).__name__}: {e}")
+    return True
+
+
 def backfill_sw_daily(start="19990101"):
     """D1-6 P4: SW行业指数日线(官方回溯~2012-08) — sw_bars.backfill"""
     import sw_bars
@@ -679,6 +701,7 @@ def main():
     fetch_calendar()
     fetch_margin()
     fetch_tushare_mood_today()
+    fetch_sw_daily()
     if args.ts_backfill:
         backfill_tushare(args.ts_backfill)
     if args.breadth_backfill:
