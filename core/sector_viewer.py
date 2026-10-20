@@ -286,7 +286,11 @@ function matAt(di, ci) {
   const v = MAT_CELLS[k];
   return v > 127 ? v - 256 : v;                   // int8 符号还原
 }
-let curDay = N_D - 1, query = "";
+let curDay = (function () {              // D1-8#6: 默认取BK最近有数日(SW行可能新1日, BK全null)
+  for (let d = N_D - 1; d >= 0; d--)
+    if (matAt(d, D.codes.findIndex(c => c.startsWith('BK'))) !== null) return d;
+  return N_D - 1;
+})(), query = "";
 let selected = [];   // 多板块对比: 已选板块的 code index 数组(≤5)
 const PALETTE = ["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"];
 
@@ -431,10 +435,17 @@ function toggleSel(ci) {
     selected.push(ci);
   }
   renderCards(); drawCurve();
-  drawLeft();  // 高亮已选板块
+  // D1-8#8: 不再全图重绘(点击闪烁); 选中态由曲线颜色/卡片表达
 }
 
 /* ── 排行榜 ── */
+function effDay() {                      // D1-8#6: 该层级最近有数日(回溯, SW/BK最新日可能差1日)
+  for (let d = curDay; d >= Math.max(0, curDay - 10); d--) {
+    const cis = (D.level_data && D.level_data[levelVal]) || D.codes.map((_, i) => i);
+    if (cis.some(ci => scoreAt(d, ci) !== null)) return d;
+  }
+  return curDay;
+}
 function rankData() {
   const groups = levelVal === 'L2' ? (D.sw2_groups || {}) : (D.sw1_groups || {});
   const levelCis = (D.level_data && D.level_data[levelVal]) || null;
@@ -447,13 +458,13 @@ function rankData() {
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci)) || '';
       if (sw !== swFilterVal) continue;
     }
-    const v = scoreAt(curDay, ci);
+    const v = scoreAt(effDay(), ci);
     if (v === null) continue;
     items.push({ name: nm, v: v, ci: ci });
   }
   // S3-B: 排序模式
   if (sortModeVal === 'chg') {
-    const prev = (i) => scoreAt(curDay - 1, i) || 0, cur = (i) => scoreAt(curDay, i) || 0;
+    const prev = (i) => scoreAt(effDay() - 1, i) || 0, cur = (i) => scoreAt(effDay(), i) || 0;
     items.sort((a, b) => (cur(b.ci) - prev(b.ci)) - (cur(a.ci) - prev(a.ci)));
   } else if (sortModeVal === 'ext') {
     const hmDays = 60;
@@ -475,7 +486,7 @@ function rankData() {
 
 function drawRank() {
   const items = rankData();
-  const day = D.dates[curDay];
+  const day = D.dates[effDay()];
   document.getElementById('hInfo').textContent = `${day} · ${N_C} 板块`;
   rankC.setOption({
     animation: false,
@@ -544,6 +555,7 @@ function curveLegendHidden(names) {
 }
 function drawCurve() {
   const side = document.getElementById('side');
+  side.style.display = 'none';               // D1-8#5: 曲线交互时隐藏, hover热力图再显示
   if (selected.length === 0) {
     // S3-F: 默认显示大盘情绪分曲线
     const mktData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
@@ -613,6 +625,7 @@ function drawCurve() {
 
 /* ── 分量明细(统一渲染: hover联动/选中跟随) ── */
 // S3-C: drawSideFor 增加语义头+背离徽标+多选对比摘要; drawSide 复用同一渲染
+function hideSide() { document.getElementById('side').style.display = 'none'; }
 function drawSideFor(ci) {
   const side = document.getElementById('side');
   if (ci < 0) { side.style.display = 'none'; return; }
@@ -771,9 +784,11 @@ btnR.onclick = () => setMode('rank');
 btnH.onclick = () => setMode('heat');
 
 function drawHeatmap() {
-  const hmDays = hmDaysGlobal || 120;
-  const dStart = Math.max(0, N_D - hmDays);
-  const hmDates = D.dates.slice(dStart);
+  // D1-8#3: hmDates 常驻全量(4481日), 窗口= dataZoom start/end(锚定右端);
+  // slider/inside 可平移到任意历史; 渲染走 progressive
+  const hmDates = D.dates;
+  const win = Math.min(hmDaysGlobal || 120, 750);
+  const zStart = Math.max(0, 100 - win / N_D * 100), zEnd = 100;
   // S3-E: 层级感知分组
   const levelCis = (D.level_data && D.level_data[levelVal]) || null;
   let groups, groupKey;
@@ -825,7 +840,7 @@ function drawHeatmap() {
     for (let yi = 0; yi < sortedCis.length; yi++) {
       const ci = sortedCis[yi];
       if (ci < 0) continue;
-      const v = scoreAt(dStart + xi, ci);
+      const v = scoreAt(xi, ci);            // D1-8#3: 全量日期, xi即全局日索引
       if (v !== null) hmData.push([xi, yi, v]);
     }
   }
@@ -863,7 +878,7 @@ function drawHeatmap() {
       const v = p.data[2];
       const drv = driversOf(ci);
       // S3-C: 5日变化 + 语义短语 + 量价背离
-      const d5 = deltaAt(dStart + p.data[0], ci, 5);
+      const d5 = deltaAt(p.data[0], ci, 5);   // D1-8#3: 全量日期
       let h = `<b>${D.names[ci]}</b>${sw && sw ? `（SW: ${sw}）` : ''}`;
       h += `<br/>${hmDates[p.data[0]]}`;
       h += `<br/>温度 <b style="color:${v >= 0 ? PAL.pos : PAL.neg}">${v > 0 ? '+' : ''}${v}</b>（${labelOf(v)}）`;
@@ -905,15 +920,16 @@ function drawHeatmap() {
         { gt: 70, lte: 80, color: '#8e0000', label: '极热' },
         { gt: 80, color: '#6a0000', label: '狂热' },
       ],
-      orient: 'horizontal', left: 'center', bottom: 0,
-      itemWidth: 12, itemHeight: 8, itemGap: 1,
+      orient: 'horizontal', left: 'center', top: 18,   // D1-8#4: 色标移grid上方(矮容器不再挤叠)
+      itemWidth: 8, itemHeight: 8, itemGap: 0,
       textStyle: { fontSize: 10, color: PAL.axis },
       formatter: (v, v2) => {
         const mid = (v + v2) / 2 || v;
         return labelOf(mid);
       },
     },
-    dataZoom: [{ type: 'inside', xAxisIndex: 0 }, { type: 'slider', xAxisIndex: 0,
+    dataZoom: [{ type: 'inside', xAxisIndex: 0, start: zStart, end: zEnd },
+               { type: 'slider', xAxisIndex: 0, start: zStart, end: zEnd,
       bottom: 26, height: 14, borderColor: PAL.a, fillerColor: 'rgba(42,120,214,0.1)' }],
     series: [{ type: 'heatmap', data: hmData,
       // S3-D: 常态无边框(降噪), 仅hover描边
@@ -930,7 +946,7 @@ function drawHeatmap() {
   rankC.off('mouseover');
   rankC.on('mouseover', p => {
     const ci = sortedCis[p.componentType === 'series' ? p.data[1] : -1];
-    if (ci >= 0) drawSideFor(ci);
+    if (ci >= 0) drawSideFor(ci); else hideSide();   // 组名行/空隙 → 隐藏(D1-8#1/#5)
   });
 }
 document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawLeft(); };
@@ -943,17 +959,8 @@ document.getElementById('themeToggle').onclick = () => {
   PAL = pal();
   drawLeft(); drawCurve(); drawSlider(); updateMkt();
 };
-// S3-F: 右侧曲线 dataZoom → 左侧热力图同步(曲线跨度15年, 按曲线总天数折算)
-curveC.on('datazoom', () => {
-  const opt = curveC.getOption();
-  const z = opt.dataZoom[0];
-  if (!z) return;
-  const visibleDays = Math.round(((z.end - z.start) / 100) * curveTotalDays());
-  if (Math.abs(visibleDays - hmDaysGlobal) > 10) {
-    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), 750); // P5: 3年窗口上限
-    drawLeft();
-  }
-});
+// D1-8#2: 曲线↔热力图拖动联动已移除(降复杂度) — 曲线缩放只管曲线;
+// 热力图窗口由自身 slider/inside/时间按钮控制, 全量日期常驻可平移到任意历史
 
 // S3-F: 排行图y轴滚动(支持查看全部板块)
 function enableRankScroll(items) {
