@@ -204,7 +204,7 @@ T.setMode('heat'); T.drawLeft();
 let hmOpt = rankChart._opt;
 check(hmOpt.series[0].itemStyle.borderWidth === 0, 'heatmap cell border removed (denoise)');
 check(hmOpt.visualMap.textStyle.fontSize === 10, 'visualMap legend fontSize 10');
-check(hmOpt.yAxis.axisLabel.rich.g.color === '#0b0b0b', 'group label uses PAL.strong (light)');
+check(hmOpt.yAxis.axisLabel.rich === undefined, 'rich group-mark removed (separators gone, D1-8#11)');
 check(hmOpt.xAxis.splitArea.areaStyle.color[0] === 'rgba(0,0,0,0.02)', 'heatmap splitArea from PAL');
 check(hmOpt.title.textStyle.color === '#52514e', 'heatmap title uses PAL.txt (light)');
 
@@ -215,7 +215,7 @@ check(T.getPAL().strong === '#f0efec' && T.getPAL().txt === '#c3c2b7', 'PAL re-r
   JSON.stringify({strong: T.getPAL().strong, txt: T.getPAL().txt}));
 check(T.getPAL().splitA[0] === 'rgba(255,255,255,0.02)', 'PAL dark splitArea');
 hmOpt = rankChart._opt;   // drawLeft 已被 themeToggle 触发(heat 模式)
-check(hmOpt.yAxis.axisLabel.rich.g.color === '#f0efec', 'heatmap re-rendered with dark strong');
+check(hmOpt.yAxis.axisLabel.color === '#c3c2b7', 'heatmap y labels dark after theme toggle');
 check(hmOpt.title.textStyle.color === '#c3c2b7', 'heatmap title dark txt');
 check(hmOpt.tooltip.backgroundColor === 'rgba(38,38,37,0.96)', 'tooltip dark background');
 

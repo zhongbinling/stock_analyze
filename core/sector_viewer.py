@@ -471,10 +471,10 @@ function rankData() {
     items.sort((a, b) => (cur(b.ci) - prev(b.ci)) - (cur(a.ci) - prev(a.ci)));
   } else if (sortModeVal === 'ext') {
     const hmDays = Math.min(hmDaysGlobal || 60, 750);   // D1-8#10: 跟随时间按钮
-    const dStart = Math.max(0, curDay - hmDays);
+    const dStart = Math.max(0, effDay() - hmDays);       // D1-8b-review: 与items同基准
     const ext = (ci) => {
       let m = 0;
-      for (let di = dStart; di <= curDay; di++) {
+      for (let di = dStart; di <= effDay(); di++) {
         const v = scoreAt(di, ci);
         if (v !== null) m = Math.abs(v) > Math.abs(m) ? v : m;
       }
@@ -793,8 +793,12 @@ btnH.onclick = () => setMode('heat');
 
 function heatZoomOpt() {
   // D1-8#5: 层级切换/重绘保留当前缩放与平移位置
-  try { const o = rankC.getOption(); const z = o && o.dataZoom && o.dataZoom[0];
-    if (z && typeof z.start === 'number' && (z.start > 0.01 || z.end < 99.99))
+  // D1-8b-review: 只认x轴dataZoom — rankC排行模式共用, 其yAxis滚动slider的
+  // start/end 百分比不得误当x窗口(默认路径rank→heat切换即踩)
+  try { const o = rankC.getOption();
+    const z = o && o.dataZoom && o.dataZoom.find(d => d.xAxisIndex !== undefined
+      && d.yAxisIndex === undefined && typeof d.start === 'number');
+    if (z && (z.start > 0.01 || z.end < 99.99))
       return { start: z.start, end: z.end };
   } catch (e) { /* 首次 */ }
   const win = Math.min(hmDaysGlobal || 120, 750);
@@ -879,7 +883,6 @@ function drawHeatmap() {
       .map(k => ({ k, v: comps[k] })).sort((a, b) => Math.abs(b.v) - Math.abs(a.v)).slice(0, 2);
     return arr.map(x => `${D.clabels[x.k] || x.k} ${x.v > 0 ? '+' : ''}${Math.round(x.v)}`).join(' · ');
   }
-  const swSet = new Set(swNames.filter(s => s));
   rankC.setOption({
     animation: false,
     title: { text: `热力图 · ${hmDates[0]?.slice(5)} ~ ${hmDates[hmDates.length-1]?.slice(5)}`,
@@ -910,10 +913,7 @@ function drawHeatmap() {
       axisLabel: { color: PAL.axis, fontSize: 9, rotate: 45 },
       splitArea: { show: true, areaStyle: { color: PAL.splitA } } },
     yAxis: { type: 'category', data: yLabels,
-      axisLabel: { fontSize: 8,
-        formatter: v => swSet.has(v) ? `{g|${v}}` : v,
-        rich: { g: { fontWeight: 'bold', fontSize: 10, color: PAL.strong } },
-        color: PAL.txt },
+      axisLabel: { fontSize: 8, color: PAL.txt },   // D1-8b-review: 组名行已移除, rich标记清理
       splitArea: { show: true, areaStyle: { color: PAL.splitA } } },
     // 16段色阶(深蓝→浅蓝→米白→橙红→深红, 每段带语义标签)
     visualMap: { type: 'piecewise',
