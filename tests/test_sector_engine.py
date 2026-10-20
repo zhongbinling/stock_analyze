@@ -162,8 +162,8 @@ def test_calc_sw_temperature_filters_nan_and_ranks(tmp_path, monkeypatch):
       CREATE TABLE sw_components(index_code TEXT, level TEXT, industry_name TEXT,
         con_code TEXT, in_date TEXT, out_date TEXT, is_new TEXT);
       CREATE TABLE mood_raw(date TEXT, zt_count INTEGER);
-      CREATE TABLE sw_daily(index_code TEXT, date TEXT, open REAL, high REAL, low REAL,
-        close REAL, volume REAL, amount REAL);
+      CREATE TABLE sw_index_comp(index_code TEXT, date TEXT, open REAL, high REAL,
+        low REAL, close REAL, volume REAL, amount REAL);
       CREATE TABLE sw_pool(level TEXT, index_code TEXT, date TEXT, zt_count INTEGER);
       CREATE TABLE sw_breadth(level TEXT, index_code TEXT, date TEXT, up INTEGER, down INTEGER);
       CREATE TABLE sw_fflow(level TEXT, index_code TEXT, date TEXT, main_net REAL);
@@ -174,7 +174,7 @@ def test_calc_sw_temperature_filters_nan_and_ranks(tmp_path, monkeypatch):
                      (ic, "农林牧渔" if k == 0 else "食品饮料"))
         for i in range(320):
             d = f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}"
-            conn.execute("INSERT OR REPLACE INTO sw_daily VALUES(?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT OR REPLACE INTO sw_index_comp VALUES(?,?,?,?,?,?,?,?)",
                          (ic, d, 1, 2, 0.5, 1.5 + i * 0.001 * (1 if k == 0 else -1), 100, 1e6))
     conn.execute("INSERT INTO mood_raw VALUES('2025-06-01', 50)")
     conn.commit()

@@ -218,10 +218,11 @@ background:var(--p);color:var(--i);width:110px}
     <select class="input" id="sortMode" style="width:90px;font-size:11px;padding:3px 4px">
       <option value="score">当日温度</option>
       <option value="chg">今日变化</option>
-      <option value="ext">区间极值</option>
+      <option value="ext">区间极值(max)</option>
     </select>
     <span style="border-left:1px solid var(--a);margin:0 2px"></span>
     <button class="btn" id="btnRankDir" style="padding:2px 6px;font-size:10px">高→低</button>
+    <button class="btn" id="btnExportHeat" style="padding:2px 6px;font-size:10px">导出4K</button>
     <button class="btn" id="lvL1" style="padding:2px 6px;font-size:10px">一级</button>
     <button class="btn" id="lvL2" style="padding:2px 6px;font-size:10px">二级</button>
     <button class="btn" id="lvSW3" style="padding:2px 6px;font-size:10px">三级</button>
@@ -283,6 +284,11 @@ const N_D = D.dates.length, N_C = D.codes.length;
 // P5 紧凑矩阵解码: int8 + 空值位图 → 有符号访问
 const _u8 = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 const MAT_CELLS = _u8(D.mat.b64), MAT_NULL = _u8(D.mat.null);
+function echats_fmt_date(v) {              // D1-9#2: 年份变化显年, 其余显月份(防重叠)
+  const d = new Date(v), y = d.getFullYear();
+  if (y !== echats_fmt_date._y) { echats_fmt_date._y = y; return String(y); }
+  return `${d.getMonth() + 1}月`;
+}
 function matAt(di, ci) {
   const k = di * N_C + ci;
   if (!((MAT_NULL[k >> 3] >> (k & 7)) & 1)) return null;
@@ -468,7 +474,8 @@ function rankData() {
   // S3-B: 排序模式
   if (sortModeVal === 'chg') {
     const prev = (i) => scoreAt(effDay() - 1, i) || 0, cur = (i) => scoreAt(effDay(), i) || 0;
-    items.sort((a, b) => (cur(b.ci) - prev(b.ci)) - (cur(a.ci) - prev(a.ci)));
+    const d = (x) => cur(x.ci) - prev(x.ci);
+    items.sort((a, b) => rankDesc ? d(b) - d(a) : d(a) - d(b));   // D1-9#4
   } else if (sortModeVal === 'ext') {
     const hmDays = Math.min(hmDaysGlobal || 60, 750);   // D1-8#10: 跟随时间按钮
     const dStart = Math.max(0, effDay() - hmDays);       // D1-8b-review: 与items同基准
@@ -480,7 +487,8 @@ function rankData() {
       }
       return m;
     };
-    items.sort((a, b) => Math.abs(ext(b.ci)) - Math.abs(ext(a.ci)));
+    items.sort((a, b) => rankDesc ? Math.abs(ext(b.ci)) - Math.abs(ext(a.ci))
+                                   : Math.abs(ext(a.ci)) - Math.abs(ext(b.ci)));  // D1-9#4
   } else {
     items.sort((a, b) => rankDesc ? b.v - a.v : a.v - b.v);   // D1-8#9 高低切换
   }
@@ -571,7 +579,8 @@ function drawCurve() {
         textStyle: { color: PAL.strong },
         valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
       grid: { left: 40, right: 12, top: 30, bottom: 40 },
-      xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9 } },
+      xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9,
+                 hideOverlap: true, formatter: v => echats_fmt_date(v) } },
       yAxis: { type: 'value', min: -105, max: 105,
         axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
       dataZoom: curveZoomOpt(),
@@ -618,7 +627,8 @@ function drawCurve() {
       textStyle: { color: PAL.strong },
       valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
     grid: { left: 40, right: 12, top: 32, bottom: 40 },
-    xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9 } },
+    xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9,
+               hideOverlap: true, formatter: v => echats_fmt_date(v) } },
     yAxis: { type: 'value', min: -105, max: 105,
       axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
     dataZoom: curveZoomOpt(),
@@ -772,6 +782,18 @@ for (const [id, d] of [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tq250',
 for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvSW3','SW3'],['lvBK','BK']]) {
   const b = document.getElementById(id);
   if (b) b.onclick = () => setLevel(l);
+}
+{ // D1-9#3: 热力图导出4K PNG(文件名含层级+日期)
+  const b = document.getElementById('btnExportHeat');
+  if (b) b.onclick = () => {
+    const ratio = Math.max(2, Math.ceil(3840 / Math.max(rankC.getWidth(), 1)));
+    const url = rankC.getDataURL({ type: 'png', pixelRatio: ratio,
+      backgroundColor: getComputedStyle(document.body).backgroundColor });
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `热力图_${levelVal}_${new Date().toISOString().slice(0, 10)}.png`;
+    a.click();
+  };
 }
 { // D1-8#9: 排行高低切换
   const b = document.getElementById('btnRankDir');

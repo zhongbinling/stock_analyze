@@ -90,6 +90,8 @@ def _calc_sw_temperature(conn, table="sector_scores"):
     t0 = time.time()
     cfg = load_cfg()
     weights = cfg.get("sector_weights", {})
+    # D1-9: 分量对齐 — SW行与BK行同分量集(BK无ud_ratio/fflow历史), 跨层级可比
+    weights = {k: v for k, v in weights.items() if k not in ("ud_ratio", "fflow")}
     window = cfg.get("window", 250)
     meta = {}                     # index_code -> (level, name)
     try:
@@ -105,8 +107,9 @@ def _calc_sw_temperature(conn, table="sector_scores"):
     out = []
     for ic, (lv, nm) in sorted(meta.items()):
         try:
+            # D1-9: 等权自算指数(与EM板块口径可比) — 旧sw_daily官方指数系统性偏冷
             df = pd.read_sql(
-                "SELECT date, open, high, low, close, volume, amount FROM sw_daily "
+                "SELECT date, open, high, low, close, volume, amount FROM sw_index_comp "
                 "WHERE index_code=?", conn, params=(ic,), parse_dates=False)
             if df.empty:
                 continue
