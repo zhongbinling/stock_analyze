@@ -135,12 +135,17 @@ def _calc_sw_temperature(conn, table="sector_scores"):
         print("[sector] SW独立温度: 无输出")
         return
     allsw = pd.concat(out, ignore_index=True)
-    allsw["rank_pct"] = None
+    allsw = allsw[allsw["score"].notna()].reset_index(drop=True)  # 预热期NaN不入库
+    # B) 横向热度: 同层级行业内百分位(report/export/viewer语义一致)
+    allsw["prefix"] = allsw["code"].str.rsplit("_", n=1).str[0] + "_"
+    allsw["rank_pct"] = (allsw.groupby(["date", "prefix"])["score"]
+                         .rank(pct=True) * 100).round(1)
     allsw["stage"] = allsw["score"].apply(stage_of)
     conn.executemany(
         f"INSERT OR REPLACE INTO {table}(date,code,score,rank_pct,stage,components) "
         "VALUES(?,?,?,?,?,?)",
-        [(r["date"], r["code"], float(r["score"]), None, r["stage"],
+        [(r["date"], r["code"], float(r["score"]),
+          None if pd.isna(r["rank_pct"]) else float(r["rank_pct"]), r["stage"],
           r["components"] if r["components"] else None) for _, r in allsw.iterrows()])
     conn.commit()
     print(f"[sector] SW独立温度: {allsw['code'].nunique()} 指数 × "

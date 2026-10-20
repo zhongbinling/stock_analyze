@@ -950,7 +950,7 @@ curveC.on('datazoom', () => {
   if (!z) return;
   const visibleDays = Math.round(((z.end - z.start) / 100) * curveTotalDays());
   if (Math.abs(visibleDays - hmDaysGlobal) > 10) {
-    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), N_D); // 热力图数据上限=全部日期
+    hmDaysGlobal = Math.min(Math.max(visibleDays, 5), 750); // P5: 3年窗口上限
     drawLeft();
   }
 });

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """温度引擎纯函数测试 (core/sector.py)"""
 import json
+import sqlite3
 
 import numpy as np
 import pandas as pd
@@ -146,4 +147,44 @@ def test_calc_sw2_skips_nan_rows():
     S._calc_sw2(conn, allsc)
     rows = conn.execute("SELECT code FROM sector_scores").fetchall()
     assert len(rows) == 1 and rows[0][0] == "SW2_白酒"  # BK0003 无 sw2 映射, BK0001 NaN
+    conn.close()
+
+
+def test_calc_sw_temperature_filters_nan_and_ranks(tmp_path, monkeypatch):
+    """P5review: SW行预热NaN不入库 + rank_pct按同层级行业内百分位"""
+    import pandas as pd
+    import sw_pool  # noqa: F401
+    p = tmp_path / "t.db"
+    conn = sqlite3.connect(str(p))
+    conn.executescript("""
+      CREATE TABLE sector_scores(date TEXT, code TEXT, score REAL, rank_pct REAL,
+        stage TEXT, components TEXT, PRIMARY KEY(date, code));
+      CREATE TABLE sw_components(index_code TEXT, level TEXT, industry_name TEXT,
+        con_code TEXT, in_date TEXT, out_date TEXT, is_new TEXT);
+      CREATE TABLE mood_raw(date TEXT, zt_count INTEGER);
+      CREATE TABLE sw_daily(index_code TEXT, date TEXT, open REAL, high REAL, low REAL,
+        close REAL, volume REAL, amount REAL);
+      CREATE TABLE sw_pool(level TEXT, index_code TEXT, date TEXT, zt_count INTEGER);
+      CREATE TABLE sw_breadth(level TEXT, index_code TEXT, date TEXT, up INTEGER, down INTEGER);
+      CREATE TABLE sw_fflow(level TEXT, index_code TEXT, date TEXT, main_net REAL);
+    """)
+    # 两个L1指数 × 320日(前250日NaN预热)
+    for k, ic in enumerate(("801010.SI", "801120.SI")):
+        conn.execute("INSERT INTO sw_components VALUES(?, 'L1', ?, '000001.SZ','19900101',NULL,'Y')",
+                     (ic, "农林牧渔" if k == 0 else "食品饮料"))
+        for i in range(320):
+            d = f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}"
+            conn.execute("INSERT OR REPLACE INTO sw_daily VALUES(?,?,?,?,?,?,?,?)",
+                         (ic, d, 1, 2, 0.5, 1.5 + i * 0.001 * (1 if k == 0 else -1), 100, 1e6))
+    conn.execute("INSERT INTO mood_raw VALUES('2025-06-01', 50)")
+    conn.commit()
+    monkeypatch.setattr(S, "connect", lambda: sqlite3.connect(str(p)))
+    S._calc_sw_temperature(conn, table="sector_scores")
+    n_null = conn.execute(
+        "SELECT COUNT(*) FROM sector_scores WHERE score IS NULL").fetchone()[0]
+    n = conn.execute("SELECT COUNT(*) FROM sector_scores").fetchone()[0]
+    assert n_null == 0 and n > 0                      # 预热NaN过滤
+    # rank_pct: 同层级行业内百分位(两行业分列0~100)
+    r = conn.execute("SELECT MIN(rank_pct), MAX(rank_pct) FROM sector_scores").fetchone()
+    assert r[0] is not None and 0 <= r[0] <= 100 and 0 < r[1] <= 100
     conn.close()
