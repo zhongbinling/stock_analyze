@@ -150,7 +150,9 @@ HTML = r"""<!DOCTYPE html>
 *{box-sizing:border-box}
 body{margin:0;background:var(--p);color:var(--i);
 font:13px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
-display:flex;flex-direction:column;height:100vh;overflow:hidden}
+display:flex;flex-direction:column;min-height:100vh;overflow-x:hidden;overflow-y:auto}
+/* D1-8#3: 窗口非最大化时底部不再被裁剪 — 允许纵向滚动, 图区保最小高度 */
+.chart-row{min-height:430px}
 /* ── 顶栏 ── */
 .hdr{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;
 padding:8px 16px;background:var(--s);border-bottom:1px solid var(--g);flex-shrink:0}
@@ -219,6 +221,7 @@ background:var(--p);color:var(--i);width:110px}
       <option value="ext">区间极值</option>
     </select>
     <span style="border-left:1px solid var(--a);margin:0 2px"></span>
+    <button class="btn" id="btnRankDir" style="padding:2px 6px;font-size:10px">高→低</button>
     <button class="btn" id="lvL1" style="padding:2px 6px;font-size:10px">一级</button>
     <button class="btn" id="lvL2" style="padding:2px 6px;font-size:10px">二级</button>
     <button class="btn" id="lvSW3" style="padding:2px 6px;font-size:10px">三级</button>
@@ -467,7 +470,7 @@ function rankData() {
     const prev = (i) => scoreAt(effDay() - 1, i) || 0, cur = (i) => scoreAt(effDay(), i) || 0;
     items.sort((a, b) => (cur(b.ci) - prev(b.ci)) - (cur(a.ci) - prev(a.ci)));
   } else if (sortModeVal === 'ext') {
-    const hmDays = 60;
+    const hmDays = Math.min(hmDaysGlobal || 60, 750);   // D1-8#10: 跟随时间按钮
     const dStart = Math.max(0, curDay - hmDays);
     const ext = (ci) => {
       let m = 0;
@@ -479,7 +482,7 @@ function rankData() {
     };
     items.sort((a, b) => Math.abs(ext(b.ci)) - Math.abs(ext(a.ci)));
   } else {
-    items.sort((a, b) => b.v - a.v);
+    items.sort((a, b) => rankDesc ? b.v - a.v : a.v - b.v);   // D1-8#9 高低切换
   }
   return items.slice(0, 600);  // S3-F: 提高上限, yAxis dataZoom 控制显示数量
 }
@@ -490,7 +493,8 @@ function drawRank() {
   document.getElementById('hInfo').textContent = `${day} · ${N_C} 板块`;
   rankC.setOption({
     animation: false,
-    title: { text: `温度排行 · ${day}`, left: 10, top: 6, textStyle: { fontSize: 12, color: PAL.txt } },
+    title: { text: `温度排行 · ${day} ${rankDesc ? '↓高→低' : '↑低→高'}`, left: 10, top: 6,
+             textStyle: { fontSize: 12, color: PAL.txt } },
     tooltip: { trigger: 'item', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
       textStyle: { color: PAL.strong }, formatter: p => {
       const it = items[p.dataIndex];
@@ -710,7 +714,7 @@ slideC.on('datazoom', () => {
 
 /* ── 事件 ── */
 // S3-B: 申万一级筛选 + 排序模式 + 时间快捷
-let swFilterVal = '', sortModeVal = 'score', levelVal = 'BK';
+let swFilterVal = '', sortModeVal = 'score', levelVal = 'BK', rankDesc = true;
 // S3-E: 层级切换
 function setLevel(lv) {
   levelVal = lv;
@@ -769,6 +773,10 @@ for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvSW3','SW3'],['lvBK','BK']
   const b = document.getElementById(id);
   if (b) b.onclick = () => setLevel(l);
 }
+{ // D1-8#9: 排行高低切换
+  const b = document.getElementById('btnRankDir');
+  if (b) b.onclick = () => { rankDesc = !rankDesc; b.textContent = rankDesc ? '高→低' : '低→高'; drawLeft(); };
+}
 
 // S3-B: 模式切换
 let mode = 'rank';
@@ -783,12 +791,19 @@ function setMode(m) {
 btnR.onclick = () => setMode('rank');
 btnH.onclick = () => setMode('heat');
 
-function drawHeatmap() {
-  // D1-8#3: hmDates 常驻全量(4481日), 窗口= dataZoom start/end(锚定右端);
-  // slider/inside 可平移到任意历史; 渲染走 progressive
-  const hmDates = D.dates;
+function heatZoomOpt() {
+  // D1-8#5: 层级切换/重绘保留当前缩放与平移位置
+  try { const o = rankC.getOption(); const z = o && o.dataZoom && o.dataZoom[0];
+    if (z && typeof z.start === 'number' && (z.start > 0.01 || z.end < 99.99))
+      return { start: z.start, end: z.end };
+  } catch (e) { /* 首次 */ }
   const win = Math.min(hmDaysGlobal || 120, 750);
-  const zStart = Math.max(0, 100 - win / N_D * 100), zEnd = 100;
+  return { start: Math.max(0, 100 - win / N_D * 100), end: 100 };
+}
+function drawHeatmap() {
+  // D1-8#3: hmDates 常驻全量(4481日), 窗口= dataZoom start/end; 可平移任意历史
+  const hmDates = D.dates;
+  const z = heatZoomOpt(), zStart = z.start, zEnd = z.end;
   // S3-E: 层级感知分组
   const levelCis = (D.level_data && D.level_data[levelVal]) || null;
   let groups, groupKey;
@@ -827,14 +842,13 @@ function drawHeatmap() {
       groups = filtered;
     }
   }
+  // D1-8#11: 去掉组名分隔行(灰色条干扰色块连续性) — 同组相邻排列即可
   const sortedCis = [];
   const yLabels = [];
   const swNames = Object.keys(groups).sort();
   for (const sw of swNames) {
     for (const ci of groups[sw]) { sortedCis.push(ci); yLabels.push(D.names[ci]); }
-    yLabels.push(sw || ''); sortedCis.push(-1);  // 组名行
   }
-  yLabels.pop(); sortedCis.pop();
   const hmData = [];
   for (let xi = 0; xi < hmDates.length; xi++) {
     for (let yi = 0; yi < sortedCis.length; yi++) {
@@ -872,6 +886,7 @@ function drawHeatmap() {
              left: 10, top: 6, textStyle: { fontSize: 12, color: PAL.txt } },
     tooltip: { position: 'top', backgroundColor: PAL.tipBg, borderColor: PAL.grid,
       textStyle: { color: PAL.strong }, formatter: p => {
+      if (!p.data) return '';                       // D1-8#7: 空hover守卫
       const ci = sortedCis[p.data[1]];
       if (ci < 0) return yLabels[p.data[1]] ? `<b>${yLabels[p.data[1]]}</b>` : '';
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci));
@@ -945,8 +960,9 @@ function drawHeatmap() {
   // S3-A: hover联动右侧分量
   rankC.off('mouseover');
   rankC.on('mouseover', p => {
-    const ci = sortedCis[p.componentType === 'series' ? p.data[1] : -1];
-    if (ci >= 0) drawSideFor(ci); else hideSide();   // 组名行/空隙 → 隐藏(D1-8#1/#5)
+    const yi = (p.componentType === 'series' && p.data) ? p.data[1] : -1;   // D1-8#7 守卫
+    const ci = yi >= 0 ? sortedCis[yi] : -1;
+    if (ci >= 0) drawSideFor(ci); else hideSide();
   });
 }
 document.getElementById('btnClear').onclick = () => { selected = []; renderCards(); drawCurve(); drawLeft(); };
@@ -961,6 +977,15 @@ document.getElementById('themeToggle').onclick = () => {
 };
 // D1-8#2: 曲线↔热力图拖动联动已移除(降复杂度) — 曲线缩放只管曲线;
 // 热力图窗口由自身 slider/inside/时间按钮控制, 全量日期常驻可平移到任意历史
+// D1-8#6/#8: 曲线上任何交互(legend切换/点击/缩放) → 隐藏side; legend切换后回放缩放
+curveC.on('legendselectchanged', () => {
+  hideSide();
+  const o = curveC.getOption(), z = o && o.dataZoom && o.dataZoom[0];
+  if (z && typeof z.start === 'number')
+    setTimeout(() => curveC.dispatchAction({ type: 'dataZoom', start: z.start, end: z.end }), 0);
+});
+curveC.on('click', hideSide);
+curveC.on('datazoom', hideSide);
 
 // S3-F: 排行图y轴滚动(支持查看全部板块)
 function enableRankScroll(items) {
