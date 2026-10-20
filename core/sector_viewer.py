@@ -33,23 +33,31 @@ CORDER = ["rsi", "chg", "gap", "kr", "vol_dir", "vr", "bias20", "bias60",
 
 
 def build_payload(years=2):
+    import base64
     conn = sqlite3.connect(f"file:{DB.as_posix()}?mode=ro", uri=True)
-    # 分数矩阵: 近 years 年
-    dates = [r[0] for r in conn.execute(
-        "SELECT DISTINCT date FROM sector_scores ORDER BY date DESC LIMIT ?", ((years + 1) * 250,))]
-    dates.reverse()
+    # P5: 全历史(不再按years截断); years仅保留CLI兼容
+    dates = [r[0] for r in conn.execute("SELECT DISTINCT date FROM sector_scores ORDER BY date")]
     dset = set(dates)
     ph = ",".join("?" * len(dates))
     rows = conn.execute(
-        f"SELECT date,code,score,rank_pct FROM sector_scores WHERE date IN ({ph})", dates).fetchall()
+        f"SELECT date,code,score FROM sector_scores WHERE date IN ({ph})", dates).fetchall()
     codes = sorted({r[1] for r in rows})
     names = dict(conn.execute("SELECT code,name FROM sectors").fetchall())
 
+    # P5 紧凑编码: int8分数 + 空值位图 + base64(JSON内嵌体积 ~1/6)
+    N_D, N_C = len(dates), len(codes)
     idx_d = {d: i for i, d in enumerate(dates)}
     idx_c = {c: i for i, c in enumerate(codes)}
-    mat = [[None] * len(codes) for _ in range(len(dates))]
-    for d, c, s, _rp in rows:
-        mat[idx_d[d]][idx_c[c]] = None if s is None else round(s)
+    cells = bytearray(N_D * N_C)                   # 0=占位(空)
+    bitmap = bytearray((N_D * N_C + 7) // 8)       # bit=1 → 有效
+    for d, c, s in rows:
+        if s is None:
+            continue
+        k = idx_d[d] * N_C + idx_c[c]
+        cells[k] = max(-100, min(100, int(round(s)))) & 0xFF
+        bitmap[k >> 3] |= 1 << (k & 7)
+    mat = {"b64": base64.b64encode(bytes(cells)).decode(),
+           "null": base64.b64encode(bytes(bitmap)).decode()}
 
     # 大盘情绪对照(S3-F: 拉取15年, 供右侧曲线独立缩放到更长区间)
     mkt = conn.execute(
@@ -64,8 +72,10 @@ def build_payload(years=2):
                 "SELECT code,components FROM sector_scores WHERE date=? AND components IS NOT NULL", (d,)):
             comp.setdefault(c, {})[d] = json.loads(j)
 
-    # S2.1-A: 当日摘要(最热/最冷 Top5)
-    latest = dates[-1] if dates else None
+    # S2.1-A: 当日摘要(最热/最冷 Top5) — 取BK行最新日(SW行可能更新一日, JOIN sectors取不到)
+    latest = next((d for d in reversed(dates)
+                   if conn.execute("SELECT 1 FROM sector_scores sc JOIN sectors s "
+                                   "ON sc.code=s.code WHERE sc.date=? LIMIT 1", (d,)).fetchone()), None)
     top5, bot5 = [], []
     if latest:
         ranked = conn.execute(
@@ -94,11 +104,12 @@ def build_payload(years=2):
                 sw2_groups.setdefault(sw2, []).append(ci)
     except Exception:
         pass
-    # SW1_/SW2_ 聚合行的 code index(用于一级/二级模式)
+    # SW1_/SW2_/SW3_ 独立温度行 + BK 行(P5 四层级)
     sw1_agg_cis = [ci for ci, c in enumerate(codes) if c.startswith("SW1_")]
     sw2_agg_cis = [ci for ci, c in enumerate(codes) if c.startswith("SW2_")]
+    sw3_agg_cis = [ci for ci, c in enumerate(codes) if c.startswith("SW3_")]
     bk_cis = [ci for ci, c in enumerate(codes) if c.startswith("BK")]
-    level_data = {"L1": sw1_agg_cis, "L2": sw2_agg_cis, "L3": bk_cis}
+    level_data = {"L1": sw1_agg_cis, "L2": sw2_agg_cis, "SW3": sw3_agg_cis, "BK": bk_cis}
 
     # SW2组的父级(SW1)归属
     sw2_to_sw1 = {}
@@ -210,7 +221,8 @@ background:var(--p);color:var(--i);width:110px}
     <span style="border-left:1px solid var(--a);margin:0 2px"></span>
     <button class="btn" id="lvL1" style="padding:2px 6px;font-size:10px">一级</button>
     <button class="btn" id="lvL2" style="padding:2px 6px;font-size:10px">二级</button>
-    <button class="btn" id="lvL3" style="padding:2px 6px;font-size:10px;font-weight:bold">三级</button>
+    <button class="btn" id="lvSW3" style="padding:2px 6px;font-size:10px">三级</button>
+    <button class="btn" id="lvBK" style="padding:2px 6px;font-size:10px;font-weight:bold">行业</button>
   </div>
   <div class="flt">
     <span style="border-left:1px solid var(--a);margin:0 4px"></span>
@@ -230,6 +242,10 @@ background:var(--p);color:var(--i);width:110px}
     <span class="sem" id="mktSem"></span>
     <div id="mktSpark"></div>
   </div>
+</div>
+<div style="padding:0 16px;font-size:9px;color:var(--m);flex-shrink:0">
+口径: SW行(一级/二级/三级)=独立14分量温度, L1/L2自2011·L3自2006; 行业(BK)=2019起。
+早期段量价主导(涨停估算·资金流2007+缺失自动归一化)。热力图窗口上限3年(750交易日), 可拖动滑块左右移动。
 </div>
 <div id="slider"></div>
 <div style="display:flex;gap:6px;padding:2px 16px 4px;flex-shrink:0;align-items:center">
@@ -261,6 +277,15 @@ window.onerror = function(msg, src, line, col) {
 <script>
 const D = __PAYLOAD__;
 const N_D = D.dates.length, N_C = D.codes.length;
+// P5 紧凑矩阵解码: int8 + 空值位图 → 有符号访问
+const _u8 = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+const MAT_CELLS = _u8(D.mat.b64), MAT_NULL = _u8(D.mat.null);
+function matAt(di, ci) {
+  const k = di * N_C + ci;
+  if (!((MAT_NULL[k >> 3] >> (k & 7)) & 1)) return null;
+  const v = MAT_CELLS[k];
+  return v > 127 ? v - 256 : v;                   // int8 符号还原
+}
 let curDay = N_D - 1, query = "";
 let selected = [];   // 多板块对比: 已选板块的 code index 数组(≤5)
 const PALETTE = ["#2a78d6","#e34948","#1baf7a","#eda100","#6250d6"];
@@ -297,7 +322,7 @@ function mktAt(di) {
   for (let i = D.mkt.length - 1; i >= 0; i--) if (D.mkt[i][0] <= d) return D.mkt[i];
   return null;
 }
-function scoreAt(di, ci) { return D.mat[di] ? D.mat[di][ci] : null; }
+function scoreAt(di, ci) { return (di < 0 || di >= N_D) ? null : matAt(di, ci); }
 
 /* ── S3-C: 温度语义引擎 ── */
 // n日前温度差(hover 日期感知); 早期数据不足返回 null
@@ -411,7 +436,6 @@ function toggleSel(ci) {
 
 /* ── 排行榜 ── */
 function rankData() {
-  const row = D.mat[curDay] || [];
   const groups = levelVal === 'L2' ? (D.sw2_groups || {}) : (D.sw1_groups || {});
   const levelCis = (D.level_data && D.level_data[levelVal]) || null;
   const items = [];
@@ -423,21 +447,21 @@ function rankData() {
       const sw = Object.keys(groups).find(s => groups[s]?.includes(ci)) || '';
       if (sw !== swFilterVal) continue;
     }
-    const v = row[ci];
+    const v = scoreAt(curDay, ci);
     if (v === null) continue;
     items.push({ name: nm, v: v, ci: ci });
   }
   // S3-B: 排序模式
   if (sortModeVal === 'chg') {
-    const prev = D.mat[curDay - 1] || [];
-    items.sort((a, b) => ((row[b.ci]||0) - (prev[b.ci]||0)) - ((row[a.ci]||0) - (prev[a.ci]||0)));
+    const prev = (i) => scoreAt(curDay - 1, i) || 0, cur = (i) => scoreAt(curDay, i) || 0;
+    items.sort((a, b) => (cur(b.ci) - prev(b.ci)) - (cur(a.ci) - prev(a.ci)));
   } else if (sortModeVal === 'ext') {
     const hmDays = 60;
     const dStart = Math.max(0, curDay - hmDays);
     const ext = (ci) => {
       let m = 0;
       for (let di = dStart; di <= curDay; di++) {
-        const v = D.mat[di] ? D.mat[di][ci] : null;
+        const v = scoreAt(di, ci);
         if (v !== null) m = Math.abs(v) > Math.abs(m) ? v : m;
       }
       return m;
@@ -673,11 +697,11 @@ slideC.on('datazoom', () => {
 
 /* ── 事件 ── */
 // S3-B: 申万一级筛选 + 排序模式 + 时间快捷
-let swFilterVal = '', sortModeVal = 'score', levelVal = 'L3';
+let swFilterVal = '', sortModeVal = 'score', levelVal = 'BK';
 // S3-E: 层级切换
 function setLevel(lv) {
   levelVal = lv;
-  for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvL3','L3']]) {
+  for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvSW3','SW3'],['lvBK','BK']]) {
     const b = document.getElementById(id);
     if (b) b.style.fontWeight = l === lv ? 'bold' : 'normal';
   }
@@ -698,10 +722,6 @@ function setLevel(lv) {
   }
   drawLeft();
 }
-for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvL3','L3']]) {
-  const b = document.getElementById(id);
-  if (b) b.onclick = () => setLevel(l);
-}
 const swSel = document.getElementById('swFilter');
 if (swSel && D.sw1_groups) {
   const sws = Object.keys(D.sw1_groups).filter(s => s).sort();
@@ -720,7 +740,7 @@ if (sortSel) {
 // S3-B: 时间快捷 — 改变热力图天数并重绘
 let hmDaysGlobal = 120;
 function hmZoom(days) {
-  hmDaysGlobal = days || N_D; // 0 = 全部
+  hmDaysGlobal = Math.min(days || 750, 750);  // P5: 3年滑动窗口上限(全部=750)
   drawLeft();
   const btns = [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tq250',250],['tqAll',0]];
   for (const [id, d] of btns) {
@@ -731,6 +751,10 @@ function hmZoom(days) {
 for (const [id, d] of [['tq5',5],['tq20',20],['tq60',60],['tq120',120],['tq250',250],['tqAll',0]]) {
   const b = document.getElementById(id);
   if (b) b.onclick = () => hmZoom(d);
+}
+for (const [id, l] of [['lvL1','L1'],['lvL2','L2'],['lvSW3','SW3'],['lvBK','BK']]) {
+  const b = document.getElementById(id);
+  if (b) b.onclick = () => setLevel(l);
 }
 
 // S3-B: 模式切换
@@ -770,12 +794,16 @@ function drawHeatmap() {
       groups = byParent;
     }
     groupKey = 'sw2';
+  } else if (levelVal === 'SW3') {
+    // P5: 三级=SW3独立行, 平铺(无父子映射表)
+    groups = { '三级行业': levelCis || [] };
+    groupKey = 'sw3';
   } else {
+    // BK行业: 按SW1分组(旧L3模式)
     const allGroups = D.sw1_groups || {};
     groups = swFilterVal ? { [swFilterVal]: allGroups[swFilterVal] || [] } : allGroups;
     groupKey = 'sw1';
     if (levelCis) {
-      // L3模式: 只取BK码, 剔除SW1_/SW2_聚合行
       const bkSet = new Set(levelCis);
       const filtered = {};
       for (const [k, v] of Object.entries(groups)) {

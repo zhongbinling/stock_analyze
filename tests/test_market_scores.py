@@ -25,13 +25,14 @@ def mkt(fixture_db, tmp_path, monkeypatch):
 def test_score_datasets_four_types(mkt):
     ds = mkt.score_datasets()
     codes = [d["code"] for d in ds]
-    assert codes == ["score:sentiment", "score:bk", "score:sw1", "score:sw2"]
+    assert codes == ["score:sentiment", "score:bk", "score:sw1", "score:sw2", "score:sw3"]
     by = {d["code"]: d for d in ds}
     # 夹具: sentiment 40行~09-30; BK 3板×30日(1 NULL仍计行); SW1/SW2 各1×30
     assert by["score:sentiment"]["rows"] == 40 and by["score:sentiment"]["last"] == "2026-09-30"
     assert by["score:sentiment"]["codes"] is None          # 大盘无"板块数"语义
     assert by["score:bk"]["codes"] == 3 and by["score:bk"]["rows"] == 90
     assert by["score:sw1"]["codes"] == 1 and by["score:sw2"]["codes"] == 1
+    assert by["score:sw3"]["codes"] == 0 and by["score:sw3"]["health"] == "bad"  # 夹具无SW3行
     assert by["score:bk"]["first"] == "2026-09-01" and by["score:bk"]["last"] == "2026-09-30"
     assert by["score:bk"]["days"] == 30
 
@@ -40,6 +41,8 @@ def test_health_ok_when_caught_up(mkt):
     """夹具中评分与 index_daily 同步到 2026-09-30 → 全部 ok, 说明可读(非'='标记)"""
     by = {d["code"]: d for d in mkt.score_datasets()}
     for c, d in by.items():
+        if c == "score:sw3":
+            continue                                # 夹具无SW3行 → bad属预期
         assert d["health"] == "ok", f"{c} 应为 ok"
         assert "与行情同步" in d["note"], f"{c} ok态说明应含'与行情同步': {d['note']!r}"
     assert "=" not in by["score:sw1"]["note"].replace("==", "")  # 无孤立'='标记
@@ -100,5 +103,5 @@ def test_api_datasets_includes_scores(server_app, mkt):
     assert r.status_code == 200
     j = r.get_json()
     assert [s["code"] for s in j["scores"]] == \
-           ["score:sentiment", "score:bk", "score:sw1", "score:sw2"]
+           ["score:sentiment", "score:bk", "score:sw1", "score:sw2", "score:sw3"]
     assert j["datasets"]                                  # 基础数据仍在

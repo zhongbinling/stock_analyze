@@ -83,7 +83,7 @@ def _by_code(ds, code):
 def test_registry_entries_present(assets):
     codes = [d["code"] for d in assets["market"].datasets()]
     for c in ("index", "pool", "breadth", "sector_daily", "sector_pool",
-              "sector_fflow", "margin", "calendar", "sectors", "sw1", "sw2", "sw3"):
+              "sector_fflow", "margin", "calendar", "sectors", "sw1", "sw2"):
         assert c in codes, f"缺资产 {c}"
 
 
@@ -153,17 +153,17 @@ def test_calendar_table_missing_keeps_all_assets(assets):
     conn.close()
     codes = [d["code"] for d in assets["market"].datasets()]
     for c in ("index", "pool", "breadth", "sector_daily", "sector_pool",
-              "sector_fflow", "margin", "sectors", "sw1", "sw2", "sw3"):
+              "sector_fflow", "margin", "sectors", "sw1", "sw2"):
         assert c in codes, f"日历表缺失导致 {c} 消失"
     assert _by_code(assets["market"].datasets(), "sector_daily")["missing_n"] == 3
 
 
-def test_sw_map_rows_and_sw3_placeholder(assets):
+def test_sw_map_rows_and_sw3_from_swdaily(assets):
+    """P5: sw1/sw2映射行仍在; sw3改为sw_daily实况(夹具无该表→行缺失)"""
     ds = assets["market"].datasets()
     s1 = _by_code(ds, "sw1")
     assert s1["rows"] == 2 and "覆盖 2 个东财BK" in s1["note"] and "2 个一级" in s1["note"]
-    s3 = _by_code(ds, "sw3")
-    assert s3["rows"] == 0 and s3["health"] == "warn" and "未构建" in s3["note"]
+    assert not any(d["code"] == "sw3" for d in ds)     # 无sw_daily→无sw3行(非占位)
 
 
 def test_note_contains_gap_detail(assets):

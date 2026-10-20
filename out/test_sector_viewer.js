@@ -48,7 +48,7 @@ global.echarts = { init(dom){ const c = mkChart();
   return c; } };
 
 const driver = app + ';globalThis.__T={toggleSel,hmZoom,drawCurve,drawSideFor,drawSlider,drawLeft,renderCards,updateMkt,' +
-  'semanticOf,semShort,divergenceOf,latestComps,deltaAt,D,hmDays:()=>hmDaysGlobal,' +
+  'semanticOf,semShort,divergenceOf,latestComps,deltaAt,scoreAt,matAt,D,hmDays:()=>hmDaysGlobal,' +
   'getSel:()=>selected,setCur:d=>curDay=d,setMode:m=>mode=m,getPAL:()=>PAL};';
 new Function(driver)();
 
@@ -183,7 +183,7 @@ check(typeof els['mktSem'].textContent === 'string' && els['mktSem'].textContent
   // 期望值: 按分量表日期(lc.date)计算, 而非 curDay
   const lc = T.latestComps(bk1);
   const adi = T.D.dates.indexOf(lc.date);
-  const v = adi >= 0 ? T.D.mat[adi][bk1] : null;
+  const v = adi >= 0 ? T.scoreAt(adi, bk1) : null;   // P5紧凑编码
   const d5 = T.deltaAt(adi, bk1, 5);
   const expect = v === null ? '' :
     (d5 !== null ? `5日${d5 > 0 ? '+' : ''}${d5} · ` : '') + T.semanticOf(v, d5);

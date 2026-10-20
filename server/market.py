@@ -138,8 +138,9 @@ def score_datasets() -> list:
                              f"{'与行情同步' if lag == 0 else f'落后行情 {lag} 天'}·重算评分后刷新")})
 
         for code, pat, name in (("score:bk", "BK%", "板块温度·行业板块"),
-                                ("score:sw1", "SW1_%", "板块温度·申万一级聚合"),
-                                ("score:sw2", "SW2_%", "板块温度·申万二级聚合")):
+                                ("score:sw1", "SW1_%", "板块温度·申万一级"),
+                                ("score:sw2", "SW2_%", "板块温度·申万二级"),
+                                ("score:sw3", "SW3_%", "板块温度·申万三级")):
             rows, codes, days, first, last = con.execute(
                 "SELECT COUNT(*), COUNT(DISTINCT code), COUNT(DISTINCT date), "
                 "MIN(date), MAX(date) FROM sector_scores WHERE code LIKE ?",
@@ -297,9 +298,9 @@ def datasets() -> list:
                         "note": f"完成度基准·token{'已配置' if has_token else '未配置'}"})
         except sqlite3.Error:
             pass
-        # 申万映射 L1/L2/L3(表存在才显示; L3 构建归专项)
-        _lvl_cn = {"sw1": "一级", "sw2": "二级", "sw3": "三级"}
-        for lvl, label in (("sw1", "申万一级映射"), ("sw2", "申万二级映射"), ("sw3", "申万三级映射")):
+        # 申万映射 L1/L2(表存在才显示); L3 无map表(P5起SW3温度直接用sw_components+sw_daily)
+        _lvl_cn = {"sw1": "一级", "sw2": "二级"}
+        for lvl, label in (("sw1", "申万一级映射"), ("sw2", "申万二级映射")):
             t = f"{lvl}_map"
             exists = con.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()
@@ -307,7 +308,7 @@ def datasets() -> list:
                 out.append({"code": lvl, "name": label, "source": "tushare投票",
                             "rows": 0, "codes": None, "first": None, "last": None,
                             "completeness": None, "missing_n": 0, "missing_recent": [],
-                            "health": "warn", "note": "未构建(见L3专项计划)"})
+                            "health": "warn", "note": "未构建"})
                 continue
             try:
                 rows = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
@@ -320,6 +321,19 @@ def datasets() -> list:
                             "note": f"{sws} 个{_lvl_cn[lvl]} · 覆盖 {bks} 个东财BK"})
             except sqlite3.Error:
                 pass
+        # P5: SW3 实况(指数日线 L3 层)
+        try:
+            r = con.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT sd.index_code), MIN(sd.date), MAX(sd.date) "
+                "FROM sw_daily sd JOIN (SELECT DISTINCT index_code FROM sw_components "
+                "WHERE level='L3') c ON sd.index_code=c.index_code").fetchone()
+            if r[0]:
+                out.append({"code": "sw3", "name": "申万三级·指数日线", "source": "tushare sw_daily",
+                            "rows": r[0], "codes": r[1], "first": r[2], "last": r[3],
+                            "completeness": None, "missing_n": 0, "missing_recent": [],
+                            "health": "ok", "note": f"{r[1]} 个三级指数(P5 SW温度底座)"})
+        except sqlite3.Error:
+            pass
         return out
     except sqlite3.Error as e:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,

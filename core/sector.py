@@ -82,6 +82,71 @@ def load_frames(conn):
 
 # ---------------------------------------------------------------- 单板块计算
 
+def _calc_sw_temperature(conn, table="sector_scores"):
+    """P5: SW L1/L2/L3 独立温度 — 每指数组装行情帧喂 calc_one(14+fflow分量),
+    替换旧'BK均值聚合'。数据: sw_daily×sw_pool(该层级行)×sw_breadth×sw_fflow 按
+    date对齐; zt_share 用全市场涨停。写 SW1_/SW2_/SW3_ 行。"""
+    import pandas as pd
+    t0 = time.time()
+    cfg = load_cfg()
+    weights = cfg.get("sector_weights", {})
+    window = cfg.get("window", 250)
+    meta = {}                     # index_code -> (level, name)
+    try:
+        for ic, lv, nm in conn.execute(
+                "SELECT index_code, level, industry_name FROM sw_components "
+                "GROUP BY index_code, level, industry_name"):
+            meta[ic] = (lv, nm)
+    except Exception:  # noqa: BLE001        # sw_components 未建(旧库) → 跳过SW温度
+        print("[sector] SW独立温度: sw_components 缺失, 跳过")
+        return
+    mkt = pd.read_sql("SELECT date, zt_count FROM mood_raw WHERE zt_count IS NOT NULL",
+                      conn, parse_dates=False).set_index("date")["zt_count"]
+    out = []
+    for ic, (lv, nm) in sorted(meta.items()):
+        try:
+            df = pd.read_sql(
+                "SELECT date, open, high, low, close, volume, amount FROM sw_daily "
+                "WHERE index_code=?", conn, params=(ic,), parse_dates=False)
+            if df.empty:
+                continue
+            for col, tbl, vcol in (
+                    ("zt_count", "sw_pool", "zt_count"), ("dt_count", "sw_pool", "dt_count"),
+                    ("lb_max", "sw_pool", "lb_max"), ("lb2_count", "sw_pool", "lb2_count"),
+                    ("up_count", "sw_breadth", "up"), ("down_count", "sw_breadth", "down"),
+                    ("main_net", "sw_fflow", "main_net")):
+                try:
+                    t = pd.read_sql(f"SELECT date, {vcol} FROM {tbl} WHERE index_code=?",
+                                    conn, params=(ic,), parse_dates=False)
+                except Exception:  # noqa: BLE001     # 表未建(旧库) → 分量缺失容忍
+                    continue
+                t = t.rename(columns={vcol: col}).drop_duplicates("date").set_index("date")
+                df = df.merge(t, on="date", how="left")
+            df["code"] = ic
+            df["mkt"] = df["date"].map(mkt)
+            res = calc_one(df, None, df["mkt"], weights, window)
+            if len(res) > 260:
+                res.loc[:len(res) - 261, "components"] = None
+            res["code"] = f"SW{lv[-1]}_{nm}"
+            out.append(res)
+        except Exception as e:  # noqa: BLE001
+            print(f"  ✗ SW温度 {ic} {nm}: {e}")
+    if not out:
+        print("[sector] SW独立温度: 无输出")
+        return
+    allsw = pd.concat(out, ignore_index=True)
+    allsw["rank_pct"] = None
+    allsw["stage"] = allsw["score"].apply(stage_of)
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {table}(date,code,score,rank_pct,stage,components) "
+        "VALUES(?,?,?,?,?,?)",
+        [(r["date"], r["code"], float(r["score"]), None, r["stage"],
+          r["components"] if r["components"] else None) for _, r in allsw.iterrows()])
+    conn.commit()
+    print(f"[sector] SW独立温度: {allsw['code'].nunique()} 指数 × "
+          f"{allsw['date'].nunique()} 日 ({time.time()-t0:.0f}s)")
+
+
 def _calc_sw1(conn, allsc, table="sector_scores"):
     """S2.1-C: 按申万一级聚合板块温度 → 写入 sector_scores (code='SW1_'+名称)"""
     sw1 = conn.execute("SELECT bk_code, sw1_name FROM sw1_map").fetchall()
@@ -247,8 +312,7 @@ def calc_all(conn=None):
           r["stage"], r["components"] if r["components"] else None)
          for _, r in allsc.iterrows()])
     conn.commit()
-    _calc_sw1(conn, allsc, table=st)
-    _calc_sw2(conn, allsc, table=st)
+    _calc_sw_temperature(conn, table=st)      # P5: 独立14分量温度(替换均值聚合)
     atomic_swap(conn, "sector_scores", idx_cols=(("date", "code"),))  # 复合索引
     conn.execute("VACUUM")         # 回收空间(切换后)
     print(f"[sector] 温度计算: {len(out)} 板块 × {allsc['date'].nunique()} 日 → {len(allsc)} 行 "

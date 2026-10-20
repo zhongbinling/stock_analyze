@@ -21,12 +21,20 @@ def test_payload_shapes(payload):
 
 
 def test_payload_mat_null_defense(payload):
-    """NULL score 行 → mat 单元为 None 而非崩溃"""
+    """NULL score 行 → 位图0位(scoreAt为null); 紧凑编码含哨兵还原"""
+    import base64
+    cells = base64.b64decode(payload["mat"]["b64"])
+    nulls = base64.b64decode(payload["mat"]["null"])
+    N_C = len(payload["codes"])
     ci = payload["codes"].index("BK0003")
     di = payload["dates"].index("2026-09-11")   # 夹具中 i=10 的 NULL 行
-    assert payload["mat"][di][ci] is None
-    # 其余日非 None
-    assert payload["mat"][payload["dates"].index("2026-09-30")][ci] is not None
+    k = di * N_C + ci
+    assert not (nulls[k >> 3] >> (k & 7)) & 1          # NULL → 位图0
+    di2 = payload["dates"].index("2026-09-30")
+    k2 = di2 * N_C + ci
+    assert (nulls[k2 >> 3] >> (k2 & 7)) & 1            # 有值 → 位图1
+    v = cells[k2]
+    assert -100 <= (v if v <= 127 else v - 256) <= 100 # int8 哨兵还原
 
 
 def test_payload_disp_name_strips_prefix(payload):
@@ -38,10 +46,10 @@ def test_payload_disp_name_strips_prefix(payload):
 
 def test_payload_level_data_partition(payload):
     ld = payload["level_data"]
-    all_cis = set(range(len(payload["codes"])))
-    assert set(ld["L1"]) | set(ld["L2"]) | set(ld["L3"]) == all_cis
-    assert not (set(ld["L1"]) & set(ld["L3"]))   # 互斥
-    assert set(ld["L3"]) == {payload["codes"].index(c) for c in ("BK0001", "BK0002", "BK0003")}
+    assert set(ld["L1"]) | set(ld["L2"]) | set(ld["BK"]) == set(range(len(payload["codes"])))
+    assert not (set(ld["L1"]) & set(ld["BK"]))   # 互斥
+    assert set(ld["BK"]) == {payload["codes"].index(c) for c in ("BK0001", "BK0002", "BK0003")}
+    assert "SW3" in ld and ld["SW3"] == []       # 夹具无SW3行→空列表
 
 
 def test_payload_sw_groups_and_parents(payload):
