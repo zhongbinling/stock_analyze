@@ -46,7 +46,7 @@ def build(start="20050101") -> bool:
     frames = []
     for y in years:
         d = pd.read_sql(
-            "SELECT ts_code, trade_date, pre_close, close, high, low, amount FROM daily "
+            "SELECT ts_code, trade_date, pre_close, open, close, high, low, amount FROM daily "
             "WHERE trade_date>=? AND trade_date<=?", raw,
             params=(f"{y}0101", f"{y}1231"))
         if d.empty:
@@ -58,8 +58,9 @@ def build(start="20050101") -> bool:
             continue
         m["ret"] = (m["close"] / m["pre_close"] - 1) * 100
         m["amp"] = (m["high"] - m["low"]) / m["pre_close"] * 100
+        m["gp"] = (m["open"] / m["pre_close"] - 1) * 100     # 成分真实跳空
         g = m.groupby(["index_code", "trade_date"]).agg(
-            ret=("ret", "mean"), amp=("amp", "mean"),
+            ret=("ret", "mean"), amp=("amp", "mean"), gp=("gp", "mean"),
             amount=("amount", "sum"), n=("ts_code", "count")).reset_index()
         frames.append(g)
         print(f"  {y}: {len(d)//10000}万行 → {len(g)} 指数日 ({time.time()-t0:.0f}s)")
@@ -88,7 +89,11 @@ def build(start="20050101") -> bool:
     allg["pct_chg"] = allg["ret"]
     allg["high"] = allg["close"] * (1 + allg["amp"] / 200)
     allg["low"] = allg["close"] * (1 - allg["amp"] / 200)
-    allg["open"] = allg["close"] / (1 + allg["ret"] / 100)
+    # D1-9r2: open=前收盘×(1+成分跳空均值) — gap分量用真实跳空
+    # (原合成open=close/(1+ret)≡前收盘, gap恒0退化为分位噪声)
+    prev_close = allg.groupby("index_code")["close"].shift(1)
+    allg["open"] = prev_close * (1 + allg["gp"] / 100)
+    allg.loc[allg["open"].isna(), "open"] = allg["close"] / (1 + allg["ret"] / 100)
     allg["volume"] = allg["amount"]
     allg["date"] = allg["trade_date"].str.slice(0, 4) + "-" + \
         allg["trade_date"].str.slice(4, 6) + "-" + allg["trade_date"].str.slice(6, 8)
