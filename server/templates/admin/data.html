@@ -69,32 +69,20 @@
 
 <section class="card">
   <h2>数据补全</h2>
-  <div class="row-flex">
-    <select class="input" id="bfDataset" style="width:230px">
-      <option value="sw_daily">SW行业指数日线(官方~2012-08起, 约6分钟)</option>
-      <option value="sw_fflow">主力资金流·SW层级(2007起, 约60分钟)</option>
-      <option value="sw_pool">涨停结构·SW层级(2005起, 含全市场段, 约40分钟)</option>
-      <option value="sw_breadth">板块涨跌家数·SW层级(2005起, 约100分钟)</option>
-      <option value="sector_history">板块日线·历史回补(东财, 目标2012起)</option>
-      <option value="zt_ts">涨停结构·tushare回补(2020起)</option>
-      <option value="zt_est">涨停家数·估算回补(2012-2019)</option>
-      <option value="breadth">涨跌家数·tushare回补(2018起)</option>
-      <option value="calendar">交易日历·刷新</option>
-    </select>
-    <span>起始 <input class="input narrow" id="bfStart" placeholder="留空=推荐起始"></span>
-    <button class="btn primary" id="btnBfRun">开始补全</button>
-    <span class="hint" id="bfMsg"></span>
-    <span class="hint" id="bfLive"></span>
-  </div>
-  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照; 板块日线/资金流/两融为增量型, 随每日更新链积累。</p>
+  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照。点击行内[补全]按需修复; 运行中其余按钮置灰(任务队列串行)。</p>
   <div class="row-flex" style="margin:4px 0">
     <label class="chk"><input type="checkbox" id="bfRecalc"> 补全后自动重算评分（score + 板块温度，保证视图生成用到完整评分）</label>
     <span class="hint" id="bfRecalcMsg"></span>
   </div>
   <div class="row-flex" style="margin:4px 0">
     <span>按日期反查 <input class="input narrow" id="bfDate" placeholder="2026-03-14"></span>
-    <button class="btn small" id="btnBfQuery">查该日被哪些补全写过</button>
+    <button class="btn small" id="btnBkQuery2">查该日被哪些补全写过</button>
     <span class="hint" id="bfQueryMsg"></span>
+  </div>
+  <table class="table" id="bfAssets"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <div class="row-flex" style="margin:6px 0">
+    <span class="hint" id="bfMsg"></span>
+    <span class="hint" id="bfLive"></span>
   </div>
   <table class="table" id="bfTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
 </section>
@@ -130,8 +118,8 @@ async function loadDatasets() {
   try {
     const d = await api('/admin/api/datasets');
     const pctCls = c => c == null ? 'hint' : (c >= 100 ? 'ok' : 'bad');
-    $('dsTable').innerHTML = '<tr><th>数据集</th><th>来源</th><th>行数</th><th>板块数</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th>说明</th></tr>' +
-      d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
+    $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>行数</th><th>板块数</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th>说明</th></tr>' +
+      d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td><td>${t.rows}</td>
         <td>${t.codes ?? '--'}</td>
         <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
         <td class="${pctCls(t.completeness)}">${t.completeness == null ? '--' : t.completeness + '%'}</td>
@@ -370,19 +358,44 @@ async function loadBackfillLogs(dataset = '', date = '') {
     bfPollTimer = setTimeout(() => loadBackfillLogs(dataset, date), rg ? 5000 : 20000);   // 运行中5s刷新
   } catch (e) { $('bfTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
 }
-$('btnBfRun').onclick = async () => {
-  const btn = $('btnBfRun');
-  btn.disabled = true; btn.textContent = '⏳ 已提交…'; $('bfMsg').textContent = '';
-  try {
-    const r = await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({
-      dataset: $('bfDataset').value, start: $('bfStart').value.trim()})});
-    $('bfMsg').textContent = r.msg;
-    setTimeout(() => loadBackfillLogs(), 5000);
-    setTimeout(() => loadBackfillLogs(), 30000);
-  } catch (e) { $('bfMsg').textContent = e.message; }
-  btn.disabled = false; btn.textContent = '开始补全';
+/* D1-10 F1: 补全表格化 — 基础数据行级[补全]按钮(未达标才显示) */
+const BF_ASSET_MAP = {   // datasets资产code → backfill dataset(可补全集)
+  sw_daily: 'sw_daily', sw_fflow: 'sw_fflow', sw_pool: 'sw_pool',
+  sw_breadth: 'sw_breadth', pool: 'zt_ts', breadth: 'breadth',
 };
-$('btnBfQuery').onclick = () => loadBackfillLogs('', $('bfDate').value.trim());
+let bfRunning = false;
+async function loadBfAssets() {
+  try {
+    const d = await api('/admin/api/datasets');
+    const running = await api('/admin/api/jobpoll');
+    bfRunning = !!(running.running || running.queued > 0);
+    $('bfAssets').innerHTML = '<tr><th>数据集</th><th>库</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th></th></tr>' +
+      d.datasets.filter(t => BF_ASSET_MAP[t.code]).map(t => {
+        const ds = BF_ASSET_MAP[t.code];
+        const can = t.completeness !== null && (t.missing_n > 0 || t.completeness < 100);
+        const btn = can ? `<button class="btn small" data-bf="${ds}" ${bfRunning ? 'disabled' : ''}>补全</button>`
+                        : '<span class="ok">✓</span>';
+        return `<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
+          <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
+          <td class="${t.completeness >= 100 ? 'ok' : 'bad'}">${t.completeness == null ? '--' : t.completeness + '%'}</td>
+          <td class="${t.missing_n ? 'bad' : 'hint'}">${t.missing_n ? `缺 ${t.missing_n} 天` : '—'}</td>
+          <td class="${t.health === 'ok' ? 'ok' : 'bad'}">${t.health === 'ok' ? '正常' : '注意'}</td>
+          <td>${btn}</td></tr>`;
+      }).join('');
+    document.querySelectorAll('#bfAssets [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
+  } catch (e) { $('bfAssets').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
+}
+async function bfRun(dataset, btn) {
+  if (bfRunning) return;
+  btn.disabled = true; btn.textContent = '⏳';
+  $('bfMsg').textContent = '';
+  try {
+    const r = await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({dataset})});
+    $('bfMsg').textContent = r.msg;
+    setTimeout(loadBfAssets, 3000); setTimeout(loadBfAssets, 30000);
+  } catch (e) { $('bfMsg').textContent = e.message; btn.disabled = false; btn.textContent = '补全'; }
+}
+$('btnBkQuery2').onclick = () => loadBackfillLogs('', $('bfDate').value.trim());
 
 /* D2-3: 补全后自动重算开关(onchange 即存, strategy 部分更新) */
 $('bfRecalc').onchange = async () => {
@@ -393,6 +406,6 @@ $('bfRecalc').onchange = async () => {
   } catch (e) { $('bfRecalcMsg').textContent = e.message; }
 };
 
-loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); poll(true);
+loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); loadBfAssets(); poll(true);
 </script>
 {% endblock %}

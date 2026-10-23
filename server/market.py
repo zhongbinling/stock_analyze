@@ -182,7 +182,23 @@ _ASSET_DATE_TABLES = [
     ("sector_fflow", "板块资金流", "sector_fundflow", None, "东财fflow", 7,
      "约最近120日滚动"),
     ("margin", "融资融券(tushare)", "margin_daily", None, "tushare", 7, ""),
+    # D1-10 S1: SW底座表(D1-6起新增, 此前未注册导致无完成度)
+    ("sw_daily", "SW行业指数日线(官方)", "sw_daily", None, "tushare", 7,
+     "官方回溯各指数不一(L3自2005)"),
+    ("sw_sic", "SW等权自算指数", "sw_index_comp", None, "本系统聚合", 4,
+     "温度量价输入(成分等权累乘)"),
+    ("sw_breadth", "SW涨跌家数", "sw_breadth", None, "成分聚合", 4, ""),
+    ("sw_pool", "SW涨停结构", "sw_pool", None, "估算+官方", 4,
+     "2005-2019估算/2020+官方覆盖"),
+    ("sw_fflow", "SW主力资金流", "sw_fflow", None, "成分聚合", 4, "moneyflow 2007起"),
 ]
+# D1-10 S1: raw_daily.db 跨库表(ATTACH只读挂载后并入datasets); 日期列=trade_date
+RAW_TABLES = [
+    ("raw_daily", "个股日线(全A)", "daily", None, "tushare", 4, "评分/聚合底座"),
+    ("raw_mf", "个股资金流", "moneyflow", None, "tushare", 4, "SW资金流底座"),
+]
+RAW_DATE_COL = "trade_date"
+BASELINE = "2013-01-01"     # D1-10 S2: 完成度基准线(用户确认的规则边界)
 _HEALTH_RANK = {"ok": 0, "warn": 1, "bad": 2}
 
 
@@ -230,22 +246,43 @@ def datasets() -> list:
                  "note": "core/data/sentiment.db 不存在, 请先执行数据更新"}]
     out = []
     try:
+        raw_path = CORE / "data" / "raw_daily.db"
+        if raw_path.exists():
+            try:
+                con.execute(f"ATTACH DATABASE 'file:{raw_path.as_posix()}?mode=ro' AS rawdb")
+            except sqlite3.Error:
+                pass
         primary = cfg["index"]["primary"]
-        for code, name, table, where, source, stale_max, base_note in _ASSET_DATE_TABLES:
+        for spec in _ASSET_DATE_TABLES + RAW_TABLES:
+            code, name, table, where, source, stale_max, base_note = spec
+            is_raw = spec in RAW_TABLES
+            qtable = f"rawdb.{table}" if is_raw else table
+            dcol = RAW_DATE_COL if is_raw else "date"
             try:
                 cond = f" WHERE {where}" if where else ""
                 rows, first, last = con.execute(
-                    f"SELECT COUNT(*), MIN(date), MAX(date) FROM {table}{cond}").fetchone()
+                    f"SELECT COUNT(*), MIN({dcol}), MAX({dcol}) FROM {qtable}{cond}").fetchone()
                 have = {r[0] for r in con.execute(
-                    f"SELECT DISTINCT date FROM {table}{cond}")}
+                    f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
+                if is_raw:                         # raw库YMD → ISO归一
+                    first, last = _norm_date(first), _norm_date(last)
+                    have = {_norm_date(x) for x in have}
                 expected = _expected_days(con, first, last, primary)
                 missing = [d for d in expected if d not in have]
                 completeness = (round((len(expected) - len(missing)) / len(expected) * 100)
                                 if expected else None)
+                # D1-10 S2: 2013基准线 — 分母只计 max(起点, 基准)起的交易日
+                if completeness is not None and first and first < BASELINE:
+                    exp_bl = [d for d in expected if d >= BASELINE]
+                    miss_bl = [d for d in missing if d >= BASELINE]
+                    if exp_bl:
+                        completeness = round((len(exp_bl) - len(miss_bl))
+                                             / len(exp_bl) * 100)
+                        missing = miss_bl
                 codes = None
                 if table in ("sector_daily", "sector_pool_stat", "sector_fundflow"):
                     codes = con.execute(
-                        f"SELECT COUNT(DISTINCT code) FROM {table}{cond}").fetchone()[0]
+                        f"SELECT COUNT(DISTINCT code) FROM {qtable}{cond}").fetchone()[0]
                 # 健康 = 陈旧度 与 完成度 取差者; 有缺失交易日(<100)即warn, <80 bad
                 h = "ok" if _stale_days(last) <= stale_max else "warn"
                 if completeness is not None:
@@ -263,6 +300,7 @@ def datasets() -> list:
                         "SELECT rzrqye FROM margin_daily ORDER BY date DESC LIMIT 1").fetchone()
                     extra = f"·最新两融余额 {(rzrq[0] or 0) / 1e12:.2f}万亿" if rzrq and rzrq[0] else ""
                 out.append({"code": code, "name": name, "source": source,
+                            "db": "raw_daily.db" if is_raw else "sentiment.db",
                             "rows": rows or 0, "codes": codes,
                             "first": first, "last": last,
                             "completeness": completeness,
@@ -339,4 +377,8 @@ def datasets() -> list:
         return [{"code": "db", "name": "行情库", "source": "--", "rows": 0,
                  "first": None, "last": None, "health": "bad", "note": f"读取失败: {e}"}]
     finally:
+        try:
+            con.execute("DETACH DATABASE rawdb")
+        except sqlite3.Error:
+            pass
         con.close()
