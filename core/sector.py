@@ -82,6 +82,28 @@ def load_frames(conn):
 
 # ---------------------------------------------------------------- 单板块计算
 
+ZT_SHRINK_K = 15          # D1-9r4: 涨停小样本收缩系数(w=n/(n+K))
+
+
+def _shrink_zt(df, mkt_zt_series, mkt_total_series):
+    """D1-9r4: 涨停计数向市场期望按成分数收缩 — 细分行业(n~35)零星涨停的
+    分位噪声消除; 大篮子(SW1 n~1000+)w≈1不受影响。zt_share由calc_one从
+    收缩后的zt_count重算, 自动同步。返回是否应用。"""
+    if "n" not in df.columns or df["n"].isna().all():
+        return False
+    rate = (mkt_zt_series / mkt_total_series).reindex(df["date"]).values
+    n = df["n"].values
+    w = n / (n + ZT_SHRINK_K)
+    exp = n * rate
+    for col in ("zt_count", "dt_count"):
+        if col in df.columns:
+            v = df[col].values.copy()
+            m = ~(np.isnan(v) | np.isnan(exp) | np.isnan(w))
+            v[m] = w[m] * v[m] + (1 - w[m]) * exp[m]
+            df[col] = v
+    return True
+
+
 def _calc_sw_temperature(conn, table="sector_scores"):
     """P5: SW L1/L2/L3 独立温度 — 每指数组装行情帧喂 calc_one(14+fflow分量),
     替换旧'BK均值聚合'。数据: sw_daily×sw_pool(该层级行)×sw_breadth×sw_fflow 按
@@ -104,6 +126,12 @@ def _calc_sw_temperature(conn, table="sector_scores"):
         return
     mkt = pd.read_sql("SELECT date, zt_count FROM mood_raw WHERE zt_count IS NOT NULL",
                       conn, parse_dates=False).set_index("date")["zt_count"]
+    try:
+        mkt_total = pd.read_sql(
+            "SELECT date, SUM(total) AS tot FROM sw_breadth WHERE level='L1' "
+            "GROUP BY date", conn, parse_dates=False).set_index("date")["tot"]
+    except Exception:  # noqa: BLE001
+        mkt_total = None
     out = []
     for ic, (lv, nm) in sorted(meta.items()):
         try:
@@ -117,6 +145,7 @@ def _calc_sw_temperature(conn, table="sector_scores"):
                     ("zt_count", "sw_pool", "zt_count"), ("dt_count", "sw_pool", "dt_count"),
                     ("lb_max", "sw_pool", "lb_max"), ("lb2_count", "sw_pool", "lb2_count"),
                     ("up_count", "sw_breadth", "up"), ("down_count", "sw_breadth", "down"),
+                    ("n", "sw_breadth", "total"),
                     ("main_net", "sw_fflow", "main_net")):
                 try:
                     t = pd.read_sql(f"SELECT date, {vcol} FROM {tbl} WHERE index_code=?",
@@ -127,6 +156,10 @@ def _calc_sw_temperature(conn, table="sector_scores"):
                 df = df.merge(t, on="date", how="left")
             df["code"] = ic
             df["mkt"] = df["date"].map(mkt)
+            try:
+                _shrink_zt(df, mkt, mkt_total)       # D1-9r4: zt小样本收缩
+            except Exception:  # noqa: BLE001
+                pass
             res = calc_one(df, None, df["mkt"], weights, window)
             if len(res) > 260:
                 res.loc[:len(res) - 261, "components"] = None
