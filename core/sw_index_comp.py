@@ -94,6 +94,10 @@ def build(start="20050101") -> bool:
     prev_close = allg.groupby("index_code")["close"].shift(1)
     allg["open"] = prev_close * (1 + allg["gp"] / 100)
     allg.loc[allg["open"].isna(), "open"] = allg["close"] / (1 + allg["ret"] / 100)
+    # D1-9r3-review: 价格带包含open(真实指数high/low必含开盘价; 跳空>振幅
+    # 半宽时open越带, kr=(close-open)/rng会超[-1,1] — 实测872/5293行越界)
+    allg["high"] = allg[["high", "open"]].max(axis=1)
+    allg["low"] = allg[["low", "open"]].min(axis=1)
     allg["volume"] = allg["amount"]
     allg["date"] = allg["trade_date"].str.slice(0, 4) + "-" + \
         allg["trade_date"].str.slice(4, 6) + "-" + allg["trade_date"].str.slice(6, 8)

@@ -105,6 +105,11 @@ def test_composite_incremental_carry(env):
     assert abs(r[-1][1] - 1320.0) < 1e-6, r[-1]       # 承接+首日收益(非1200也非重基1000系)
     assert abs(r[-1][2] - 10.0) < 1e-6                # pct_chg列与close隐含一致
     assert abs(r0[0] - 1200 * 1.0166667) < 0.01, r0   # 1200×(1+1.67%)
+    # D1-9r3-review: 价格带包含open(跳空>振幅半宽时open不越high/low带)
+    conn2 = sqlite3.connect(str(env))
+    n_bad = conn2.execute("SELECT COUNT(*) FROM sw_index_comp WHERE open > high OR open < low").fetchone()[0]
+    conn2.close()
+    assert n_bad == 0, f"open越界{n_bad}行"
 
 
 def test_composite_idempotent(env):
