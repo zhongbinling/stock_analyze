@@ -38,8 +38,10 @@ def build(start="20050101") -> bool:
     raw = raw_connect()
     years = [r[0] for r in raw.execute(
         "SELECT DISTINCT substr(trade_date,1,4) FROM daily ORDER BY 1")]
-    years = [y for y in years if f"{y}0101" >= str(start).replace("-", "")[:4] + "0101"
-             or y >= str(start)[:4]]
+    sy = int(str(start).replace("-", "")[:4])
+    # D1-9r-review: 1-2月的增量窗口跨年 → 含上一年(晚到数据自愈)
+    sm = int(str(start).replace("-", "-")[4:6].lstrip("0") or 1)
+    years = [y for y in years if int(y) >= sy - (1 if sm <= 2 else 0)]
     t0 = time.time()
     frames = []
     for y in years:
@@ -66,25 +68,23 @@ def build(start="20050101") -> bool:
         print("[sic] 无数据")
         return False
     allg = pd.concat(frames, ignore_index=True).sort_values(["index_code", "trade_date"])
-    # 累乘等权指数(每指数首日=1000)
+    # 累乘等权指数: 基点=承接前收盘(增量)或1000(全量) — 统一不吸收块首日收益,
+    # close隐含收益与pct_chg列一致(D1-9r-review: 原首日吸收致每年一天chg读0%)
     allg["factor"] = (1 + allg["ret"] / 100)
-    allg["close"] = (allg.groupby("index_code")["factor"].cumprod()
-                     * 1000 / allg.groupby("index_code")["factor"].transform("first"))
-    # D1-9r: 增量重建承接 — 若表中已有本块首日之前的收盘, 整块按前收盘续算,
-    # 否则跨年增量会把当年重基到1000(假崩盘-97%污染全年pos/bias分位)
+    allg["cum"] = allg.groupby("index_code")["factor"].cumprod()
     first_day = allg["trade_date"].min()
+    fd_iso = f"{first_day[:4]}-{first_day[4:6]}-{first_day[6:8]}"
     carry = {}
     for ic in allg["index_code"].unique():
         r = sent.execute(
             "SELECT close FROM sw_index_comp WHERE index_code=? AND date<? "
-            "ORDER BY date DESC LIMIT 1",
-            (ic, f"{first_day[:4]}-{first_day[4:6]}-{first_day[6:8]}")).fetchone()
+            "ORDER BY date DESC LIMIT 1", (ic, fd_iso)).fetchone()
         if r and r[0]:
-            carry[ic] = r[0]
+            carry[ic] = r[0] / 1000.0      # 相对1000基点的续算系数
     if carry:
-        print(f"  承接前收盘: {len(carry)} 指数 (块首 {first_day})")
-        allg["carry"] = allg["index_code"].map(carry).fillna(1000.0)
-        allg["close"] = allg["close"] * allg["carry"] / 1000.0
+        print(f"  承接前收盘: {len(carry)} 指数 (块首 {fd_iso})")
+    allg["base"] = allg["index_code"].map(carry).fillna(1.0) * 1000.0
+    allg["close"] = allg["cum"] * allg["base"]
     allg["pct_chg"] = allg["ret"]
     allg["high"] = allg["close"] * (1 + allg["amp"] / 200)
     allg["low"] = allg["close"] * (1 - allg["amp"] / 200)

@@ -64,14 +64,14 @@ def test_composite_equal_weight_cumprod(env):
     # 801010: 0104 等权收益=(10%+0%)/2=5% → close=1000; 0105=(10%-10%)/2=0% → close=1000
     r = conn.execute("SELECT date, close, pct_chg, amount, n FROM sw_index_comp "
                      "WHERE index_code='801010.SI' ORDER BY date").fetchall()
-    assert abs(r[0][2] - 5.0) < 1e-6 and abs(r[0][1] - 1000) < 1e-6
-    assert abs(r[1][2] - 0.0) < 1e-6 and abs(r[1][1] - 1000) < 1e-6
+    assert abs(r[0][2] - 5.0) < 1e-6 and abs(r[0][1] - 1050) < 1e-6   # 1000*1.05 不吸收
+    assert abs(r[1][2] - 0.0) < 1e-6 and abs(r[1][1] - 1050) < 1e-6
     assert r[0][3] == 2e6 and r[0][4] == 2
     # 801120: 归一基点1000(首日收益入基, 百分位不受影响); 次日0% → 1000
     r = conn.execute("SELECT close, pct_chg FROM sw_index_comp WHERE index_code='801120.SI' "
                      "ORDER BY date").fetchall()
-    assert abs(r[0][0] - 1000) < 1e-6 and abs(r[0][1] - 20.0) < 1e-6
-    assert abs(r[1][0] - 1000) < 1e-6 and abs(r[1][1] - 0.0) < 1e-6
+    assert abs(r[0][0] - 1200) < 1e-6 and abs(r[0][1] - 20.0) < 1e-6  # 不吸收首日
+    assert abs(r[1][0] - 1200) < 1e-6 and abs(r[1][1] - 0.0) < 1e-6
     # 无归属股不产生指数
     n = conn.execute("SELECT COUNT(*) FROM sw_index_comp WHERE index_code='999999'").fetchone()[0]
     assert n == 0
@@ -79,20 +79,28 @@ def test_composite_equal_weight_cumprod(env):
 
 
 def test_composite_incremental_carry(env):
-    """D1-9r: 增量重建承接前收盘 — 跨块不重基(修复2026全年假崩盘根因)"""
-    SIC.build("20050101")                       # 全量: 801120 两日 close 均 1000(基点)
-    # 追加第三日数据后做"增量"重建(仅新段)
+    """D1-9r-review: 真carry路径 — 跨年块重建承接前收盘且不吸收首日收益
+    (旧测试因年粒度过滤走fresh分支而空转)"""
     import raw_daily as RD
+    # 跨年数据: 2005两日 + 2006首日
     raw = sqlite3.connect(str(RD.RAW_DB))
-    raw.execute("INSERT INTO daily VALUES('000003.SZ','20050106',12,13.2,13.2,13,2e6)")  # +10%
+    raw.execute("INSERT INTO daily VALUES('000003.SZ','20060102',13.2,14.52,14.52,13.2,2e6)")  # +10%
     raw.commit(); raw.close()
-    SIC.build("20050106")                       # 仅1日块
+    SIC.build("20050101")                       # 全量(仅2005有数据): 801120 0104+20%,0105 0%
     conn = sqlite3.connect(str(env))
-    rows = conn.execute("SELECT date, close FROM sw_index_comp WHERE index_code='801120.SI' "
-                        "ORDER BY date").fetchall()
+    c05 = conn.execute("SELECT close FROM sw_index_comp WHERE index_code='801120.SI' "
+                       "AND date='2005-01-05'").fetchone()[0]
     conn.close()
-    # 承接: 0105 close=1000 → 0106 = 1000*1.10=1100 (而非重基1000后1100×carry链断裂)
-    assert abs(rows[-1][1] - 1100.0) < 1e-6, rows
+    # 全量基点1000且不吸收首日: 0104=1000*1.2=1200, 0105=1200
+    assert abs(c05 - 1200.0) < 1e-6, c05
+    # 2006增量块(年过滤只含2006) → carry=1200, 首日收益保留: 1200*1.10=1320
+    SIC.build("20060102")
+    conn = sqlite3.connect(str(env))
+    r = conn.execute("SELECT date, close, pct_chg FROM sw_index_comp "
+                     "WHERE index_code='801120.SI' ORDER BY date").fetchall()
+    conn.close()
+    assert abs(r[-1][1] - 1320.0) < 1e-6, r[-1]       # 承接+首日收益(非1200也非重基1000系)
+    assert abs(r[-1][2] - 10.0) < 1e-6                # pct_chg列与close隐含一致
 
 
 def test_composite_idempotent(env):
