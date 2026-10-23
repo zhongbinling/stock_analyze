@@ -78,6 +78,23 @@ def test_composite_equal_weight_cumprod(env):
     conn.close()
 
 
+def test_composite_incremental_carry(env):
+    """D1-9r: 增量重建承接前收盘 — 跨块不重基(修复2026全年假崩盘根因)"""
+    SIC.build("20050101")                       # 全量: 801120 两日 close 均 1000(基点)
+    # 追加第三日数据后做"增量"重建(仅新段)
+    import raw_daily as RD
+    raw = sqlite3.connect(str(RD.RAW_DB))
+    raw.execute("INSERT INTO daily VALUES('000003.SZ','20050106',12,13.2,13.2,13,2e6)")  # +10%
+    raw.commit(); raw.close()
+    SIC.build("20050106")                       # 仅1日块
+    conn = sqlite3.connect(str(env))
+    rows = conn.execute("SELECT date, close FROM sw_index_comp WHERE index_code='801120.SI' "
+                        "ORDER BY date").fetchall()
+    conn.close()
+    # 承接: 0105 close=1000 → 0106 = 1000*1.10=1100 (而非重基1000后1100×carry链断裂)
+    assert abs(rows[-1][1] - 1100.0) < 1e-6, rows
+
+
 def test_composite_idempotent(env):
     SIC.build("20050101")
     SIC.build("20050101")

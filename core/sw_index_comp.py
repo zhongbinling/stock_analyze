@@ -70,6 +70,21 @@ def build(start="20050101") -> bool:
     allg["factor"] = (1 + allg["ret"] / 100)
     allg["close"] = (allg.groupby("index_code")["factor"].cumprod()
                      * 1000 / allg.groupby("index_code")["factor"].transform("first"))
+    # D1-9r: 增量重建承接 — 若表中已有本块首日之前的收盘, 整块按前收盘续算,
+    # 否则跨年增量会把当年重基到1000(假崩盘-97%污染全年pos/bias分位)
+    first_day = allg["trade_date"].min()
+    carry = {}
+    for ic in allg["index_code"].unique():
+        r = sent.execute(
+            "SELECT close FROM sw_index_comp WHERE index_code=? AND date<? "
+            "ORDER BY date DESC LIMIT 1",
+            (ic, f"{first_day[:4]}-{first_day[4:6]}-{first_day[6:8]}")).fetchone()
+        if r and r[0]:
+            carry[ic] = r[0]
+    if carry:
+        print(f"  承接前收盘: {len(carry)} 指数 (块首 {first_day})")
+        allg["carry"] = allg["index_code"].map(carry).fillna(1000.0)
+        allg["close"] = allg["close"] * allg["carry"] / 1000.0
     allg["pct_chg"] = allg["ret"]
     allg["high"] = allg["close"] * (1 + allg["amp"] / 200)
     allg["low"] = allg["close"] * (1 - allg["amp"] / 200)
