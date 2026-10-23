@@ -31,6 +31,11 @@ def build_asset_db(path: Path):
     conn = sqlite3.connect(str(path))
     conn.executescript("""
       CREATE TABLE index_daily(code TEXT, date TEXT, close REAL, PRIMARY KEY(code, date));
+      CREATE TABLE sw_daily(index_code TEXT, date TEXT, x REAL);
+      CREATE TABLE sw_index_comp(index_code TEXT, date TEXT, x REAL);
+      CREATE TABLE sw_breadth(index_code TEXT, date TEXT, x REAL);
+      CREATE TABLE sw_pool(index_code TEXT, date TEXT, x REAL);
+      CREATE TABLE sw_fflow(index_code TEXT, date TEXT, x REAL);
       CREATE TABLE mood_raw(date TEXT PRIMARY KEY, zt_count INTEGER, up_count INTEGER);
       CREATE TABLE sector_daily(code TEXT, date TEXT, close REAL, PRIMARY KEY(code, date));
       CREATE TABLE sector_pool_stat(date TEXT, code TEXT, zt_count INTEGER);
@@ -47,6 +52,8 @@ def build_asset_db(path: Path):
                      (d.replace("-", ""),))
         if d not in GAPS_INDEX:
             conn.execute("INSERT INTO index_daily VALUES('1.000001',?,3000)", (d,))
+        conn.execute("INSERT INTO sw_breadth VALUES('801010.SI',?,10)", (d,))
+        conn.execute("INSERT INTO sw_pool VALUES('801010.SI',?,1)", (d,))
         conn.execute("INSERT INTO mood_raw VALUES(?,55,2300)", (d,))
         if d not in GAPS_SECTOR:
             for c in ("BK0001", "BK0002"):
@@ -83,8 +90,36 @@ def _by_code(ds, code):
 def test_registry_entries_present(assets):
     codes = [d["code"] for d in assets["market"].datasets()]
     for c in ("index", "pool", "breadth", "sector_daily", "sector_pool",
-              "sector_fflow", "margin", "calendar", "sectors", "sw1", "sw2"):
+              "sector_fflow", "margin", "calendar", "sectors", "sw1", "sw2",
+              "sw_daily", "sw_sic", "sw_breadth", "sw_pool", "sw_fflow"):  # D1-10 S1
         assert c in codes, f"缺资产 {c}"
+
+
+def test_sw_assets_have_completeness_2013_baseline(assets):
+    """D1-10 S1+S2: SW表有完成度; 夹具2016起(>2013基准)分母=全区间"""
+    by = {d["code"]: d for d in assets["market"].datasets()}
+    for c in ("sw_breadth", "sw_pool"):
+        assert by[c]["completeness"] == 100, (c, by[c])
+        assert by[c]["first"] == "2026-08-03"   # 夹具起点
+
+
+def test_raw_tables_normalized_when_present(assets, tmp_path, monkeypatch):
+    """raw_daily.db存在时两表并入且YMD→ISO归一; 不存在时静默跳过"""
+    import shutil
+    import server.market as M
+    core = tmp_path / "core"
+    (core / "data").mkdir(parents=True)
+    shutil.copy(Path(__file__).parent.parent / "core" / "config.yaml", core / "config.yaml")
+    rc = sqlite3.connect(str(core / "data" / "raw_daily.db"))
+    rc.execute("CREATE TABLE daily(ts_code TEXT, trade_date TEXT, close REAL)")
+    rc.execute("INSERT INTO daily VALUES('000001.SZ','20260901',10)")
+    rc.execute("CREATE TABLE moneyflow(ts_code TEXT, trade_date TEXT, x REAL)")
+    rc.execute("INSERT INTO moneyflow VALUES('000001.SZ','20260901',1)")
+    rc.commit(); rc.close()
+    monkeypatch.setattr(M, "CORE", core)
+    ds = M.datasets()
+    rd = next(d for d in ds if d["code"] == "raw_daily")
+    assert rd["first"] == "2026-09-01" and rd["db"] == "raw_daily.db"
 
 
 def test_completeness_and_missing_index(assets):

@@ -46,6 +46,12 @@ def build_fixture_db(path: Path):
       low REAL, close REAL, amount REAL, PRIMARY KEY(code, date))""")
     for d in dates40:
         conn.execute("INSERT INTO index_daily VALUES('1.000001',?,3000,3010,2990,3005,3e11)", (d,))
+    # D1-10 S1: SW底座表(资产注册覆盖)
+    for t in ("sw_daily", "sw_index_comp", "sw_breadth", "sw_pool", "sw_fflow"):
+        conn.execute(f"CREATE TABLE {t}(index_code TEXT, date TEXT, x REAL)")
+    for d in dates30:
+        conn.execute("INSERT INTO sw_breadth VALUES('801010.SI',?,10)", (d,))
+        conn.execute("INSERT INTO sw_pool VALUES('801010.SI',?,1)", (d,))
 
     boards = {  # code: (name, 起始分, 每日步长) — BK0001 升温, BK0002 修复, BK0003 含 NULL
         "BK0001": ("半导体", 20, 1.4),
