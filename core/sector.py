@@ -85,22 +85,26 @@ def load_frames(conn):
 ZT_SHRINK_K = 15          # D1-9r4: 涨停小样本收缩系数(w=n/(n+K))
 
 
-def _shrink_zt(df, mkt_zt_series, mkt_total_series):
-    """D1-9r4: 涨停计数向市场期望按成分数收缩 — 细分行业(n~35)零星涨停的
-    分位噪声消除; 大篮子(SW1 n~1000+)w≈1不受影响。zt_share由calc_one从
-    收缩后的zt_count重算, 自动同步。返回是否应用。"""
+def _shrink_zt(df, mkt_zt_series, mkt_dt_series, mkt_total_series):
+    """D1-9r4: 涨/跌停计数向各自市场期望按成分数收缩 — 细分行业(n~35)
+    零星计数的分位噪声消除; 大篮子(SW1 n~1000+)w≈1不受影响。
+    zt_share由calc_one从收缩后zt_count重算自动同步。
+    D1-9r4-review: zt与dt分别向各自市场率收缩(原共用zt期望, dt被拉向
+    3倍于正确期望)。返回是否应用。"""
     if "n" not in df.columns or df["n"].isna().all():
         return False
-    rate = (mkt_zt_series / mkt_total_series).reindex(df["date"]).values
     n = df["n"].values
     w = n / (n + ZT_SHRINK_K)
-    exp = n * rate
-    for col in ("zt_count", "dt_count"):
-        if col in df.columns:
-            v = df[col].values.copy()
-            m = ~(np.isnan(v) | np.isnan(exp) | np.isnan(w))
-            v[m] = w[m] * v[m] + (1 - w[m]) * exp[m]
-            df[col] = v
+    rates = {"zt_count": mkt_zt_series, "dt_count": mkt_dt_series}
+    for col, series in rates.items():
+        if col not in df.columns or series is None:
+            continue
+        rate = (series / mkt_total_series).reindex(df["date"]).values
+        exp = n * rate
+        v = df[col].values.copy()
+        m = ~(np.isnan(v) | np.isnan(exp) | np.isnan(w))
+        v[m] = w[m] * v[m] + (1 - w[m]) * exp[m]
+        df[col] = v
     return True
 
 
@@ -126,6 +130,11 @@ def _calc_sw_temperature(conn, table="sector_scores"):
         return
     mkt = pd.read_sql("SELECT date, zt_count FROM mood_raw WHERE zt_count IS NOT NULL",
                       conn, parse_dates=False).set_index("date")["zt_count"]
+    try:
+        mkt_dt = pd.read_sql("SELECT date, dt_count FROM mood_raw WHERE dt_count IS NOT NULL",
+                             conn, parse_dates=False).set_index("date")["dt_count"]
+    except Exception:  # noqa: BLE001
+        mkt_dt = None
     try:
         mkt_total = pd.read_sql(
             "SELECT date, SUM(total) AS tot FROM sw_breadth WHERE level='L1' "
@@ -157,7 +166,7 @@ def _calc_sw_temperature(conn, table="sector_scores"):
             df["code"] = ic
             df["mkt"] = df["date"].map(mkt)
             try:
-                _shrink_zt(df, mkt, mkt_total)       # D1-9r4: zt小样本收缩
+                _shrink_zt(df, mkt, mkt_dt, mkt_total)  # D1-9r4: zt/dt小样本收缩
             except Exception:  # noqa: BLE001
                 pass
             res = calc_one(df, None, df["mkt"], weights, window)
