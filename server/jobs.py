@@ -289,43 +289,15 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
         if not miss_tables:
             append(f"[{utcnow_str()}] [1/1] 无缺口, 完成")
             return 0
-        # 按日修复: 对每个缺失日跑幂等链(步进度 [k/N])
-        need_index = any(a["code"] == "index" for a in miss_tables)
-        need_pool = any(a["code"] in ("pool", "sector_pool") for a in miss_tables)
-        need_sw = any(a["code"].startswith("sw_") or a["code"].startswith("raw_")
-                      or a["code"] in ("breadth", "sector_fflow", "margin")
-                      for a in miss_tables)
-        steps = []
-        if need_index:
-            steps.append("index")
-        if need_pool:
-            steps.append("pool")
-        if need_sw:
-            steps.append("sw")
-        for k, st in enumerate(steps, 1):
-            append(f"[{k}/{len(steps)}] 修复 {st} 段")
-            if st == "index":
-                rc = _run([sys.executable, "-u", "fetch_daily.py", "--no-sectors",
-                           "--no-breadth"], append)
-                if rc:
-                    return rc
-            elif st == "pool":
-                rc = _run([sys.executable, "-u", "fetch_daily.py",
-                           "--no-sectors"], append)
-                if rc:
-                    return rc
-            else:
-                rc = _run([sys.executable, "-u", "fetch_daily.py",
-                           "--no-sectors"], append)
-                if rc:
-                    return rc
-                from server import market as _m
-                _m  # noqa: F401 — fetch链内含fetch_sw_daily
-        # 池/板块段后重算评分(数据变了评分须跟上)
-        rc = _run([sys.executable, "-u", "score.py"], append)
+        # D1-10r-review: fetch链各源本就按日幂等跳过已有 — 单趟全链覆盖全部
+        # 缺口表(index/池/板块/SW/两融/日历), 修复后重算评分; [k/3]步进度
+        rc = _run([sys.executable, "-u", "fetch_daily.py"], append)   # [1/3] 全链补拉
         if rc:
             return rc
-        rc = _run([sys.executable, "-u", "sector.py", "calc"], append)
+        rc = _run([sys.executable, "-u", "score.py"], append)          # [2/3] 大盘评分
+        if rc:
+            return rc
+        rc = _run([sys.executable, "-u", "sector.py", "calc"], append) # [3/3] 板块温度
         if rc:
             return rc
         after = market.scan_gaps(window_days)

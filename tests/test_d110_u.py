@@ -90,13 +90,22 @@ def test_progress_parsed_from_log(server_app, monkeypatch):
     """U2a: _execute从日志[n/N]更新job.progress"""
     from server import jobs
     from server.models import Job
+    runs = []
+
     def fake_run(cmd, append, cwd=None, env_extra=None):
-        append("$ cmd")
-        append("[pools] 待抓取 10 天")
+        runs.append([str(c) for c in cmd])
+        append("$ " + " ".join(runs[-1]))
         append("  [5/10] 30s")
-        append("  [10/10] 60s")
         return 0
     monkeypatch.setattr(jobs, "_run", fake_run)
+    # task_repair单趟全链: scan(真实库有缺口)→fetch+score+sector各一次
+    fn = jobs.task_repair(7)
+    with server_app["app"].app_context():
+        rc = fn(lambda s: None)
+    assert rc == 0
+    fetch_n = sum(1 for r in runs if "fetch_daily.py" in " ".join(r))
+    score_n = sum(1 for r in runs if "score.py" in " ".join(r))
+    assert fetch_n == 1 and score_n == 1        # 单趟(旧版重复跑2-3次)
     with server_app["app"].app_context():
         def fn2(append):
             append("[3/10] x")
