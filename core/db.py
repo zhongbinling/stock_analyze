@@ -164,6 +164,74 @@ def atomic_swap(conn, table, min_keep=0.95, idx_cols=("date",)):
     print(f"[swap] {table}: {n_old} → {n_new} 行 (原子切换, 索引已重建)")
 
 
+# ---------------- D1-11 F2: 基础数据写入守卫(批次校验+事务零污染) ----------------
+
+def _d8(d) -> str:
+    """ISO/YYYYMMDD → YYYYMMDD(日期比对口径)"""
+    return str(d).replace("-", "")[:8]
+
+
+def guarded_day_write(conn, sql, rows, day, *, table, date_col="trade_date",
+                      date_idx=1, pk_idx=0) -> int:
+    """逐日批次守卫写入(raw库 daily/moneyflow): 校验→单事务→行数核对→commit。
+
+    校验: 批次非空 / 日期列全等于目标日 / 批内主键无重复且非空;
+    写后: 该日行数 ≥ 批次主键数, 不符即 rollback 抛 RuntimeError(主表零污染)。
+    网络异常日由调用方既有 try/except 吞掉计数; 守卫拒绝同样按"该日失败"处理,
+    连续异常会触发调用方的中断阈值 → 坏数据不会静默入库。
+    """
+    if not rows:
+        raise RuntimeError(f"[guard] {table} {day}: 空批次(拒绝写入)")
+    d8 = _d8(day)
+    bad_date = [r[date_idx] for r in rows if _d8(r[date_idx]) != d8]
+    if bad_date:
+        raise RuntimeError(
+            f"[guard] {table} {day}: 日期列混入他日 {bad_date[:3]}(拒绝写入)")
+    n_pk = len({r[pk_idx] for r in rows})
+    if any(r[pk_idx] in (None, "") for r in rows):
+        raise RuntimeError(f"[guard] {table} {day}: 主键存在空值(拒绝写入)")
+    if n_pk != len(rows):
+        raise RuntimeError(
+            f"[guard] {table} {day}: 批内主键重复 {len(rows) - n_pk} 行(拒绝写入)")
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN")
+        cur.executemany(sql, rows)
+        n_after = cur.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE {date_col}=?",
+            (str(rows[0][date_idx]),)).fetchone()[0]
+        if n_after < n_pk:
+            raise RuntimeError(
+                f"[guard] {table} {day}: 写后行数 {n_after} < 批次 {n_pk}(回滚)")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return len(rows)
+
+
+def guarded_batch(conn, sql, rows, *, label, check=None) -> int:
+    """通用批次守卫(calendar 等): check(rows)->拒写原因(None=通过) + 单事务写入。
+
+    空批次直接拒; check 抛出原因或事务失败均 rollback, 主表零污染。
+    """
+    if not rows:
+        raise RuntimeError(f"[guard] {label}: 空批次(拒绝写入)")
+    if check is not None:
+        why = check(rows)
+        if why:
+            raise RuntimeError(f"[guard] {label}: {why}(拒绝写入)")
+    cur = conn.cursor()
+    try:
+        cur.execute("BEGIN")
+        cur.executemany(sql, rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return len(rows)
+
+
 def get_mood_dates(conn) -> set:
     rows = conn.execute("SELECT date FROM mood_raw WHERE zt_count IS NOT NULL").fetchall()
     return {r[0] for r in rows}

@@ -104,10 +104,13 @@ def backfill(start="20050101") -> bool:
             df = T.call("daily", _DAILY_FIELDS, trade_date=d)
             err_streak = 0
             if df is not None and not df.empty:
-                conn.executemany(
+                # D1-11 F2: 守卫写入 — 空批/错日期/重复主键拒写, 单事务零污染
+                from db import guarded_day_write
+                guarded_day_write(
+                    conn,
                     "INSERT OR REPLACE INTO daily VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    [tuple(r) for r in df.itertuples(index=False)])
-                conn.commit()
+                    [tuple(r) for r in df.itertuples(index=False)],
+                    d, table="daily")
                 ok_day = True
             elif df is not None:
                 ok_day = True                      # 空数据(非交易日/未出数)不算失败

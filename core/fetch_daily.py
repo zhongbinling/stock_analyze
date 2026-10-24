@@ -254,7 +254,9 @@ def fetch_sectors():
 def fetch_calendar():
     """同步交易日历(tushare, 可选): 过去2年+未来6个月 → calendar 表
 
-    返回 True/False 供补全入口感知成败(主链每日调用忽略返回值, 行为不变)。
+    D1-11 F2: 守卫批次写入 — 日期格式/is_open值域/批内重复/行数下限校验,
+    不合格整批拒写(旧日历不动)。返回 True/False 供补全入口感知成败
+    (主链每日调用忽略返回值, 行为不变)。
     """
     try:
         import tushare_api
@@ -265,18 +267,32 @@ def fetch_calendar():
         end = (date.today().replace(year=date.today().year + 1)).strftime("%Y1231")
         df = tushare_api.trade_cal(start, end)
         conn = connect()
-        for _, r in df.iterrows():
-            conn.execute(
-                "INSERT INTO calendar(cal_date,is_open,pretrade_date) VALUES(?,?,?) "
-                "ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,"
-                "pretrade_date=excluded.pretrade_date",
-                (r["cal_date"], int(r["is_open"]), r["pretrade_date"]))
-        conn.commit()
+
+        def _check(rows):
+            ds = [r[0] for r in rows]
+            if any((not str(d).isdigit()) or len(str(d)) != 8 for d in ds):
+                return f"日期格式异常(需YYYYMMDD): {ds[:3]}"
+            if any(r[1] not in (0, 1) for r in rows):
+                return "is_open 超出 {0,1}"
+            if len(set(ds)) != len(ds):
+                return f"批内日期重复 {len(ds) - len(set(ds))} 行"
+            if len(rows) < 400:                    # 3年自然日≈1095, 半截数据拒收
+                return f"行数 {len(rows)} < 下限400(疑似半截响应)"
+
+        from db import guarded_batch
+        rows = [(r["cal_date"], int(r["is_open"]), r["pretrade_date"])
+                for _, r in df.iterrows()]
+        guarded_batch(
+            conn,
+            "INSERT INTO calendar(cal_date,is_open,pretrade_date) VALUES(?,?,?) "
+            "ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,"
+            "pretrade_date=excluded.pretrade_date",
+            rows, label="calendar", check=_check)
         n_open = conn.execute("SELECT COUNT(*) FROM calendar WHERE is_open=1").fetchone()[0]
         print(f"[calendar] tushare 交易日历: {len(df)} 天({df['cal_date'].min()}~{df['cal_date'].max()}), 交易日{n_open}")
         return True
     except Exception as e:  # noqa: BLE001
-        print(f"[calendar] 失败(不影响主流程): {type(e).__name__}: {e}")
+        print(f"[calendar] 失败(不影响主流程, 旧日历保留): {type(e).__name__}: {e}")
         return False
 
 

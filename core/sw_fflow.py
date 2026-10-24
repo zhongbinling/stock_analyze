@@ -62,10 +62,13 @@ def backfill(start="20070101") -> bool:
             df = T.call("moneyflow", _FIELDS, trade_date=d)
             err_streak = 0
             if df is not None and not df.empty:
-                raw.executemany(
+                # D1-11 F2: 守卫写入 — 空批/错日期/重复主键拒写, 单事务零污染
+                from db import guarded_day_write
+                guarded_day_write(
+                    raw,
                     "INSERT OR REPLACE INTO moneyflow VALUES(?,?,?,?,?,?)",
-                    [tuple(r) for r in df.itertuples(index=False)])
-                raw.commit()
+                    [tuple(r) for r in df.itertuples(index=False)],
+                    d, table="moneyflow")
                 ok_day = True
             elif df is not None:
                 ok_day = True                      # 更早无数据
