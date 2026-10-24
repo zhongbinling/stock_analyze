@@ -171,6 +171,11 @@ def _d8(d) -> str:
     return str(d).replace("-", "")[:8]
 
 
+def _is_bad_pk(v) -> bool:
+    """主键空值判定: None/空串/NaN(pandas缺失, v!=v; sqlite会把nan存成NULL主键)"""
+    return v is None or v == "" or v != v
+
+
 def guarded_day_write(conn, sql, rows, day, *, table, date_col="trade_date",
                       date_idx=1, pk_idx=0) -> int:
     """逐日批次守卫写入(raw库 daily/moneyflow): 校验→单事务→行数核对→commit。
@@ -188,8 +193,9 @@ def guarded_day_write(conn, sql, rows, day, *, table, date_col="trade_date",
         raise RuntimeError(
             f"[guard] {table} {day}: 日期列混入他日 {bad_date[:3]}(拒绝写入)")
     n_pk = len({r[pk_idx] for r in rows})
-    if any(r[pk_idx] in (None, "") for r in rows):
-        raise RuntimeError(f"[guard] {table} {day}: 主键存在空值(拒绝写入)")
+    # 空值判定含 NaN: pandas缺失(float'nan') != 自身, 且sqlite会把nan存成NULL主键行
+    if any(_is_bad_pk(r[pk_idx]) for r in rows):
+        raise RuntimeError(f"[guard] {table} {day}: 主键存在空值/NaN(拒绝写入)")
     if n_pk != len(rows):
         raise RuntimeError(
             f"[guard] {table} {day}: 批内主键重复 {len(rows) - n_pk} 行(拒绝写入)")

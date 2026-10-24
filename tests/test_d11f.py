@@ -49,9 +49,16 @@ def test_guarded_day_write_idempotent_rerun(tconn):
     ([("000001.SZ", "20251231", 1.0)], "他日"),
     ([("000001.SZ", "20260101", 1.0), ("000001.SZ", "20260101", 2.0)], "重复"),
     ([(None, "20260101", 1.0)], "空值"),
-], ids=["empty", "wrong-date", "dup-pk", "null-pk"])
+    ([("000002.SZ", "20260101", float("nan"))], ""),   # nan值列合法, 主键正常 → 应通过
+    ([("000002.SZ", "20260101", 1.0), (float("nan"), "20260101", 2.0)], "空值/NaN"),
+], ids=["empty", "wrong-date", "dup-pk", "null-pk", "nan-value-ok", "nan-pk"])
 def test_guarded_day_write_rejects_and_keeps_table_clean(tconn, rows, frag):
     before = tconn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
+    if not frag:                                  # nan值列(非主键)属合法缺失, 应回归通过
+        DB.guarded_day_write(tconn, "INSERT OR REPLACE INTO daily VALUES(?,?,?)",
+                             rows, "2026-01-01", table="daily")
+        assert tconn.execute("SELECT COUNT(*) FROM daily").fetchone()[0] == before + 1
+        return
     with pytest.raises(RuntimeError, match=frag):
         DB.guarded_day_write(tconn, "INSERT OR REPLACE INTO daily VALUES(?,?,?)",
                              rows, "2026-01-01", table="daily")
