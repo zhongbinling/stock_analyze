@@ -40,7 +40,7 @@
     <div id="chkSummary"></div>
     <table class="table" id="chkTable"></table>
   </div>
-  <p class="hint">完成度以交易日历为口径(2013基准线); 缺口悬停可见缺失日期; 不完整的数据集行内即可补全; 「一键体检」按窗口扫描并逐表修复。</p>
+  <p class="hint">完成度以交易日历为口径(2013基准线); 缺口悬停可见缺失日期; 可补全数据集行内[补全], 链路数据集行内[修复](走更新链); 「一键体检」按窗口扫描并逐表修复。</p>
   <table class="table" id="dsTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
 </section>
 
@@ -179,12 +179,17 @@ async function loadDatasets() {
     }
     for (const t of d.datasets) {
       if (used.has(t.code)) continue;                 // 已在上方补全行
+      // D1-11r: 链路数据集也要可操作 — 行内[修复]走更新链(抓取+评分+温度)
+      const fix = `<button class="btn small" data-fixrun="1" ${busy ? 'disabled' : ''}`
+        + ` title="走更新链(抓取+评分+温度)修复缺失日">修复</button>`;
       rows.push(`<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
         <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
-        <td class="hint">—</td><td class="hint" title="由更新/修复链维护">链路</td></tr>`);
+        <td class="hint">—</td><td>${fix}</td></tr>`);
     }
     $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>最新</th><th>完成度</th><th>缺口</th><th>上次补全</th><th>操作</th></tr>' + rows.join('');
     document.querySelectorAll('#dsTable [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
+    document.querySelectorAll('#dsTable [data-fixrun]').forEach(b =>
+      b.onclick = () => runRepair(parseInt($('chkWin').value)));
     // D2-2: 评分数据状态
     $('scoreTable').innerHTML = '<tr><th>评分类型</th><th>来源</th><th>行数</th><th>板块数</th><th>覆盖交易日</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
       (d.scores || []).map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
@@ -502,6 +507,7 @@ const BF_ROWS = [
   { ds: 'sw_fflow', label: 'SW主力资金流(2007起)', asset: 'sw_fflow' },
   { ds: 'sw_daily', label: 'SW行业指数日线(官方)', asset: 'sw_daily' },
   { ds: 'zt_ts', label: '涨停结构·tushare(2020起)', asset: 'pool' },
+  { ds: 'zt_ts', label: '板块涨停聚合·THS行业(2020起)', asset: 'sector_pool' },
   { ds: 'zt_est', label: '涨停家数·估算(2012-2019)', asset: null },
   { ds: 'breadth', label: '涨跌家数·tushare(2018起)', asset: 'breadth' },
   { ds: 'sector_history', label: '板块日线·历史回补(东财)', asset: 'sector_daily' },

@@ -192,8 +192,9 @@ def test_data_html_unified_assets_and_checkup():
     assert 'id="chkWin"' in html and 'id="btnCheck"' in html and 'id="chkPanel"' in html
     assert "SCAN_DS" in html and "data-fix=" in html and "btnFixAll" in html
     assert "runRepair" in html and "/admin/api/scan" in html
-    # E1 统一资产表: 上次补全列 + 补全按钮在资产表内
+    # E1 统一资产表: 上次补全列 + 补全按钮在资产表内 + 链路行也有[修复]可操作
     assert "上次补全" in html and "data-bf=" in html and "链路" in html
+    assert "data-fixrun" in html and "板块涨停聚合·THS行业" in html  # sector_pool→zt_ts定向补全
     # 旧分散元素/函数已移除(bfAssets表/扫描缺口块/旧缺口窗口)
     for gone in ('id="bfAssets"', 'id="gapWin"', 'id="btnScan"', 'id="btnRepair"',
                  'id="scanMsg"', 'id="gapTable"', "loadBfAssets", "gapResult"):
