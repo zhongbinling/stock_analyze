@@ -375,11 +375,23 @@ def _sweep_stale_parts(max_age_s: float = 3600.0):
 
 
 def run_all(btype: str = "manual", retention: dict | None = None,
-            compress: bool = True) -> dict:
-    """编程接口(B1): 全资产快照+清理, 返回结构化结果供服务落 backup_runs"""
+            compress: bool = True, assets: list | None = None) -> dict:
+    """编程接口(B1): 全资产(或assets子集)快照+清理, 返回结构化结果供服务落 backup_runs
+
+    D1-11 C3: assets 子集保持 ASSETS 顺序; 未知名 → 结果带error不落任何备份。
+    """
     t0 = time.time()
     files, err = [], None
     btype = _norm_type(btype)
+    sel = list(ASSETS)
+    if assets:
+        unknown = [a for a in assets if a not in ASSETS]
+        if unknown:
+            _log(f"✗ [{btype}] 未知资产: {','.join(unknown)}")
+            return {"btype": btype, "status": "fail", "files": [], "files_n": 0,
+                    "total_mb": 0.0, "duration_s": round(time.time() - t0, 1),
+                    "error": f"未知资产: {','.join(unknown)}"}
+        sel = [a for a in ASSETS if a in set(assets)]
     base = f"{btype}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     try:
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -393,7 +405,7 @@ def run_all(btype: str = "manual", retention: dict | None = None,
             except FileExistsError:
                 n += 1
                 run_folder = f"{base}_{n}"
-        for a in ASSETS:
+        for a in sel:
             e = snapshot(a, btype, compress=compress, folder=run_folder)
             if e:
                 files.append({"file": e["file"], "asset": a, "size": e["size"]})

@@ -40,9 +40,18 @@
 
 <section class="card">
   <h2>操作记录</h2>
-  <p class="hint">备份任务的执行历史(BackupRun); 日备/周备/手动/恢复前保护快照的运行结果。恢复入口将在下一版本接入本页。</p>
+  <p class="hint">备份任务的执行历史(BackupRun); 日备/周备/手动/恢复前保护快照的运行结果。</p>
   <table class="table" id="bkHistory"><tbody><tr><td>加载中…</td></tr></tbody></table>
 </section>
+
+<div id="modalMask" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;align-items:center;justify-content:center">
+  <div style="background:var(--surface,#fff);color:var(--ink,#222);border-radius:8px;max-width:580px;width:92%;padding:16px 20px;max-height:82vh;overflow:auto;box-shadow:0 8px 30px rgba(0,0,0,.3)">
+    <h3 id="modalTitle" style="margin:0 0 10px"></h3>
+    <div id="modalBody"></div>
+    <p id="modalProg" class="hint" style="display:none"></p>
+    <div class="row-flex" style="margin-top:12px;justify-content:flex-end" id="modalFoot"></div>
+  </div>
+</div>
 
 <script>
 const CSRF = document.querySelector('meta[name="csrf-token"]').content;
@@ -88,22 +97,36 @@ function render() {
       <td>${esc(r.time)}</td><td><span class="tag">${esc(r.type_label)}</span></td>
       <td>${r.files_n} 份</td><td>${r.total_mb} MB</td><td class="hint">${esc(r.fresh)}</td>
       <td>${vc}</td>
-      <td><button class="btn small" data-vfolder="${esc(r.folder)}">校验此组</button></td></tr>`);
+      <td><button class="btn small" data-vfolder="${esc(r.folder)}">校验此组</button>
+          <button class="btn small" data-rgroup="${esc(r.folder)}">恢复此组</button></td></tr>`);
     for (const m of mems) {
       rows.push(`<tr class="mem" data-folder="${esc(r.folder)}" ${r.files_n > 1 ? 'style="display:none"' : ''}>
         <td class="hint">└ ${esc(m.asset)}</td><td class="hint">${esc(m.block)}</td>
         <td class="hint">${m.size_mb} MB</td><td class="hint">${esc(m.fresh)}</td>
-        <td>${memState(m)}</td><td class="hint" style="font-size:.85em">${esc(m.file)}</td><td></td></tr>`);
+        <td>${memState(m)}</td><td class="hint" style="font-size:.85em">${esc(m.file)}</td>
+        <td>${m.exists ? `<button class="btn small" data-restore="${esc(m.file)}">恢复</button>` : ''}</td></tr>`);
     }
   }
   $('bkRuns').innerHTML = '<tr><th>时间</th><th>类型</th><th>份数/资产</th><th>大小</th><th>新鲜度</th><th>校验状态</th><th>操作</th></tr>'
     + (rows.length ? rows.join('') : '<tr><td colspan="7" class="hint">无匹配备份</td></tr>');
   $('fCount').textContent = `${shown} 份`;
   document.querySelectorAll('#bkRuns .grp').forEach(tr =>
-    tr.onclick = () => document.querySelectorAll(`#bkRuns .mem[data-folder="${CSS.escape(tr.dataset.folder)}"]`)
+    tr.onclick = () => document.querySelectorAll(`#bkRuns .mem[data-folder="${tr.dataset.folder}"]`)
       .forEach(x => x.style.display = x.style.display === 'none' ? '' : 'none'));
   document.querySelectorAll('#bkRuns [data-vfolder]').forEach(b =>
     b.onclick = ev => { ev.stopPropagation(); enqueueVerify(b.dataset.vfolder); });
+  document.querySelectorAll('#bkRuns [data-rgroup]').forEach(b =>
+    b.onclick = ev => {
+      ev.stopPropagation();
+      const run = RUNS.find(r => r.folder === b.dataset.rgroup);
+      if (run) restoreGroup(run);
+    });
+  document.querySelectorAll('#bkRuns [data-restore]').forEach(b =>
+    b.onclick = () => {
+      const m = RUNS.flatMap(r => r.members).find(x => x.file === b.dataset.restore);
+      const run = RUNS.find(r => r.members.includes(m));
+      if (m && run) restoreOne(run, m);
+    });
 }
 
 async function loadManifest() {
@@ -142,6 +165,128 @@ async function enqueueVerify(target) {
   } catch (e) { $('verifyMsg').textContent = e.message; }
 }
 $('btnVerifyAll').onclick = () => enqueueVerify('');
+
+/* ── D1-11 C4: 恢复弹窗 ── */
+const RESTORE_INFO = {
+  sentiment: {online: true, note: '恢复整库: 源表+评分一起回到备份时点。'},
+  raw_daily: {online: true, note: '个股原始库(约2.5GB), 恢复需 2~5 分钟, 期间请勿关闭页面。'},
+  secret: {online: true, warn: '恢复登录密钥后所有会话失效(含当前登录), 需重新登录。'},
+  token: {online: true, note: '恢复 tushare 令牌, 即时生效。'},
+  cfg_core: {online: true, note: '恢复 core/config.yaml, 即时生效。'},
+  cfg_server: {online: true, note: '恢复服务配置(端口等), 下次启动生效。'},
+  app: {online: false}
+};
+let MODAL_CMD = '';
+
+function closeModal() { $('modalMask').style.display = 'none'; }
+$('modalMask').onclick = e => { if (e.target === $('modalMask')) closeModal(); }
+
+function showModal(title, bodyHtml, footHtml) {
+  $('modalTitle').textContent = title;
+  $('modalBody').innerHTML = bodyHtml;
+  $('modalFoot').innerHTML = footHtml;
+  $('modalProg').style.display = 'none';
+  $('modalProg').textContent = '';
+  $('modalMask').style.display = 'flex';
+}
+
+function verifyCell(m) {
+  if (!m.exists) return '<span class="bad">✗ 文件缺失</span>';
+  if (!m.verify) return '<span class="hint">未校验(建议先校验再恢复)</span>';
+  return m.verify.ok
+    ? `<span class="ok">✓ 校验于 ${esc(m.verify.at)}</span>`
+    : `<span class="bad">✗ ${esc((m.verify.issues || ['异常']).join('; '))}</span>`;
+}
+
+function restoreOne(run, m) {
+  const info = RESTORE_INFO[m.asset] || {online: true, note: ''};
+  if (!info.online) {                       // app.db: 停服 CLI 指引
+    MODAL_CMD = `cd core && python backup.py restore "${m.file}" --yes`;
+    showModal(`恢复 ${m.asset}(需停服)`, `
+      <p class="bad">app.db 是服务自身数据库(账号/设置/任务历史), 运行中无法自我替换, 在线恢复不可用。</p>
+      <p>停服恢复三步:</p>
+      <ol>
+        <li>停止服务进程(关闭服务窗口/进程)</li>
+        <li>在仓库根目录打开命令行执行:
+          <pre style="user-select:all;cursor:pointer" id="cmdPre">${esc(MODAL_CMD)}</pre></li>
+        <li>恢复完成后重新启动服务</li>
+      </ol>
+      <p class="hint">命令行恢复同样会先校验备份并自动打 pre-restore 快照。</p>`,
+      `<button class="btn small" id="btnCopyCmd">复制命令</button>
+       <button class="btn" id="mCancel">关闭</button>`);
+    $('mCancel').onclick = closeModal;
+    $('btnCopyCmd').onclick = () => navigator.clipboard
+      .writeText(MODAL_CMD).then(() => { $('btnCopyCmd').textContent = '已复制 ✓'; });
+    $('cmdPre').onclick = () => navigator.clipboard
+      .writeText(MODAL_CMD).then(() => { $('btnCopyCmd').textContent = '已复制 ✓'; });
+    return;
+  }
+  const warn = info.warn ? `<p class="bad">⚠ ${esc(info.warn)}</p>` : '';
+  showModal(`恢复 ${m.asset}`, `
+    <table class="table">
+      <tr><th>备份文件</th><td>${esc(m.file)}</td></tr>
+      <tr><th>时间 / 类型</th><td>${esc(run.time)} · ${esc(run.type_label)}</td></tr>
+      <tr><th>数据块</th><td>${esc(m.block)} (${esc(m.asset)})</td></tr>
+      <tr><th>大小 / 新鲜度</th><td>${m.size_mb} MB · ${esc(m.fresh)}</td></tr>
+      <tr><th>校验状态</th><td>${verifyCell(m)}</td></tr>
+    </table>
+    ${warn}${info.note ? `<p class="hint">${esc(info.note)}</p>` : ''}
+    <p class="hint">恢复前会自动对当前数据打 pre-restore 快照, 恢复错了可回到备份中心再换回来。</p>`,
+    `<button class="btn" id="mCancel">取消</button>
+     <button class="btn primary" id="mGo">确认恢复</button>`);
+  $('mCancel').onclick = closeModal;
+  $('mGo').onclick = async () => {
+    const go = $('mGo');
+    go.disabled = true; go.textContent = '⏳ 恢复中…';
+    try { await doRestore([m], $('modalProg')); closeModal(); }
+    catch (e) {
+      go.disabled = false; go.textContent = '确认恢复';
+      $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)}</p>`);
+    }
+  };
+}
+
+function restoreGroup(run) {
+  const opts = run.members.map(m => {
+    const isApp = m.asset === 'app';
+    const def = m.block === '基础' || m.block === '基础+评分';   // 默认只勾基础, 不动账号/配置
+    return `<label class="chk" style="display:block;margin:3px 0">
+      <input type="checkbox" data-file="${esc(m.file)}" ${def ? 'checked' : ''}
+        ${!m.exists || isApp ? 'disabled' : ''}>
+      ${esc(m.asset)} · ${esc(m.block)} · ${m.size_mb} MB
+      ${!m.exists ? '<span class="bad">(文件缺失)</span>' : ''}
+      ${isApp ? '<span class="hint">(需停服命令行, 见成员行[恢复])</span>' : ''}</label>`;
+  }).join('');
+  showModal(`从此运行恢复 · ${run.time}`, `
+    <p class="hint">勾选要恢复的资产, 将逐个执行(每个恢复前自动打 pre-restore 快照)。默认只勾基础数据, 不动账号与配置。</p>
+    ${opts}`,
+    `<button class="btn" id="mCancel">取消</button>
+     <button class="btn primary" id="mGo">恢复所选</button>`);
+  $('mCancel').onclick = closeModal;
+  $('mGo').onclick = async () => {
+    const files = [...document.querySelectorAll('#modalBody input[data-file]:checked')]
+      .map(x => x.dataset.file);
+    if (!files.length) { $('modalProg').style.display = ''; $('modalProg').textContent = '未勾选任何资产'; return; }
+    const list = run.members.filter(m => files.includes(m.file));
+    const go = $('mGo');
+    go.disabled = true; go.textContent = '⏳ 恢复中…';
+    try { await doRestore(list, $('modalProg')); closeModal(); }
+    catch (e) {
+      go.disabled = false; go.textContent = '恢复所选';
+      $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)} (已中断, 前面已恢复的资产不受影响)</p>`);
+    }
+  };
+}
+
+async function doRestore(list, progEl) {
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i];
+    if (progEl) { progEl.style.display = ''; progEl.textContent = `恢复 ${i + 1}/${list.length}: ${m.asset} …`; }
+    await api('/admin/api/backup/restore', {method: 'POST', body: JSON.stringify({file: m.file})});
+  }
+  if (progEl) { progEl.textContent = `✓ 已恢复 ${list.length} 项`; }
+  loadManifest(); loadHistory();
+}
 
 /* 校验任务进度轮询: 运行中显示进度条, 结束后自动刷新清单 */
 let wasVerifying = false;

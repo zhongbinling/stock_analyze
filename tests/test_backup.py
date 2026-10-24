@@ -262,6 +262,18 @@ def test_verify_folder_target_and_progress(env):
     assert all(x.get("verify", {}).get("ok") for x in _entries())
 
 
+def test_run_all_assets_subset_and_unknown(env):
+    """D1-11 C3: assets子集只备所选(保序), 未知名报错不落任何备份"""
+    r = B.run_all("daily", assets=["app", "sentiment"])
+    assert r["status"] == "ok" and r["error"] is None
+    assert [f["asset"] for f in r["files"]] == ["sentiment", "app"]   # ASSETS顺序
+    ents = _entries()
+    assert {e["asset"] for e in ents} == {"sentiment", "app"}
+    r2 = B.run_all("daily", assets=["hack"])
+    assert r2["status"] == "fail" and "未知资产" in r2["error"]
+    assert r2["files"] == [] and len(_entries()) == len(ents)          # 未新增
+
+
 def test_skip_backfills_src_sha_for_legacy_entries(env):
     """D1-10r: 无src_sha256的旧条目在首次跳过时回填, 之后走快速路径"""
     B.snapshot("sentiment", "daily")

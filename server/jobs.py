@@ -353,18 +353,20 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
     return fn
 
 
-def task_backup(btype: str, trigger: str = "manual"):
-    """返回备份任务函数(闭包): in-process 调 core/backup.run_all + 落 BackupRun"""
+def task_backup(btype: str, trigger: str = "manual", assets: list | None = None):
+    """返回备份任务函数(闭包): in-process 调 core/backup.run_all + 落 BackupRun
+    D1-11 C3: assets 子集(分块备份), None=全部"""
     def fn(append):
         from server.models import BackupRun
         run = BackupRun(btype=btype, trigger=trigger, status="running", started_at=_now())
         db.session.add(run)
         db.session.commit()
-        append(f"[{utcnow_str()}] 备份开始: {btype} ({trigger})")
+        scope = f"({len(assets)}资产)" if assets else ""
+        append(f"[{utcnow_str()}] 备份开始: {btype} ({trigger}){scope}")
         if str(CORE) not in sys.path:
             sys.path.insert(0, str(CORE))
         import backup as bk
-        result = bk.run_all(btype, retention=backup_retention())
+        result = bk.run_all(btype, retention=backup_retention(), assets=assets)
         for f in result["files"]:
             append(f"+ {f['file']} ({f['size'] / 1048576:.1f} MB)")
         if result["error"]:

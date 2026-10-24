@@ -278,6 +278,9 @@ BACKUP_BLOCKS = {"sentiment": "基础+评分", "raw_daily": "基础", "app": "�
 TYPE_LABELS = {"daily": "日备", "weekly": "周备", "manual": "手动",
                "pre-calc": "计算前", "pre-backfill": "回填前",
                "pre-restore": "恢复前", "pre": "保护"}
+# D1-11 C3: 备份范围块白名单(API只收块名, 不收任意资产名)
+BLOCK_ASSETS = {"base": ("sentiment", "raw_daily"),
+                "account": ("app", "secret", "token", "cfg_core", "cfg_server")}
 
 
 def _fresh_label(e: dict) -> str:
@@ -361,12 +364,24 @@ def _backup_mod():
 @require_level(7)
 def api_backup_run():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     btype = str(d.get("type", "manual"))
     if btype not in _BACKUP_TYPES:
         return jsonify({"ok": False, "msg": f"type 应为 {'/'.join(_BACKUP_TYPES)}"}), 400
-    ok, msg = jobs.enqueue("backup", jobs.task_backup(btype, "manual"),
-                           target=btype, trigger="manual")
+    # D1-11 C3: blocks 范围白名单(base=基础+评分 / account=账号配置), 缺省=全部;
+    # 与本环境实际资产表求交(测试/精简环境资产集可不同)
+    blocks = d.get("blocks") or []
+    if not isinstance(blocks, list) or any(b not in BLOCK_ASSETS for b in blocks):
+        return jsonify({"ok": False,
+                        "msg": "blocks 应为 ['base','account'] 的子集"}), 400
+    bk = _backup_mod()
+    assets = (sorted({a for b in blocks for a in BLOCK_ASSETS[b] if a in bk.ASSETS})
+              if blocks else None)
+    if blocks and not assets:
+        return jsonify({"ok": False, "msg": "所选范围在本环境无可用资产"}), 400
+    ok, msg = jobs.enqueue("backup", jobs.task_backup(btype, "manual", assets=assets),
+                           target=btype + (f"·{'+'.join(blocks)}" if blocks else ""),
+                           trigger="manual")
     audit("backup_run_enqueue" if ok else "backup_run_reject",
           target=btype, detail=msg)
     return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
@@ -470,8 +485,10 @@ def api_backup_restore():
     if not e:
         return jsonify({"ok": False, "msg": "备份不存在"}), 404
     if e["asset"] == "app":
-        return jsonify({"ok": False, "msg": "app.db 为服务自身数据库, 请停服后用命令行恢复: "
-                                            "cd core && python backup.py restore <文件> --yes"}), 409
+        return jsonify({"ok": False,
+                        "msg": f"app.db 为服务自身数据库(账号/设置), 在线恢复已拒绝。"
+                               f"请停服后在仓库根目录执行: "
+                               f"cd core && python backup.py restore \"{fname}\" --yes"}), 409
     if jobs.queue_size() > 0 or Job.query.filter_by(status="running").count() > 0:
         return jsonify({"ok": False, "msg": "有任务运行/排队中, 为避免写冲突请稍后再试"}), 409
     ok = bk.restore(fname, yes=True)

@@ -120,9 +120,10 @@ def test_api_backup_restore_guards(app_env):
         sent_bytes = z.read("sentiment.db")
     with _zf.ZipFile(zp, "a") as z:
         z.writestr("app.db", sent_bytes)
-    # app 资产在线恢复 → 拒
+    # app 资产在线恢复 → 拒(且提示带真实文件名的停服命令)
     r = c.post("/admin/api/backup/restore", json={"file": app_file})
     assert r.status_code == 409 and "停服" in r.get_json()["msg"]
+    assert app_file in r.get_json()["msg"], "停服指引应含真实备份文件名"
     # 路径穿越 → 拒
     r = c.post("/admin/api/backup/restore", json={"file": "../evil.db"})
     assert r.status_code == 400
@@ -154,11 +155,12 @@ def test_api_backup_settings_rejects_out_of_range(app_env):
 
 
 def test_data_html_restore_button_binds_by_run_id():
-    """恢复按钮必须按 run id 绑定(修复: 按钮序号与 runs 下标错位会恢复错文件)"""
+    """D1-11 C4: data.html恢复按钮已移除(prompt流废弃), 恢复入口集中到备份中心;
+    本测试锁定: 不再有按run绑定的恢复按钮, 也不回退到按下标绑定"""
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
-    assert 'data-restore="${r.id}"' in html
-    assert "runs.find(r => r.id === parseInt(b.dataset.restore))" in html
-    assert "forEach((b, i)" not in html
+    assert 'data-restore="${r.id}"' not in html
+    assert "prompt(" not in html
+    assert "backups_page" in html                    # 备份中心入口存在
 
 
 def test_data_html_script_syntax():
@@ -252,6 +254,42 @@ def test_api_backup_verify_empty_body_ok(app_env):
     assert jobs._q.get_nowait()["kind"] == "verify"
 
 
+def test_api_backup_run_blocks(app_env):
+    """D1-11 C3: blocks白名单(base/account); 非法块400; 子集只备所选资产"""
+    from server import jobs
+    c = app_env["client"]
+    bad = c.post("/admin/api/backup/run", json={"type": "manual", "blocks": ["hack"]})
+    assert bad.status_code == 400
+    r = c.post("/admin/api/backup/run", json={"type": "daily", "blocks": ["base"]})
+    assert r.status_code == 200 and r.get_json()["ok"]
+    item = jobs._q.get_nowait()
+    assert item["kind"] == "backup" and "base" in item["target"]
+    with app_env["app"].app_context():
+        rc = item["fn"](lambda s: None)
+    assert rc == 0
+    m = BK._load_manifest()
+    assert {e["asset"] for e in m["entries"]} == {"sentiment"}   # 本环境base块=sentiment
+
+
+def test_api_backup_restore_success_online(app_env):
+    """D1-11 C4: sentiment在线恢复闭环 — 删数据→恢复→数据回来+pre-restore兜底"""
+    from server import jobs
+    with app_env["app"].app_context():
+        jobs.task_backup("daily")(lambda s: None)
+    fname = BK._load_manifest()["entries"][-1]["file"]
+    conn = sqlite3.connect(str(app_env["sent"]))
+    conn.execute("DELETE FROM sentiment")
+    conn.commit()
+    conn.close()
+    r = app_env["client"].post("/admin/api/backup/restore", json={"file": fname})
+    assert r.status_code == 200 and r.get_json()["ok"]
+    conn = sqlite3.connect(str(app_env["sent"]))
+    n = conn.execute("SELECT COUNT(*) FROM sentiment").fetchone()[0]
+    conn.close()
+    assert n == 1
+    assert "pre-restore" in {e["type"] for e in BK._load_manifest()["entries"]}
+
+
 def test_backups_html_binds_and_syntax():
     """C1: 模板绑定(组校验/清单API/入口链接) + JS语法门禁"""
     import shutil
@@ -260,6 +298,13 @@ def test_backups_html_binds_and_syntax():
     assert 'id="btnVerifyAll"' in html and "data-vfolder" in html
     assert "/admin/api/backups/manifest" in html and "jobpoll" in html
     assert "--bg2" not in html, "使用了不存在的主题变量(暗色模式会回退成亮色)"
+    # D1-11 C4: 恢复弹窗与分块默认勾选
+    assert 'id="modalMask"' in html and "data-rgroup" in html and "data-restore" in html
+    assert "RESTORE_INFO" in html and "pre-restore" in html
+    assert "基础+评分" in html                       # 组恢复默认勾基础块的判定串
+    data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert "bkBlockBase" in data_html and "bkBlockAcc" in data_html
+    assert "blocks" in data_html                     # 立即备份带范围
     data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "backups_page" in data_html                 # 数据管理页入口
     if not shutil.which("node"):
