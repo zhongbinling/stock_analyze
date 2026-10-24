@@ -3,6 +3,24 @@
 {% block content %}
 <p class="crumb"><a href="{{ url_for('admin.dashboard') }}">← 工作台</a></p>
 
+<section class="card" id="tcCard">
+  <div class="row-flex spread">
+    <h2>任务中心 <span class="hint" id="tcState">空闲</span></h2>
+    <span class="hint" id="tcSched">排队 ×0</span>
+  </div>
+  <div id="tcRun" style="display:none">
+    <div class="row-flex spread" style="margin:4px 0">
+      <span id="tcTask"></span>
+      <span class="hint" id="tcPct"></span>
+    </div>
+    <div style="height:8px;background:var(--page);border:1px solid var(--grid);border-radius:4px;margin:6px 0;overflow:hidden">
+      <div id="tcBar" style="height:100%;width:0%;background:var(--blue);border-radius:4px;transition:width .5s"></div>
+    </div>
+    <pre id="tcLog" class="logpre" style="max-height:220px;overflow:auto"></pre>
+  </div>
+  <p class="hint" id="tcIdle">空闲。更新 / 修复 / 补全 / 备份 / 校验任务都会在这里实时显示进度与日志。</p>
+</section>
+
 <section class="card">
   <div class="row-flex spread">
     <h1>数据管理</h1>
@@ -91,12 +109,9 @@
 
 <section class="card">
   <h2>手动更新</h2>
+  <p class="hint">任务状态与日志集中在顶部「任务中心」; 更新/修复走任务队列串行执行。</p>
   <div class="row-flex">
     <button class="btn primary" id="btnUpdate">增量更新数据（抓取＋重算评分）</button>
-    <span class="hint" id="jobState"></span>
-  </div>
-  <div style="height:8px;background:var(--g);border-radius:4px;margin:6px 0;display:none" id="progWrap">
-    <div id="progBar" style="height:100%;width:0%;background:var(--bl);border-radius:4px;transition:width .5s"></div>
   </div>
   <div class="row-flex" style="margin-top:6px">
     <span>缺口窗口</span>
@@ -112,7 +127,6 @@
   </div>
   <p class="hint" id="scanHint">以交易日历为基线扫描缺失交易日(周末不计); 修复走任务队列只补缺失日(幂等), 完成后自动重算评分。</p>
   <table class="table" id="gapTable" style="display:none"></table>
-  <pre id="log" class="logpre" style="display:none"></pre>
 </section>
 
 <section class="card">
@@ -207,59 +221,67 @@ $('btnUpdate').onclick = async () => {
   const btn = $('btnUpdate');
   btn.disabled = true;
   btn.textContent = '⏳ 已提交，等待执行...';
-  $('log').style.display = 'block';
-  $('log').textContent = '正在启动任务...';
-  $('jobState').textContent = '';
   try {
-    const r = await api('/admin/api/update', {method: 'POST'});
+    const r = await api('/admin/api/update', {method: 'POST', body: JSON.stringify({})});
     if (!r.ok) {
       btn.disabled = false;
       btn.textContent = '增量更新数据（抓取＋重算评分）';
-      $('log').textContent = r.msg || '提交失败';
+      $('tcState').textContent = r.msg || '提交失败';
       return;
     }
     poll(true);
   } catch (e) {
     btn.disabled = false;
     btn.textContent = '增量更新数据（抓取＋重算评分）';
-    $('log').textContent = '提交失败: ' + e.message;
+    $('tcState').textContent = '提交失败: ' + e.message;
   }
 };
 
 let pollTimer = null;
+const KIND_CN = {update: '更新', repair: '修复', backfill: '补全', backup: '备份',
+                 verify: '校验', generate: '生成', recalc: '重算'};
+let tcWasRunning = false;
+function tcFlash() {                       // 任务启动时任务中心蓝色描边闪烁
+  const card = $('tcCard');
+  card.style.transition = 'box-shadow .4s';
+  card.style.boxShadow = '0 0 0 3px var(--blue)';
+  setTimeout(() => { card.style.boxShadow = ''; }, 1600);
+}
 async function poll(quick) {
   let j;
   try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
   $('schedState').textContent = '调度器: ' + j.scheduler;
+  $('tcSched').textContent = `排队 ×${j.queued}`;
   const btn = $('btnUpdate');
-  // D1-10 U2a: 进度条(运行中显示, progress来自日志[n/N]解析)
-  const pw = $('progWrap');
-  if (j.running && j.running.progress !== null && j.running.progress !== undefined) {
-    pw.style.display = 'block';
-    $('progBar').style.width = j.running.progress + '%';
-  } else if (!j.running) {
-    pw.style.display = 'none';
-    $('progBar').style.width = '0%';
-  }
-  // D1-10 U2b: 数据集"已更新至X"徽标(fresh)
-  if (j.fresh && j.fresh.length) {
-    const okN = j.fresh.filter(f => f.ok).length;
-    $('jobState').dataset.fresh = `${okN}/${j.fresh.length}`;
-  }
-  if (j.running) {
-    $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})`
-      + (j.running.progress != null ? ` ${j.running.progress}%` : '');
-    $('log').style.display = 'block';
-    $('log').textContent = j.running.log || '(等待输出…)';
+  const run = j.running;
+  if (run || j.queued > 0) {
+    if (!tcWasRunning) tcFlash();
+    tcWasRunning = true;
+    $('tcRun').style.display = '';
+    $('tcIdle').style.display = 'none';
+    if (run) {
+      $('tcState').innerHTML = '<span class="ok">● 运行中</span>';
+      $('tcTask').textContent =
+        `${KIND_CN[run.kind] || run.kind} · ${run.target || ''} · ${run.at}`
+        + (run.progress != null ? ` · ${run.progress}%` : '');
+      $('tcPct').textContent = run.progress != null ? run.progress + '%' : '';
+      $('tcBar').style.width = (run.progress || 0) + '%';
+      $('tcLog').textContent = (run.log || '(等待输出…)').split('\n').slice(-14).join('\n');
+      $('tcLog').scrollTop = $('tcLog').scrollHeight;
+    } else {
+      $('tcState').innerHTML = `<span class="hint">● 排队中 ×${j.queued}</span>`;
+      $('tcTask').textContent = '';
+      $('tcPct').textContent = '';
+      $('tcBar').style.width = '0%';
+      $('tcLog').textContent = '';
+    }
     btn.disabled = true;
     btn.textContent = '⏳ 任务执行中...';
-  } else if (j.queued > 0) {
-    $('jobState').textContent = `排队中 ×${j.queued}`;
-    $('log').style.display = 'block';
-    btn.disabled = true;
-    btn.textContent = '⏳ 排队中...';
   } else {
-    $('jobState').textContent = '空闲';
+    tcWasRunning = false;
+    $('tcRun').style.display = 'none';
+    $('tcIdle').style.display = '';
+    $('tcState').textContent = '空闲';
     btn.disabled = false;
     btn.textContent = '增量更新数据（抓取＋重算评分）';
   }
@@ -273,7 +295,7 @@ async function poll(quick) {
   document.querySelectorAll('#jobTable [data-joblog]').forEach(b =>
     b.onclick = () => toggleJobLog(parseInt(b.dataset.joblog), b));
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(() => poll(), (j.running || j.queued > 0) ? 2500 : 15000);
+  pollTimer = setTimeout(() => poll(), (run || j.queued > 0) ? 2500 : 15000);
 }
 
 async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下钻
@@ -379,6 +401,8 @@ $('btnBkRun').onclick = async () => {
   try {
     const r = await api('/admin/api/backup/run', {method: 'POST', body: JSON.stringify({type: $('bkType').value, blocks})});
     $('bkRunMsg').textContent = r.msg;
+    $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
+    poll(true);
     setTimeout(loadBackups, 3000); setTimeout(loadBackups, 10000);
   } catch (e) { $('bkRunMsg').textContent = e.message; }
   btn.disabled = false; btn.textContent = '立即备份';
@@ -388,7 +412,9 @@ $('btnBkVerify').onclick = async () => {
   const btn = $('btnBkVerify');
   btn.disabled = true; btn.textContent = '⏳ 已提交…';
   try { const r = await api('/admin/api/backup/verify', {method: 'POST', body: JSON.stringify({})});
-    $('bkRunMsg').textContent = r.msg + ', 结果见备份中心';
+    $('bkRunMsg').textContent = r.msg + ', 进度见任务中心, 逐条结果见备份中心';
+    $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
+    poll(true);
   } catch (e) { $('bkRunMsg').textContent = '提交失败: ' + e.message; }
   btn.disabled = false; btn.textContent = '校验全部备份';
 };
@@ -442,12 +468,15 @@ async function loadBfAssets() {
   try {
     const d = await api('/admin/api/datasets');
     const running = await api('/admin/api/jobpoll');
+    const bfLogs = await api('/admin/api/backfill/logs');   // D2: 行级"上次补全"结果
     const nowRunning = !!(running.running || running.queued > 0);
     const stateChanged = nowRunning !== bfRunning;
     bfRunning = nowRunning;
     const byCode = {};
     d.datasets.forEach(t => { byCode[t.code] = t; });
-    $('bfAssets').innerHTML = '<tr><th>补全项</th><th>区间</th><th>完成度</th><th>缺口</th><th></th></tr>' +
+    const lastByDs = {};                                    // 每数据集最新一条补全记录
+    bfLogs.logs.forEach(l => { if (!(l.dataset in lastByDs)) lastByDs[l.dataset] = l; });
+    $('bfAssets').innerHTML = '<tr><th>补全项</th><th>区间</th><th>完成度</th><th>缺口</th><th>上次补全</th><th></th></tr>' +
       BF_ROWS.map(r => {
         const t = r.asset ? byCode[r.asset] : null;
         let range = '--', pct = '--', miss = '—', btn;
@@ -460,7 +489,12 @@ async function loadBfAssets() {
         btn = incomplete
           ? `<button class="btn small" data-bf="${r.ds}" ${bfRunning ? 'disabled' : ''}>补全</button>`
           : '<span class="ok">✓</span>';
-        return `<tr><td>${esc(r.label)}</td><td class="hint">${range}</td><td>${pct}</td><td>${miss}</td><td>${btn}</td></tr>`;
+        const L = lastByDs[r.ds];
+        const last = !L ? '<span class="hint">—</span>'
+          : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} +${(L.days || []).length}日</span>`
+          : L.status === 'running' ? '<span class="hint">… 运行中</span>'
+          : `<span class="bad" title="${esc(L.error)}">✗ ${esc((L.error || '失败').slice(0, 14))}</span>`;
+        return `<tr><td>${esc(r.label)}</td><td class="hint">${range}</td><td>${pct}</td><td>${miss}</td><td>${last}</td><td>${btn}</td></tr>`;
       }).join('');
     document.querySelectorAll('#bfAssets [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
     return stateChanged;
@@ -472,7 +506,9 @@ async function bfRun(dataset, btn) {
   $('bfMsg').textContent = '';
   try {
     const r = await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({dataset})});
-    $('bfMsg').textContent = r.msg;
+    $('bfMsg').textContent = r.msg + ' — 进度见顶部任务中心';
+    $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});   // D2: 即时可见反馈
+    poll(true);
     setTimeout(loadBfAssets, 3000); setTimeout(loadBfAssets, 30000);
   } catch (e) { $('bfMsg').textContent = e.message; btn.disabled = false; btn.textContent = '补全'; }
 }

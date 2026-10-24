@@ -163,6 +163,24 @@ def test_data_html_restore_button_binds_by_run_id():
     assert "backups_page" in html                    # 备份中心入口存在
 
 
+def test_data_html_task_center_and_backfill_feedback():
+    """D1-11 D1/D2: 任务中心卡(首卡) + 补全即时反馈; 旧状态元素已迁移, 无未定义主题变量"""
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    # 任务中心卡
+    assert 'id="tcCard"' in html and 'id="tcLog"' in html and 'id="tcState"' in html
+    assert 'id="tcBar"' in html and "KIND_CN" in html and "tcFlash" in html
+    # 旧元素已从手动更新卡移除(集中到任务中心), 死代码已除
+    for gone in ('id="jobState"', 'id="progWrap"', 'id="progBar"', 'id="log"',
+                 "dataset.fresh"):
+        assert gone not in html, f"遗留旧元素: {gone}"
+    # 进度条用真实主题变量(存量bug: --g/--bl 未定义, 一直透明)
+    assert "var(--g)" not in html and "var(--bl)" not in html
+    assert "var(--blue)" in html and "var(--page)" in html
+    # D2: 补全行"上次补全"列 + 提交后滚屏到任务中心
+    assert "上次补全" in html and "lastByDs" in html
+    assert "scrollIntoView" in html and "poll(true)" in html
+
+
 def test_data_html_script_syntax():
     """模板内嵌 JS 语法门禁(node 解析)"""
     import shutil
