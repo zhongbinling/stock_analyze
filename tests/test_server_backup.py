@@ -200,6 +200,9 @@ def test_data_html_unified_assets_and_checkup():
         assert gone not in html, f"遗留旧元素: {gone}"
     # 任务结束自动刷新资产表
     assert "if (tcWasRunning) loadDatasets()" in html
+    # D1-11r: 双击竞态防护(入队成功立即置busy) + 按钮原标签恢复 + 刷新补全记录
+    assert "bfRunning = true;" in html and "const orig = btn.textContent" in html
+    assert "loadBackfillLogs(); };" in html
 
 
 def test_data_html_script_syntax():

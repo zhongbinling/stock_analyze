@@ -340,7 +340,7 @@ async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下�
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 
-$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); };
+$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); loadBackfillLogs(); };
 
 /* ── D1-11 E2: 一键体检(窗口扫描 → 行级定向修复/一键修复链) ── */
 async function runRepair(win) {
@@ -514,15 +514,17 @@ SCAN_DS.calendar = 'calendar';
 let bfRunning = false;                    // D1-11 E1: 补全行已并入数据资产表(loadDatasets渲染)
 async function bfRun(dataset, btn) {
   if (bfRunning) return;
+  const orig = btn.textContent;            // 调用方可能是[补全]或体检行[修复], 原样恢复
   btn.disabled = true; btn.textContent = '⏳';
   $('bfMsg').textContent = '';
   try {
     const r = await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({dataset})});
+    bfRunning = true;                      // 立即生效防双击竞态(不等下一轮poll)
     $('bfMsg').textContent = r.msg + ' — 进度见顶部任务中心';
     $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});   // D2: 即时可见反馈
     poll(true);
     setTimeout(loadDatasets, 3000); setTimeout(loadDatasets, 30000);
-  } catch (e) { $('bfMsg').textContent = e.message; btn.disabled = false; btn.textContent = '补全'; }
+  } catch (e) { $('bfMsg').textContent = e.message; btn.disabled = false; btn.textContent = orig; }
 }
 $('btnBkQuery2').onclick = () => loadBackfillLogs('', $('bfDate').value.trim());
 
