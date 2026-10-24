@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """核心资产备份 (数据库/密钥/配置): SQLite在线快照 + 类型滚动保留 + 校验 + 恢复
 
-类型 (B1): daily | weekly | manual | pre-calc | pre-restore
+类型 (B1): daily | weekly | manual | pre-calc | pre-backfill | pre-restore
 保留: 每资产每类型留最近 N 份(可配), 每资产最新一份永不删; 内容未变化自动跳过。
 日志: backups/backup.log 文件 + 调用方(服务)另行落 backup_runs 表。
 
@@ -15,6 +15,7 @@
   python backup.py restore <文件名> --yes  # 校验→pre-restore快照→原子替换
 """
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -52,7 +53,7 @@ RETENTION = {"daily": 14, "weekly": 8, "manual": 5, "pre": 10}
 # zlib压缩存.db.z(标准库稳快 ~2.5GB→~1.2GB), 每类型keep=4独立滚动
 RAW_POLICY = {"raw_daily": {"types": ("weekly", "manual", "pre-restore"), "keep": 4,
                "compress": True}}
-TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-restore")
+TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-backfill", "pre-restore")
 
 # D1-10 B1: 备份内使用原名文件(子目录 {type}_{ts}/ 下)
 ASSET_FILES = {"sentiment": "sentiment.db", "app": "app.db", "secret": "secret.key",
@@ -105,6 +106,41 @@ def _save_manifest(m: dict):
     MANIFEST.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+@contextlib.contextmanager
+def _manifest_lock(timeout: float = 60.0):
+    """跨进程互斥(O_EXCL锁文件): 保护manifest读-改-写窗口。
+
+    D1-10r: 修复链的pre-calc/pre-backfill钩子与服务/CLI备份并发时,
+    后写者用陈旧视图整档覆盖, 吃掉先写者的条目(zip在盘上但清单不可见)。
+    超时降级继续(可用性优先, 记录警告); 持有者崩溃残留>10分钟可被抢占。
+    """
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    lock = BACKUP_DIR / "manifest.lock"
+    t0 = time.time()
+    held = False
+    while time.time() - t0 < timeout:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            held = True
+            break
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 600:
+                    lock.unlink(missing_ok=True)
+                    continue
+            except OSError:
+                pass
+            time.sleep(0.05)
+    if not held:
+        _log("⚠ manifest锁获取超时, 降级无锁写入(并发条目可能丢失)")
+    try:
+        yield
+    finally:
+        if held:
+            lock.unlink(missing_ok=True)
+
+
 def _db_stats(p: Path, asset: str) -> dict:
     """数据新鲜度抽查: 资产关键表存在且可查询(损坏/空库在此暴露)"""
     conn = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
@@ -144,6 +180,8 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
     D1-10 B1/B3: 目录结构 backups/{type}_{YYYYMMDD}_{HHMMSS}/{原名};
     compress=True 时整目录压成 {folder}.zip 后删目录(manifest.file=folder.zip/name)。
     raw_daily 例外: 自身已zlib(.db.z), zip内用STORED避免双重压缩。
+    D1-10r: 未变化跳过走源sha快速路径(免整库拷贝); entry.size=成员自身大小
+    (非zip整体大小); run_all前置清理崩溃残留的纯.part目录。
     """
     kind, src = ASSETS[asset]
     btype = _norm_type(btype)
@@ -154,11 +192,31 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
     if not src.exists():
         _log(f"= 跳过 {asset}: {src} 不存在")
         return None
+    m = _load_manifest()
+    last = next((e for e in reversed(m["entries"]) if e["asset"] == asset), None)
+    # 快速去重: 源sha与上次快照时的源sha一致 → 免拷贝直接跳过。注: sqlite backup
+    # 副本间字节稳定但与源文件不完全相同, 故条目单独记src_sha256(源文件口径),
+    # 不能拿sha256(副本口径)比对; 各库均delete日志模式, 源sha可代表已提交内容
+    src_sha = _sha256(src)
+    if last and last.get("src_sha256") == src_sha:
+        _log(f"= {asset} [{btype}] 未变化, 跳过 ({src_sha[:12]})")
+        return None
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     ts = dt.datetime.now()
-    folder = folder or f"{btype}_{ts.strftime('%Y%m%d_%H%M%S')}"
+    if folder is None:                     # 独立调用: mkdir原子占位, 同秒并发不共目录
+        base = f"{btype}_{ts.strftime('%Y%m%d_%H%M%S')}"
+        n = 0
+        folder = base
+        while True:
+            try:
+                (BACKUP_DIR / folder).mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                n += 1
+                folder = f"{base}_{n}"
+    else:                                  # run_all统一目录(进程内串行)
+        (BACKUP_DIR / folder).mkdir(parents=True, exist_ok=True)
     outdir = BACKUP_DIR / folder
-    outdir.mkdir(parents=True, exist_ok=True)
     fname = ASSET_FILES[asset]
     tmp = outdir / (fname + ".part")
 
@@ -195,10 +253,16 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
         tmp.replace(outdir / fname)               # .part → 原名
 
     sha = _sha256(outdir / fname)
-    m = _load_manifest()
-    last = next((e for e in reversed(m["entries"]) if e["asset"] == asset), None)
-    if last and last["sha256"] == sha:
+    if last and last["sha256"] == sha:      # raw(.z)压缩后到此才可比对
         shutil.rmtree(outdir, ignore_errors=True)
+        if last.get("src_sha256") != src_sha:   # 旧条目回填源sha, 下次走快速路径
+            with _manifest_lock():
+                m2 = _load_manifest()
+                for e2 in m2["entries"]:
+                    if e2["file"] == last["file"]:
+                        e2["src_sha256"] = src_sha
+                        break
+                _save_manifest(m2)
         _log(f"= {asset} [{btype}] 未变化, 跳过 ({sha[:12]})")
         return None
 
@@ -230,13 +294,18 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
             shutil.rmtree(merge_dir, ignore_errors=True)
         zpart.replace(zpath)
         entry_file = f"{folder}.zip/{fname}"
-        size = zpath.stat().st_size
+        # entry.size保持成员自身大小(final.stat().st_size, 压缩前原始字节);
+        # D1-10r修复: 曾误记zpath整体大小, 多资产合并后所有条目都变成zip总大小
     entry = {"file": entry_file, "asset": asset, "kind": kind, "sha256": sha,
+             "src_sha256": src_sha,
              "size": size, "time": ts.strftime("%Y-%m-%d %H:%M:%S"),
              "date": ts.strftime("%Y%m%d"), "type": btype,
              "integrity": "ok" if kind == "sqlite" else "-", "stats": stats}
-    m["entries"].append(entry)
-    _save_manifest(m)
+    with _manifest_lock():                 # 重读最新清单再落, 防并发覆盖他人条目
+        m2 = _load_manifest()
+        if not any(e2["file"] == entry_file for e2 in m2["entries"]):
+            m2["entries"].append(entry)
+        _save_manifest(m2)
     fresh = stats.get("sector_scores") or stats.get("sentiment") or ""
     _log(f"+ {entry_file} ({size / 1048576:.1f} MB{', ' + fresh if fresh else ''})")
     return entry
@@ -283,22 +352,59 @@ def _decompress_if_copy(p: Path) -> Path:
     return tmp
 
 
+def _sweep_stale_parts(max_age_s: float = 3600.0):
+    """清理崩溃残留: 超过1小时且只含.part(或空)的快照目录整目录移除
+
+    正常流程不会留下此类目录(成功→zip/明文成员, 未变化跳过→rmtree);
+    只有进程被杀(Ctrl+C/断电)会残留。时限避开并发在途的快照。
+    """
+    if not BACKUP_DIR.exists():
+        return
+    now = time.time()
+    for d in BACKUP_DIR.iterdir():
+        if not d.is_dir() or "_" not in d.name:
+            continue
+        try:
+            if now - d.stat().st_mtime <= max_age_s:
+                continue
+            if all(p.name.endswith(".part") for p in d.iterdir()):
+                shutil.rmtree(d, ignore_errors=True)
+                _log(f"~ 清理崩溃残留目录 {d.name}/")
+        except OSError:
+            pass
+
+
 def run_all(btype: str = "manual", retention: dict | None = None,
             compress: bool = True) -> dict:
     """编程接口(B1): 全资产快照+清理, 返回结构化结果供服务落 backup_runs"""
     t0 = time.time()
     files, err = [], None
-    run_folder = f"{_norm_type(btype)}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    btype = _norm_type(btype)
+    base = f"{btype}_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        _sweep_stale_parts()
+        n = 0
+        run_folder = base                 # mkdir原子占位, 同秒并发run_all不共目录
+        while True:
+            try:
+                (BACKUP_DIR / run_folder).mkdir(parents=True, exist_ok=False)
+                break
+            except FileExistsError:
+                n += 1
+                run_folder = f"{base}_{n}"
         for a in ASSETS:
             e = snapshot(a, btype, compress=compress, folder=run_folder)
             if e:
                 files.append({"file": e["file"], "asset": a, "size": e["size"]})
+        d = BACKUP_DIR / run_folder       # 全部跳过时清掉空占位目录
+        if d.is_dir() and not any(d.iterdir()):
+            shutil.rmtree(d, ignore_errors=True)
         prune(retention)
     except Exception as ex:  # noqa: BLE001
         err = f"{type(ex).__name__}: {ex}"
         _log(f"✗ [{btype}] 异常: {err}")
-    return {"btype": _norm_type(btype), "status": "fail" if err else "ok",
+    return {"btype": btype, "status": "fail" if err else "ok",
             "files": files, "files_n": len(files),
             "total_mb": round(sum(f["size"] for f in files) / 1048576, 1),
             "duration_s": round(time.time() - t0, 1), "error": err}
@@ -308,27 +414,28 @@ def prune(retention: dict | None = None):
     """类型滚动清理: 每资产每类型留最近N份; 每资产最新一份永不删;
     RAW_POLICY资产用自己的keep覆盖每类型份数"""
     retention = retention or RETENTION
-    m = _load_manifest()
-    removed = 0
-    for asset in ASSETS:
-        ents = sorted((e for e in m["entries"] if e["asset"] == asset),
-                      key=lambda e: (e["date"], e["time"]), reverse=True)
-        if not ents:
-            continue
-        keep = {ents[0]["file"]}                     # 最新一份保底
-        by_type = {}
-        for e in ents:                               # 降序, 每类型取前N
-            by_type.setdefault(e["type"], []).append(e)
-        pol = RAW_POLICY.get(asset, {})
-        for t, lst in by_type.items():
-            n = pol.get("keep", _retention_of(t, retention))
-            keep |= {e["file"] for e in lst[:n]}
-        for e in ents:
-            if e["file"] not in keep:
-                _delete_entry_file(e["file"])
-                m["entries"].remove(e)
-                removed += 1
-    _save_manifest(m)
+    with _manifest_lock():
+        m = _load_manifest()
+        removed = 0
+        for asset in ASSETS:
+            ents = sorted((e for e in m["entries"] if e["asset"] == asset),
+                          key=lambda e: (e["date"], e["time"]), reverse=True)
+            if not ents:
+                continue
+            keep = {ents[0]["file"]}                     # 最新一份保底
+            by_type = {}
+            for e in ents:                               # 降序, 每类型取前N
+                by_type.setdefault(e["type"], []).append(e)
+            pol = RAW_POLICY.get(asset, {})
+            for t, lst in by_type.items():
+                n = pol.get("keep", _retention_of(t, retention))
+                keep |= {e["file"] for e in lst[:n]}
+            for e in ents:
+                if e["file"] not in keep:
+                    _delete_entry_file(e["file"])
+                    m["entries"].remove(e)
+                    removed += 1
+        _save_manifest(m)
     _log(f"prune: 保留 {len(m['entries'])} 份, 清理 {removed} 份")
 
 
@@ -455,33 +562,34 @@ def migrate_legacy():
     """
     import re as _re
     pat = _re.compile(r"^(\w+?)_(\d{8}_\d{6})_?([\w-]*?)\.(db\.z|db|bin|z)$")
-    m = _load_manifest()
-    moved = 0
-    for f in sorted(BACKUP_DIR.iterdir()):
-        if not f.is_file() or f.name in ("manifest.json", "backup.log"):
-            continue
-        mm = pat.match(f.name)
-        if not mm:
-            continue                              # 非平铺备份(或.part残留)跳过
-        asset, ts, btype, ext = mm.groups()
-        if asset not in ASSET_FILES:
-            continue
-        if not btype or btype not in TYPES:        # V1无类型名/pre-calc等 → 归一
-            btype = "pre-calc" if "pre" in btype else "manual"
-        fname = ASSET_FILES[asset] + (".z" if ext in ("db.z", "z") and asset == "raw_daily" else "")
-        outdir = BACKUP_DIR / f"{btype}_{ts}"
-        outdir.mkdir(parents=True, exist_ok=True)
-        target = outdir / fname
-        if not target.exists():
-            shutil.move(str(f), str(target))
-        old_entry = f"{f.name}"
-        new_entry = f"{btype}_{ts}/{fname}"
-        for e in m["entries"]:
-            if e["file"] == old_entry:
-                e["file"] = new_entry
-        moved += 1
-    if moved:
-        _save_manifest(m)
+    with _manifest_lock():
+        m = _load_manifest()
+        moved = 0
+        for f in sorted(BACKUP_DIR.iterdir()):
+            if not f.is_file() or f.name in ("manifest.json", "backup.log"):
+                continue
+            mm = pat.match(f.name)
+            if not mm:
+                continue                              # 非平铺备份(或.part残留)跳过
+            asset, ts, btype, ext = mm.groups()
+            if asset not in ASSET_FILES:
+                continue
+            if not btype or btype not in TYPES:        # V1无类型名/pre-calc等 → 归一
+                btype = "pre-calc" if "pre" in btype else "manual"
+            fname = ASSET_FILES[asset] + (".z" if ext in ("db.z", "z") and asset == "raw_daily" else "")
+            outdir = BACKUP_DIR / f"{btype}_{ts}"
+            outdir.mkdir(parents=True, exist_ok=True)
+            target = outdir / fname
+            if not target.exists():
+                shutil.move(str(f), str(target))
+            old_entry = f"{f.name}"
+            new_entry = f"{btype}_{ts}/{fname}"
+            for e in m["entries"]:
+                if e["file"] == old_entry:
+                    e["file"] = new_entry
+            moved += 1
+        if moved:
+            _save_manifest(m)
     _log(f"migrate-legacy: 归档 {moved} 个平铺文件")
     return moved
 

@@ -204,6 +204,116 @@ def test_snapshot_zip_layout_and_no_compress_dir(env):
     assert B.verify("--all") is True
 
 
+def test_manifest_sizes_are_member_sizes(env):
+    """D1-10r: zip布局entry.size必须=成员自身大小(曾误记为整zip大小,
+    多资产合并后所有条目都显示成zip总大小)"""
+    import zipfile as zf
+    r = B.run_all("daily")
+    assert r["status"] == "ok" and r["files_n"] == len(B.ASSETS)
+    for e in _entries():
+        root, name = e["file"].split("/", 1)
+        with zf.ZipFile(env["bdir"] / root) as z:
+            assert e["size"] == z.getinfo(name).file_size, \
+                f"{e['file']} 记录了 {e['size']} != 成员 {z.getinfo(name).file_size}"
+
+
+def test_noop_skip_uses_source_sha_fast_path(env, monkeypatch):
+    """D1-10r: 未变化跳过用源sha快速判定, 不再先整库拷贝再比对"""
+    B.snapshot("sentiment", "daily")
+    n_before = len(_entries())
+
+    def _boom(*a, **k):
+        raise AssertionError("未变化跳过不应再拷贝/打开数据库")
+    monkeypatch.setattr(B.sqlite3, "connect", _boom)
+    assert B.snapshot("sentiment", "daily") is None
+    assert len(_entries()) == n_before
+    assert not list(env["bdir"].glob("manual_*")), "跳过后不应残留快照目录"
+
+
+def test_skip_backfills_src_sha_for_legacy_entries(env):
+    """D1-10r: 无src_sha256的旧条目在首次跳过时回填, 之后走快速路径"""
+    B.snapshot("sentiment", "daily")
+    m = json.loads(B.MANIFEST.read_text(encoding="utf-8"))
+    del m["entries"][-1]["src_sha256"]            # 伪装旧版条目
+    B._save_manifest(m)
+    assert B.snapshot("sentiment", "daily") is None       # 慢路径跳过(拷贝后比对)
+    e = _entries()[-1]
+    assert e.get("src_sha256"), "旧条目未回填src_sha256, 永远无法走快速路径"
+    assert B.snapshot("sentiment", "daily") is None       # 现在可快速跳过
+
+
+def test_sweep_stale_part_dirs(env):
+    """D1-10r: 崩溃残留(只含.part且超1小时)在run_all时被清理; 在途新目录不动"""
+    import os
+    import time
+    stale = env["bdir"] / "manual_20200101_000000"
+    stale.mkdir(parents=True)
+    (stale / "sentiment.db.part").write_bytes(b"x")
+    t_old = time.time() - 7200
+    os.utime(stale, (t_old, t_old))
+    fresh = env["bdir"] / "manual_20990101_000000"
+    fresh.mkdir()
+    (fresh / "x.db.part").write_bytes(b"x")
+    B.run_all("daily")
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_pre_backfill_type_not_normed_to_manual(env):
+    """D1-10r: pre-backfill曾是合法类型缺失被误归为manual, 污染manual滚动桶
+    (修复链/回填钩子每次产生400MB级manual噪音备份)"""
+    e = B.snapshot("sentiment", "pre-backfill")
+    assert e is not None and e["type"] == "pre-backfill"
+    assert B._retention_of("pre-backfill", {"daily": 14, "weekly": 8, "manual": 5, "pre": 10}) == 10
+
+
+def test_manifest_lock_mutual_exclusion(env):
+    """D1-10r: manifest锁互斥 — 持锁期间第二个上下文必须等待"""
+    import threading
+    import time as _t
+    order = []
+
+    def worker():
+        with B._manifest_lock():
+            order.append("b-in")
+            _t.sleep(0.3)
+            order.append("b-out")
+
+    with B._manifest_lock():
+        order.append("a-in")
+        th = threading.Thread(target=worker)
+        th.start()
+        _t.sleep(0.1)                     # b此时应阻塞在锁上
+        assert order == ["a-in"]
+        order.append("a-out")
+    th.join(timeout=5)
+    assert order == ["a-in", "a-out", "b-in", "b-out"]
+
+
+def test_concurrent_snapshots_keep_all_entries(env):
+    """D1-10r: 并发快照(钩子+CLI并存场景)不丢清单条目 — 落盘前重读+锁"""
+    import threading
+    errs = []
+
+    def snap(asset):
+        try:
+            B.snapshot(asset, "daily")
+        except Exception as ex:  # noqa: BLE001
+            errs.append(ex)
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    ths = [threading.Thread(target=snap, args=(a,)) for a in ("sentiment", "app", "secret")]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join(timeout=10)
+    assert not errs
+    files = {e["file"] for e in _entries()}
+    assert any("sentiment.db" in f for f in files)
+    assert any("app.db" in f for f in files)
+    assert any("secret.key" in f for f in files)
+    assert B.verify("--all") is True
+
+
 def test_restore_roundtrip(env):
     e = B.snapshot("sentiment", "daily")              # 默认zip布局
     conn = sqlite3.connect(str(env["sent"]))
