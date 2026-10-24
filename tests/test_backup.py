@@ -2,6 +2,7 @@
 """备份系统测试 (core/backup.py v2): 类型滚动/快照闭环/损坏检出/恢复往返/钩子"""
 import datetime as dt
 import json
+import shutil
 import sqlite3
 
 import pytest
@@ -79,7 +80,9 @@ def test_run_all_roundtrip_and_manifest(env):
     sent_e = next(e for e in ents if e["asset"] == "sentiment")
     assert sent_e["integrity"] == "ok"
     assert sent_e["stats"]["sector_scores"] == "2026-09-30"
-    assert (env["bdir"] / sent_e["file"]).exists()
+    # D1-10 B1/B3: 子目录zip布局 {type}_{ts}.zip/{原名}
+    assert "/" in sent_e["file"] and sent_e["file"].endswith("sentiment.db")
+    assert (env["bdir"] / sent_e["file"].split("/")[0]).exists()
     assert B.verify("--all") is True
 
 
@@ -100,12 +103,13 @@ def test_snapshot_after_change(env):
     e = B.snapshot("sentiment", "pre-calc")
     assert e is not None and e["type"] == "pre-calc"
     assert e["stats"]["sentiment"] == "2026-10-09"
+    assert B.verify(e["file"]) is True
 
 
 def test_log_file_written(env):
     B.run_all("daily")
     log = B.LOG_FILE.read_text(encoding="utf-8")
-    assert "prune:" in log and "+ sentiment_" in log
+    assert "prune:" in log and "sentiment.db" in log
 
 
 def test_missing_asset_skips(env, monkeypatch):
@@ -171,14 +175,37 @@ def test_prune_legacy_entries_normalized(env):
 # ── 校验与恢复 ──
 
 def test_verify_detects_corruption(env):
-    e = B.snapshot("sentiment", "daily")
+    e = B.snapshot("sentiment", "daily", compress=False)      # 明文子目录便于篡改
     (env["bdir"] / e["file"]).write_bytes(b"corrupted!!")
     assert B.verify(e["file"]) is False
     assert B.verify("--all") is False
 
 
+def test_verify_never_deletes_folder_backups(env):
+    """D1-10r(严重回归): verify对子目录明文备份只读 — 文件必须原地保留"""
+    e = B.snapshot("sentiment", "daily", compress=False)
+    f = env["bdir"] / e["file"]
+    assert f.exists()
+    assert B.verify("--all") is True
+    assert f.exists(), "verify删除了子目录内的备份文件!"
+
+
+def test_snapshot_zip_layout_and_no_compress_dir(env):
+    """B1/B3: 压缩=zip单文件 / 不压缩=子目录原名义件"""
+    ez = B.snapshot("sentiment", "daily", compress=True)
+    import zipfile as zf
+    zp = env["bdir"] / ez["file"].split("/")[0]
+    assert zp.suffix == ".zip" and zp.exists()
+    with zf.ZipFile(zp) as z:
+        assert "sentiment.db" in z.namelist()
+    ed = B.snapshot("app", "daily", compress=False)
+    d = env["bdir"] / ed["file"].split("/")[0]
+    assert d.is_dir() and (d / "app.db").exists()
+    assert B.verify("--all") is True
+
+
 def test_restore_roundtrip(env):
-    e = B.snapshot("sentiment", "daily")
+    e = B.snapshot("sentiment", "daily")              # 默认zip布局
     conn = sqlite3.connect(str(env["sent"]))
     conn.execute("DELETE FROM sector_scores")
     conn.commit()
@@ -189,6 +216,7 @@ def test_restore_roundtrip(env):
     conn.close()
     assert n == 1
     assert "pre-restore" in {x["type"] for x in _entries()}
+    assert B.verify("--all") is True                 # 恢复后备份本体未损
 
 
 # ── pre-calc 钩子 ──
@@ -224,3 +252,25 @@ def test_pre_calc_hook_fires(env, monkeypatch):
     assert ("sentiment", "pre-calc") in calls
     assert conn.execute("SELECT COUNT(*) FROM sector_scores WHERE score IS NULL").fetchone()[0] == 0
     conn.close()
+
+
+def test_migrate_legacy_flat_files(env):
+    """B2: 平铺文件归档进子目录 + manifest改写, 迁移后verify通过"""
+    ts = "20261001_120000"
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    flat = env["bdir"] / f"sentiment_{ts}_daily.db"
+    shutil.copy2(env["sent"], flat)
+    m = {"entries": [{"file": flat.name, "asset": "sentiment", "kind": "sqlite",
+                      "sha256": B._sha256(flat), "size": flat.stat().st_size,
+                      "time": "2026-10-01 12:00:00", "date": "20261001", "type": "daily",
+                      "integrity": "ok", "stats": {}}]}
+    B._save_manifest(m)
+    moved = B.migrate_legacy()
+    assert moved >= 1
+    assert not flat.exists()                          # 已移入子目录
+    d = env["bdir"] / f"daily_{ts}"
+    assert (d / "sentiment.db").exists()
+    assert _entries()[0]["file"] == f"daily_{ts}/sentiment.db"
+    assert B.verify("--all") is True
+    # 幂等: 再跑无操作
+    assert B.migrate_legacy() == 0

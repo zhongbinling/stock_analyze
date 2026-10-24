@@ -3,6 +3,7 @@
 import sqlite3
 import sys
 import time
+import zipfile
 import zlib
 from pathlib import Path
 
@@ -112,9 +113,14 @@ def test_raw_skipped_on_daily_snapshot(bk_env):
 def test_raw_weekly_compressed(bk_env):
     e = BK.snapshot("raw_daily", "weekly")
     assert e is not None
-    f = bk_env["bdir"] / e["file"]
-    assert str(f).endswith(".db.z") and f.exists()
-    assert zlib.decompress(f.read_bytes())[:15] == b"SQLite format 3"   # 可解压且是库
+    # D1-10 B1/B3: weekly_{ts}.zip 内含 raw_daily.db.z(原名义件)
+    root = e["file"].split("/")[0]
+    zp = bk_env["bdir"] / root
+    assert zp.suffix == ".zip" and zp.exists()
+    with zipfile.ZipFile(zp) as zf:
+        assert "raw_daily.db.z" in zf.namelist()
+        raw = zf.read("raw_daily.db.z")
+    assert zlib.decompress(raw)[:15] == b"SQLite format 3"   # 可解压且是库
 
 
 def test_raw_keep_rolling(bk_env, monkeypatch):
@@ -135,14 +141,15 @@ def test_raw_keep_rolling(bk_env, monkeypatch):
         conn.close()
         BK.snapshot("raw_daily", "weekly")
     BK.prune()
-    files = list(bk_env["bdir"].glob("raw_daily_*.db.z"))
-    assert len(files) == 4                            # keep=4
+    zips = [p for p in bk_env["bdir"].glob("*.zip")
+            if "raw_daily.db.z" in zipfile.ZipFile(p).namelist()]
+    assert len(zips) == 4                             # keep=4(D1-10 B1: 目录改zip)
 
 
 def test_raw_pre_restore_snapshot_allowed(bk_env):
     """pre-restore 对 raw 必须兜底(review修复: 曾被policy跳过)"""
     e = BK.snapshot("raw_daily", "pre-restore")
-    assert e is not None and e["file"].endswith(".db.z")
+    assert e is not None and e["file"].endswith("raw_daily.db.z")
     # pre-calc 仍排除(避免每次全量重算压缩2.5GB)
     assert BK.snapshot("raw_daily", "pre-calc") is None
 

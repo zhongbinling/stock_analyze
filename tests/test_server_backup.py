@@ -110,11 +110,16 @@ def test_api_backup_restore_guards(app_env):
     BK.snapshot("sentiment", "daily")            # 产出 sentiment 备份
     m = BK._load_manifest()
     sent_file = next(e["file"] for e in m["entries"] if e["asset"] == "sentiment")
-    app_file = sent_file.replace("sentiment", "app_")
+    app_file = sent_file.replace("sentiment.db", "app.db")
     m["entries"].append({**m["entries"][0], "file": app_file, "asset": "app"})
     BK._save_manifest(m)
-    (app_env["bdir"] / app_file).write_bytes(
-        (app_env["bdir"] / sent_file).read_bytes())
+    # D1-10 B1: zip布局 — 往zip里追加app.db成员
+    import zipfile as _zf
+    zp = app_env["bdir"] / sent_file.split("/")[0]
+    with _zf.ZipFile(zp) as z:
+        sent_bytes = z.read("sentiment.db")
+    with _zf.ZipFile(zp, "a") as z:
+        z.writestr("app.db", sent_bytes)
     # app 资产在线恢复 → 拒
     r = c.post("/admin/api/backup/restore", json={"file": app_file})
     assert r.status_code == 409 and "停服" in r.get_json()["msg"]

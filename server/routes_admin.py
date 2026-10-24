@@ -371,7 +371,10 @@ def api_backup_restore():
     from server import jobs
     d = request.get_json(force=True) or {}
     fname = str(d.get("file", "")).strip()
-    if not fname or "/" in fname or "\\" in fname or ".." in fname:
+    # D1-10 B1: 合法名 = 平铺文件名 或 {dir}/{file}(zip/子目录布局, 仅一层)
+    import re as _re
+    if (not fname or "\\" in fname or ".." in fname or fname.startswith("/")
+            or not _re.match(r"^[\w.\-]+(?:/[\w.\-]+)?$", fname)):
         return jsonify({"ok": False, "msg": "文件名非法"}), 400
     bk = _backup_mod()
     m = bk._load_manifest()
