@@ -189,3 +189,73 @@ def test_backup_retention_from_settings(app_env):
         jobs.set_setting("backup_weekly_n", "4")
         r = jobs.backup_retention()
         assert r["daily"] == 9 and r["weekly"] == 4 and r["pre"] == 10
+
+
+# ── D1-11 C1/C2: 备份中心 ──
+
+def test_backups_page_and_manifest_api(app_env):
+    """C1: /admin/backups 页面 + manifest分组API(块映射/新鲜度/存在性/校验态)"""
+    from server import jobs
+    with app_env["app"].app_context():
+        jobs.task_backup("daily")(lambda s: None)
+    c = app_env["client"]
+    r = c.get("/admin/backups")
+    assert r.status_code == 200 and "备份中心".encode() in r.data
+    r = c.get("/admin/api/backups/manifest")
+    j = r.get_json()
+    assert r.status_code == 200 and j["summary"]["files_n"] == 1
+    run = j["runs"][0]
+    assert run["files_n"] == 1 and run["type_label"] == "日备"
+    m0 = run["members"][0]
+    assert m0["asset"] == "sentiment" and m0["block"] == "基础+评分"
+    assert m0["verify"] is None and m0["exists"] is True
+    assert m0["fresh"].startswith("评分")
+
+
+def test_api_backup_verify_enqueues_and_job_writes_back(app_env):
+    """C2: 校验入队为异步job; job执行后结果写回manifest条目"""
+    from server import jobs
+    with app_env["app"].app_context():
+        jobs.task_backup("daily")(lambda s: None)
+    c = app_env["client"]
+    r = c.post("/admin/api/backup/verify", json={})
+    assert r.status_code == 200 and r.get_json()["ok"]
+    item = jobs._q.get_nowait()
+    assert item["kind"] == "verify" and item["target"] == "全部备份"
+    with app_env["app"].app_context():
+        rc = item["fn"](lambda s: None)
+    assert rc == 0
+    m = json.loads(BK.MANIFEST.read_text(encoding="utf-8"))
+    assert m["entries"][-1]["verify"]["ok"] is True
+
+
+def test_api_backup_verify_folder_target_and_unknown(app_env):
+    """C1: 校验此组=目录前缀目标; 未知目标404"""
+    from server import jobs
+    with app_env["app"].app_context():
+        jobs.task_backup("daily")(lambda s: None)
+    c = app_env["client"]
+    folder = BK._load_manifest()["entries"][-1]["file"].split("/")[0]
+    r = c.post("/admin/api/backup/verify", json={"file": folder})
+    assert r.status_code == 200
+    assert jobs._q.get_nowait()["kind"] == "verify"
+    r = c.post("/admin/api/backup/verify", json={"file": "nope.zip"})
+    assert r.status_code == 404
+
+
+def test_backups_html_binds_and_syntax():
+    """C1: 模板绑定(组校验/清单API/入口链接) + JS语法门禁"""
+    import shutil
+    import subprocess
+    html = (REPO / "server" / "templates" / "admin" / "backups.html").read_text(encoding="utf-8")
+    assert 'id="btnVerifyAll"' in html and "data-vfolder" in html
+    assert "/admin/api/backups/manifest" in html and "jobpoll" in html
+    data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert "backups_page" in data_html                 # 数据管理页入口
+    if not shutil.which("node"):
+        pytest.skip("node 不可用")
+    m = re.search(r"<script>([\s\S]*?)</script>", html)
+    assert m, "backups.html 缺 script 块"
+    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", m.group(1)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"JS 语法错误: {r.stderr[:500]}"

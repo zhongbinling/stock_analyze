@@ -383,6 +383,21 @@ def task_backup(btype: str, trigger: str = "manual"):
     return fn
 
 
+def task_verify(target: str = "--all"):
+    """D1-11 C2: 异步校验任务 — verify逐条写回manifest, [i/N]供进度解析"""
+    label = "全部备份" if target == "--all" else target
+
+    def fn(append):
+        if str(CORE) not in sys.path:
+            sys.path.insert(0, str(CORE))
+        import backup as bk
+        append(f"[{utcnow_str()}] 校验开始: {label}")
+        rc = bk.verify(target, progress=lambda i, n, f: append(f"[{i}/{n}] {f}"))
+        append(f"[{utcnow_str()}] 校验结束: {'全部通过' if rc else '存在异常, 见backup.log'}")
+        return 0 if rc else 1
+    return fn
+
+
 def _slug(name: str) -> str:
     return re.sub(r"[^\w\-]+", "_", name).strip("_") or "view"
 

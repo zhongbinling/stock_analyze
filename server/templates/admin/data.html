@@ -40,7 +40,7 @@
 </section>
 
 <section class="card">
-  <h2>数据备份</h2>
+  <h2>数据备份 <a class="btn small" href="{{ url_for('admin.backups_page') }}">备份中心 →</a></h2>
   <div class="row-flex" style="margin-bottom:6px">
     <span class="hint" id="bkState">加载中…</span>
     <span class="hint" id="bkDisk"></span>
@@ -379,11 +379,12 @@ $('btnBkRun').onclick = async () => {
   btn.disabled = false; btn.textContent = '立即备份';
 };
 $('btnBkVerify').onclick = async () => {
+  // D1-11 C2: 校验改异步任务(全量需数分钟), 完成后到备份中心查看逐条结果
   const btn = $('btnBkVerify');
-  btn.disabled = true; btn.textContent = '⏳ 校验中…';
+  btn.disabled = true; btn.textContent = '⏳ 已提交…';
   try { const r = await api('/admin/api/backup/verify', {method: 'POST'});
-    $('bkRunMsg').textContent = r.msg;
-  } catch (e) { $('bkRunMsg').textContent = '校验失败: ' + e.message; }
+    $('bkRunMsg').textContent = r.msg + ', 结果见备份中心';
+  } catch (e) { $('bkRunMsg').textContent = '提交失败: ' + e.message; }
   btn.disabled = false; btn.textContent = '校验全部备份';
 };
 async function bkRestore(run) {

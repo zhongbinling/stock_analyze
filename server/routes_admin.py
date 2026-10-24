@@ -271,6 +271,83 @@ def api_job_log(jid):
 
 _BACKUP_TYPES = ("manual", "daily", "weekly")
 
+# D1-11 C1: 数据块口径(展示层) 与 类型徽章
+BACKUP_BLOCKS = {"sentiment": "基础+评分", "raw_daily": "基础", "app": "账号",
+                 "secret": "配置", "token": "配置", "cfg_core": "配置",
+                 "cfg_server": "配置"}
+TYPE_LABELS = {"daily": "日备", "weekly": "周备", "manual": "手动",
+               "pre-calc": "计算前", "pre-backfill": "回填前",
+               "pre-restore": "恢复前", "pre": "保护"}
+
+
+def _fresh_label(e: dict) -> str:
+    """备份内数据新鲜度(冗长stats → 一行可读)"""
+    s = e.get("stats") or {}
+    if e.get("asset") == "sentiment":
+        d = s.get("sector_scores") or s.get("sentiment")
+        return f"评分 {d}" if d else "-"
+    if e.get("asset") == "app":
+        return f"{s.get('users', '?')} 用户" if s.get("users") is not None else "-"
+    return "-"
+
+
+@bp_admin.get("/backups")
+@require_level(7)
+def backups_page():
+    """D1-11 C1: 备份中心 — manifest为真源的备份清单/校验状态/操作记录"""
+    return render_template("admin/backups.html")
+
+
+@bp_admin.get("/api/backups/manifest")
+@require_level(7)
+def api_backups_manifest():
+    """D1-11 C1: manifest按运行(zip/目录)分组的备份清单 + 汇总"""
+    bk = _backup_mod()
+    m = bk._load_manifest()
+    runs, seen = {}, {}
+    for e in m["entries"]:
+        folder = e["file"].split("/")[0] if "/" in e["file"] else "(旧平铺)"
+        v = e.get("verify") or {}
+        member = {
+            "file": e["file"], "asset": e.get("asset", "?"),
+            "block": BACKUP_BLOCKS.get(e.get("asset", ""), "-"),
+            "size_mb": round(e.get("size", 0) / 1048576, 1),
+            "fresh": _fresh_label(e), "kind": e.get("kind", "file"),
+            "exists": bk._entry_exists(e["file"]),
+            "verify": {"ok": v.get("ok"), "at": v.get("at", ""),
+                       "issues": v.get("issues", [])} if v else None,
+        }
+        if folder not in runs:
+            runs[folder] = {"folder": folder, "type": e.get("type", ""),
+                            "type_label": TYPE_LABELS.get(e.get("type", ""), e.get("type", "")),
+                            "time": e.get("time", ""), "members": []}
+            seen[folder] = True
+        runs[folder]["members"].append(member)
+    run_list = []
+    for r in runs.values():
+        mem = r.pop("members")
+        r.update({
+            "files_n": len(mem), "total_mb": round(sum(x["size_mb"] for x in mem), 1),
+            "fresh": next((x["fresh"] for x in mem if x["fresh"] != "-"), "-"),
+            "n_ok": sum(1 for x in mem if x["verify"] and x["verify"]["ok"]),
+            "n_bad": sum(1 for x in mem if x["verify"] and not x["verify"]["ok"]
+                         or not x["exists"]),
+            "members": mem,
+        })
+        run_list.append(r)
+    run_list.sort(key=lambda r: r["time"], reverse=True)
+    n_all = sum(r["files_n"] for r in run_list)
+    return jsonify({
+        "runs": run_list,
+        "summary": {"files_n": n_all,
+                    "disk_mb": round(sum(e.get("size", 0) for e in m["entries"]) / 1048576, 1),
+                    "runs_n": len(run_list),
+                    "by_type": {TYPE_LABELS.get(t, t): sum(1 for e in m["entries"]
+                                                           if e.get("type") == t)
+                                for t in {e.get("type", "") for e in m["entries"]}},
+                    "n_bad": sum(r["n_bad"] for r in run_list)},
+    })
+
 
 def _backup_mod():
     import sys
@@ -360,9 +437,21 @@ def api_backup_settings():
 @bp_admin.post("/api/backup/verify")
 @require_level(7)
 def api_backup_verify():
-    ok = _backup_mod().verify("--all")
-    audit("backup_verify", detail="全部通过" if ok else "存在异常")
-    return jsonify({"ok": ok, "msg": "全部备份校验通过" if ok else "存在异常备份, 详见服务日志/backup.log"})
+    """D1-11 C2: 校验入队(异步job) — 全量校验需数分钟, 同步等待必超时;
+    结果由 verify 逐条写回 manifest, 页面轮询任务结束后刷新"""
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    target = str(d.get("file", "")).strip() or "--all"
+    bk = _backup_mod()
+    if target != "--all":
+        if not any(e["file"] == target or e["file"].startswith(target + "/")
+                   for e in bk._load_manifest()["entries"]):
+            return jsonify({"ok": False, "msg": "备份不存在"}), 404
+    ok, msg = jobs.enqueue("verify", jobs.task_verify(target),
+                           target="全部备份" if target == "--all" else target,
+                           trigger="manual")
+    audit("backup_verify_enqueue" if ok else "backup_verify_reject", target=target)
+    return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
 
 
 @bp_admin.post("/api/backup/restore")

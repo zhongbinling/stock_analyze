@@ -470,16 +470,36 @@ def _entry_exists(f: str) -> bool:
     return (rootp / name).exists()
 
 
-def verify(target: str = "--all") -> bool:
-    """校验: 文件存在 + sha256比对 + integrity + 新鲜度; 返回整体是否通过"""
+def _writeback_verify(fname: str, state: dict):
+    """D1-11 C2: 校验结果写回manifest条目(走清单锁, 重读防并发覆盖)"""
+    with _manifest_lock():
+        m2 = _load_manifest()
+        for e2 in m2["entries"]:
+            if e2["file"] == fname:
+                e2["verify"] = state
+                break
+        else:
+            return                            # 条目已被并发prune → 放弃写回
+        _save_manifest(m2)
+
+
+def verify(target: str = "--all", progress=None) -> bool:
+    """校验: 文件存在 + sha256比对 + integrity + 新鲜度; 返回整体是否通过。
+
+    D1-11 C2: 每条结果即时写回条目 verify:{ok,at,issues}(逐条落盘, 中断不丢已校验的);
+    progress(i, n, file) 回调供任务层上报 [i/N] 进度。
+    """
     m = _load_manifest()
-    ents = ([e for e in m["entries"] if e["file"] == target] if target != "--all"
-            else m["entries"])
+    if target == "--all":
+        ents = m["entries"]
+    else:                                    # 精确条目 或 运行目录(组)前缀
+        ents = [e for e in m["entries"]
+                if e["file"] == target or e["file"].startswith(target + "/")]
     if not ents:
         _log(f"✗ 无匹配备份: {target}")
         return False
     all_ok = True
-    for e in ents:
+    for idx, e in enumerate(ents, 1):
         issues = []
         if not _entry_exists(e["file"]):
             issues.append("文件缺失")
@@ -505,6 +525,11 @@ def verify(target: str = "--all") -> bool:
                     t.unlink(missing_ok=True)
         ok = not issues
         all_ok &= ok
+        _writeback_verify(e["file"], {
+            "ok": ok, "at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "issues": issues[:3]})
+        if progress:
+            progress(idx, len(ents), e["file"])
         _log(f"{'✓' if ok else '✗'} {e['file']} ({e['time']}[{e.get('type', '')}])"
              f"{' ' + '; '.join(issues) if issues else ''}")
     return all_ok

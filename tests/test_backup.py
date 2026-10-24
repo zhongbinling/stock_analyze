@@ -230,6 +230,38 @@ def test_noop_skip_uses_source_sha_fast_path(env, monkeypatch):
     assert not list(env["bdir"].glob("manual_*")), "跳过后不应残留快照目录"
 
 
+def test_verify_writes_back_state(env):
+    """D1-11 C2: 校验结果写回条目(✓与✗都持久化, 重载清单可见)"""
+    B.snapshot("sentiment", "daily")
+    assert B.verify("--all") is True
+    e = _entries()[-1]
+    assert e["verify"]["ok"] is True and e["verify"]["at"]
+    # 篡改zip成员 → 校验失败, 状态翻红并带原因
+    root, name = e["file"].split("/", 1)
+    zp = env["bdir"] / root
+    import zipfile as zf
+    with zf.ZipFile(zp) as z:
+        z.read(name)
+    with zf.ZipFile(zp, "w") as z:
+        z.writestr(name, b"broken-not-a-db")
+    assert B.verify(e["file"]) is False
+    e2 = _entries()[-1]
+    assert e2["verify"]["ok"] is False
+    assert any("sha256" in i for i in e2["verify"]["issues"])
+
+
+def test_verify_folder_target_and_progress(env):
+    """D1-11 C1/C2: 按运行目录整组校验 + progress回调(i,n)供任务进度"""
+    r = B.run_all("daily")
+    folder = r["files"][0]["file"].split("/")[0]
+    got = []
+    assert B.verify(folder, progress=lambda i, n, f: got.append((i, n))) is True
+    n_assets = len(B.ASSETS)
+    assert got == [(i, n_assets) for i in range(1, n_assets + 1)]
+    # 组内每条都已写回校验状态
+    assert all(x.get("verify", {}).get("ok") for x in _entries())
+
+
 def test_skip_backfills_src_sha_for_legacy_entries(env):
     """D1-10r: 无src_sha256的旧条目在首次跳过时回填, 之后走快速路径"""
     B.snapshot("sentiment", "daily")

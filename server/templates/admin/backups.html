@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}备份中心 · {{ app_name }}{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{{ url_for('admin.dashboard') }}">← 工作台</a> · <a href="{{ url_for('admin.data_page') }}">数据管理</a></p>
+
+<section class="card">
+  <div class="row-flex spread">
+    <h1>备份中心</h1>
+    <div class="row-flex">
+      <span class="hint" id="sumLine">加载中…</span>
+      <button class="btn primary" id="btnVerifyAll">全部校验</button>
+    </div>
+  </div>
+  <div id="verifyBox" style="display:none;margin:6px 0">
+    <div class="row-flex">
+      <span class="hint" id="verifyMsg"></span>
+      <span class="hint" id="verifyPct"></span>
+    </div>
+    <div style="background:var(--bg2,#eee);border-radius:4px;height:8px;overflow:hidden">
+      <div id="verifyBar" style="height:100%;width:0;background:#4caf50;transition:width .5s"></div>
+    </div>
+    <pre class="hint" id="verifyLog" style="margin:4px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></pre>
+  </div>
+  <p class="hint">清单以 manifest 为真源, 按运行分组(同一次备份的多资产可展开)。校验 = 存在性+sha256+库完整性, 结果写回清单长期可见; 大库单条约需 1 分钟, 走后台任务。</p>
+</section>
+
+<section class="card">
+  <h2>备份清单</h2>
+  <div class="row-flex" style="margin-bottom:6px">
+    <select class="input narrow" id="fType"><option value="">全部类型</option></select>
+    <select class="input narrow" id="fBlock">
+      <option value="">全部数据块</option>
+      <option>基础+评分</option><option>基础</option><option>账号</option><option>配置</option>
+    </select>
+    <input class="input narrow" id="fSearch" placeholder="搜资产/文件名">
+    <span class="hint" id="fCount"></span>
+  </div>
+  <table class="table" id="bkRuns"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
+  <h2>操作记录</h2>
+  <p class="hint">备份任务的执行历史(BackupRun); 日备/周备/手动/恢复前保护快照的运行结果。恢复入口将在下一版本接入本页。</p>
+  <table class="table" id="bkHistory"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})
+  }));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let RUNS = [];
+const TYPE_KEY = {"日备": "daily", "周备": "weekly", "手动": "manual", "计算前": "pre-calc",
+                  "回填前": "pre-backfill", "恢复前": "pre-restore", "保护": "pre"};
+
+function memState(m) {
+  if (!m.exists) return `<span class="bad">✗ 文件缺失</span>`;
+  if (!m.verify) return `<span class="hint">未校验</span>`;
+  return m.verify.ok
+    ? `<span class="ok" title="校验于 ${esc(m.verify.at)}">✓ ${esc((m.verify.at || '').slice(5, 16))}</span>`
+    : `<span class="bad" title="${esc((m.verify.issues || []).join('; '))}">✗ ${esc((m.verify.issues || ['异常'])[0])}</span>`;
+}
+
+function render() {
+  const ft = $('fType').value, fb = $('fBlock').value, q = $('fSearch').value.trim().toLowerCase();
+  const hit = m => (!fb || m.block === fb)
+    && (!q || m.asset.toLowerCase().includes(q) || m.file.toLowerCase().includes(q));
+  // 类型筛选在组级(组内成员同类型), 块/搜索在成员级
+  const rows = [];
+  let shown = 0;
+  for (const r of RUNS) {
+    const mems = r.members.filter(hit);
+    if (fb || q) { if (!mems.length) continue; }
+    if (ft && r.type !== ft) continue;
+    shown += mems.length;
+    const vc = `${mems.filter(m => m.verify && m.verify.ok && m.exists).length}✓ `
+      + `${mems.filter(m => !m.exists || (m.verify && !m.verify.ok)).length}✗ `
+      + `${mems.filter(m => m.exists && !m.verify).length}?`;
+    rows.push(`<tr class="grp" data-folder="${esc(r.folder)}" style="cursor:pointer;background:var(--bg2,#f5f5f5)">
+      <td>${esc(r.time)}</td><td><span class="tag">${esc(r.type_label)}</span></td>
+      <td>${r.files_n} 份</td><td>${r.total_mb} MB</td><td class="hint">${esc(r.fresh)}</td>
+      <td>${vc}</td>
+      <td><button class="btn small" data-vfolder="${esc(r.folder)}">校验此组</button></td></tr>`);
+    for (const m of mems) {
+      rows.push(`<tr class="mem" data-folder="${esc(r.folder)}" ${r.files_n > 1 ? 'style="display:none"' : ''}>
+        <td class="hint">└ ${esc(m.asset)}</td><td class="hint">${esc(m.block)}</td>
+        <td class="hint">${m.size_mb} MB</td><td class="hint">${esc(m.fresh)}</td>
+        <td>${memState(m)}</td><td class="hint" style="font-size:.85em">${esc(m.file)}</td><td></td></tr>`);
+    }
+  }
+  $('bkRuns').innerHTML = '<tr><th>时间</th><th>类型</th><th>份数/资产</th><th>大小</th><th>新鲜度</th><th>校验状态</th><th>操作</th></tr>'
+    + (rows.length ? rows.join('') : '<tr><td colspan="7" class="hint">无匹配备份</td></tr>');
+  $('fCount').textContent = `${shown} 份`;
+  document.querySelectorAll('#bkRuns .grp').forEach(tr =>
+    tr.onclick = () => document.querySelectorAll(`#bkRuns .mem[data-folder="${CSS.escape(tr.dataset.folder)}"]`)
+      .forEach(x => x.style.display = x.style.display === 'none' ? '' : 'none'));
+  document.querySelectorAll('#bkRuns [data-vfolder]').forEach(b =>
+    b.onclick = ev => { ev.stopPropagation(); enqueueVerify(b.dataset.vfolder); });
+}
+
+async function loadManifest() {
+  try {
+    const d = await api('/admin/api/backups/manifest');
+    RUNS = d.runs;
+    const s = d.summary;
+    $('sumLine').innerHTML =
+      `${s.runs_n} 次运行 · ${s.files_n} 份 · 磁盘 ${s.disk_mb} MB `
+      + (s.n_bad ? `<span class="bad">✗ ${s.n_bad} 份异常/缺失</span>` : '<span class="ok">无异常记录</span>')
+      + ` · ` + Object.entries(s.by_type).map(([t, n]) => `${esc(t)} ${n}`).join(' · ');
+    const sel = $('fType'), cur = sel.value;
+    sel.innerHTML = '<option value="">全部类型</option>'
+      + Object.entries(s.by_type).map(([t]) => `<option value="${esc(TYPE_KEY[t] ?? t)}">${esc(t)} ${s.by_type[t]}</option>`).join('');
+    sel.value = cur;
+    render();
+  } catch (e) { $('sumLine').textContent = '加载失败: ' + e.message; }
+}
+
+async function loadHistory() {
+  try {
+    const d = await api('/admin/api/backups');
+    $('bkHistory').innerHTML = '<tr><th>时间</th><th>类型</th><th>触发</th><th>文件数</th><th>大小</th><th>耗时</th><th>状态</th></tr>'
+      + (d.runs.length ? d.runs.map(r => `<tr><td class="hint">${esc(r.at)}</td><td>${esc(r.btype)}</td>
+        <td class="hint">${esc(r.trigger)}</td><td>${r.files_n}</td><td>${r.total_mb} MB</td><td>${r.duration ?? ''}s</td>
+        <td class="${r.status === 'done' ? 'ok' : r.status === 'running' ? 'hint' : 'bad'}">${r.status === 'done' ? '✓' : r.status === 'running' ? '…' : '✗ ' + esc((r.error || '').slice(0, 40))}</td></tr>`).join('')
+      : '<tr><td colspan="7" class="hint">暂无记录</td></tr>');
+  } catch (e) { $('bkHistory').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
+}
+
+async function enqueueVerify(target) {
+  try {
+    const r = await api('/admin/api/backup/verify', {method: 'POST',
+      body: JSON.stringify(target ? {file: target} : {})});
+    $('verifyMsg').textContent = r.msg;
+  } catch (e) { $('verifyMsg').textContent = e.message; }
+}
+$('btnVerifyAll').onclick = () => enqueueVerify('');
+
+/* 校验任务进度轮询: 运行中显示进度条, 结束后自动刷新清单 */
+let wasVerifying = false;
+setInterval(async () => {
+  try {
+    const p = await api('/admin/api/jobpoll');
+    const v = p.running && p.running.kind === 'verify' ? p.running : null;
+    if (v) {
+      wasVerifying = true;
+      $('verifyBox').style.display = '';
+      $('verifyPct').textContent = (v.progress != null ? v.progress + '%' : '');
+      $('verifyBar').style.width = (v.progress || 0) + '%';
+      $('verifyLog').textContent = (v.log || '').split('\n').filter(x => x.trim()).slice(-1)[0] || '';
+    } else {
+      $('verifyBox').style.display = 'none';
+      if (wasVerifying) { wasVerifying = false; loadManifest(); }
+    }
+  } catch (e) { /* 轮询失败静默 */ }
+}, 3000);
+
+['fType', 'fBlock'].forEach(id => $(id).onchange = render);
+$('fSearch').oninput = render;
+loadManifest();
+loadHistory();
+</script>
+{% endblock %}
