@@ -43,7 +43,7 @@ DEFAULT_SETTINGS = {
     "auto_update": "1",
     "update_cron": "16:35",
     "auto_generate": "1",
-    "generate_cron": "17:00",
+    "generate_cron": "18:00",   # D1-10 A3: 3次更新重试后生成
     # B1 备份服务化: 类型滚动保留 + 调度策略(数据管理页可改, 热生效)
     "backup_enabled": "1",
     "backup_daily_cron": "18:35",       # 每日备份时刻(收盘任务链后)
@@ -103,6 +103,13 @@ def _default_params() -> dict:
         cfg = yaml.safe_load(f)
     return {"weights": cfg["weights"], "window": cfg.get("window", 250),
             "pool_min_periods": cfg.get("pool_min_periods", 60), "years": None}
+
+
+def migrate_old_defaults():
+    """D1-10 A3: generate_cron 旧默认 17:00 → 18:00(用户自定义值不动)"""
+    if get_setting("generate_cron") == "17:00":
+        set_setting("generate_cron", "18:00")
+        print("[jobs] generate_cron 旧默认 17:00 已迁移为 18:00")
 
 
 def seed_defaults():
@@ -203,9 +210,43 @@ def _execute(item):
     job.finished_at = _now()
     append(f"[{utcnow_str()}] 结束: {'成功' if rc == 0 else '失败'} ({job.duration_s}s)")
     db.session.commit()
+    if item["kind"] == "update":
+        _post_update_check(item, rc, job)      # D1-10 A1: 失败重试判定
 
 
 # ---------------------------------------------------------------- 子进程执行
+
+def _post_update_check(item, rc, job):
+    """D1-10 A1: 更新完成后判定是否需要 +30min 自动重试(最多3次)。
+
+    判定: 今日为交易日 且 mood_raw 最新 < 今日(数据没跟上) → 视为失败。
+    成功或非交易日 → 清零重试计数。
+    """
+    try:
+        from server import market
+        from datetime import timedelta
+        ok = rc == 0 and (not market.is_trading_day_today()
+                          or (market._mood_latest() or "") >= time.strftime("%Y-%m-%d"))
+        if ok:
+            if get_setting("update_retry_n", "0") not in ("0",):
+                set_setting("update_retry_n", "0")
+            return
+        n = int(get_setting("update_retry_n", "0") or 0)
+        if n >= 2:                                  # 已重试2次 → 第3次总尝试后停
+            print(f"[retry] 更新仍未完成(第{n + 1}次尝试), 停止重试")
+            set_setting("update_retry_n", "0")
+            return
+        set_setting("update_retry_n", str(n + 1))
+        from apscheduler.triggers.date import DateTrigger
+        when = _now() + timedelta(minutes=30)
+        _scheduler.add_job(
+            lambda: enqueue("update", task_update, trigger="schedule"),
+            DateTrigger(run_date=when), id=f"update_retry_{n + 1}",
+            replace_existing=True)
+        print(f"[retry] 更新未完成(尝试{n + 1}/3), {when.strftime('%H:%M')} 自动重试")
+    except Exception as e:  # noqa: BLE001
+        print(f"[retry] 重试判定异常(不影响任务): {e}")
+
 
 def _run(cmd, append, cwd=CORE, env_extra=None):
     append("$ " + " ".join(str(c) for c in cmd))
@@ -525,13 +566,16 @@ def _sync_cron_jobs(app):
     au = get_setting("auto_update") == "1"
     ag = get_setting("auto_generate") == "1"
     uh, um = _parse_hhmm(get_setting("update_cron"), 16, 35)
-    gh, gm = _parse_hhmm(get_setting("generate_cron"), 17, 0)
+    gh, gm = _parse_hhmm(get_setting("generate_cron"), 18, 0)
 
     for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup"):
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
     if au:
-        _scheduler.add_job(lambda: enqueue("update", task_update, trigger="schedule"),
+        # D1-10 A2: 定时走缺口修复链(近1周扫描, 幂等单趟, 无缺口秒完成);
+        # 手动[增量更新]按钮仍走 task_update(当天快速链)
+        _scheduler.add_job(lambda: enqueue("update", task_repair(7, "schedule"),
+                                           trigger="schedule"),
                            CronTrigger(hour=uh, minute=um, day_of_week="mon-fri"),
                            id="daily_update")
     if ag:
@@ -594,6 +638,7 @@ def ensure_started(app):
     _app_ref = app
     with app.app_context():
         seed_defaults()
+        migrate_old_defaults()
         _mark_interrupted()
     ensure_worker(app)
     start_scheduler(app)

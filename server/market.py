@@ -46,6 +46,19 @@ def latest_index_date():
         con.close()
 
 
+def _mood_latest() -> str | None:
+    """mood_raw 最新日期(重试判定的数据跟上口径)"""
+    con = _conn()
+    if con is None:
+        return None
+    try:
+        return con.execute("SELECT MAX(date) FROM mood_raw").fetchone()[0]
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+
+
 def is_trading_day_today() -> bool:
     """交易日判定: 优先 tushare 交易日历(前验); 无日历时回退'行情最新日期==今天'(后验)"""
     today = time.strftime("%Y%m%d")
