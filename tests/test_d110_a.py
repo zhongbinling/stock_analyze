@@ -65,6 +65,31 @@ def test_post_update_rc_fail_also_retries(server_app, monkeypatch):
         jobs.set_setting("update_retry_n", "0")
 
 
+def test_post_update_no_scheduler_no_count(server_app, monkeypatch):
+    """D1-10r: 调度器未启用 → 不计数不重试(否则计数空涨到上限)"""
+    from server import jobs
+    with server_app["app"].app_context():
+        monkeypatch.setattr(jobs, "_scheduler", None)
+        monkeypatch.setattr("server.market.is_trading_day_today", lambda: True)
+        monkeypatch.setattr("server.market._mood_latest", lambda: "2026-01-01")
+        jobs._post_update_check({"kind": "update"}, 0, None)
+        assert jobs.get_setting("update_retry_n") in ("0", None)
+
+
+def test_retry_uses_repair_chain(server_app, monkeypatch):
+    """D1-10r: 重试job与A2定时一致走task_repair(源码断言)"""
+    from server import jobs
+    with server_app["app"].app_context():
+        fake = _FakeSched()
+        monkeypatch.setattr(jobs, "_scheduler", fake)
+        monkeypatch.setattr("server.market.is_trading_day_today", lambda: True)
+        monkeypatch.setattr("server.market._mood_latest", lambda: "2026-01-01")
+        jobs._post_update_check({"kind": "update"}, 0, None)
+        import inspect
+        assert "task_repair(7" in inspect.getsource(jobs._post_update_check)
+        jobs.set_setting("update_retry_n", "0")
+
+
 def test_scheduled_update_uses_repair(monkeypatch):
     """A2: 定时更新任务为task_repair(近1周)而非task_update"""
     import inspect
@@ -74,13 +99,15 @@ def test_scheduled_update_uses_repair(monkeypatch):
 
 
 def test_generate_cron_default_1800_and_migrate(server_app):
-    """A3: 默认18:00; 旧默认17:00迁移, 自定义值不动"""
+    """A3: 默认18:00; 旧默认17:00一次性迁移; 之后用户改回17:00不再被重置"""
     from server import jobs
     assert jobs.DEFAULT_SETTINGS["generate_cron"] == "18:00"
     with server_app["app"].app_context():
         jobs.set_setting("generate_cron", "17:00")
+        jobs.set_setting("generate_cron_migrated", "0")
         jobs.migrate_old_defaults()
         assert jobs.get_setting("generate_cron") == "18:00"
-        jobs.set_setting("generate_cron", "16:45")       # 用户自定义
+        # 迁移后用户改回17:00 → 标志已立, 不再重置(D1-10r)
+        jobs.set_setting("generate_cron", "17:00")
         jobs.migrate_old_defaults()
-        assert jobs.get_setting("generate_cron") == "16:45"
+        assert jobs.get_setting("generate_cron") == "17:00"

@@ -106,10 +106,13 @@ def _default_params() -> dict:
 
 
 def migrate_old_defaults():
-    """D1-10 A3: generate_cron 旧默认 17:00 → 18:00(用户自定义值不动)"""
+    """D1-10 A3: generate_cron 旧默认 17:00 → 18:00(一次性迁移; 用户之后改回17:00不再动)"""
+    if get_setting("generate_cron_migrated", "0") == "1":
+        return
     if get_setting("generate_cron") == "17:00":
         set_setting("generate_cron", "18:00")
         print("[jobs] generate_cron 旧默认 17:00 已迁移为 18:00")
+    set_setting("generate_cron_migrated", "1")
 
 
 def seed_defaults():
@@ -231,6 +234,8 @@ def _post_update_check(item, rc, job):
             if get_setting("update_retry_n", "0") not in ("0",):
                 set_setting("update_retry_n", "0")
             return
+        if _scheduler is None:                      # D1-10r: 调度器未启用→重试不可能, 不计数
+            return
         n = int(get_setting("update_retry_n", "0") or 0)
         if n >= 2:                                  # 已重试2次 → 第3次总尝试后停
             print(f"[retry] 更新仍未完成(第{n + 1}次尝试), 停止重试")
@@ -240,7 +245,7 @@ def _post_update_check(item, rc, job):
         from apscheduler.triggers.date import DateTrigger
         when = _now() + timedelta(minutes=30)
         _scheduler.add_job(
-            lambda: enqueue("update", task_update, trigger="schedule"),
+            lambda: enqueue("update", task_repair(7, "schedule"), trigger="schedule"),
             DateTrigger(run_date=when), id=f"update_retry_{n + 1}",
             replace_existing=True)
         print(f"[retry] 更新未完成(尝试{n + 1}/3), {when.strftime('%H:%M')} 自动重试")
