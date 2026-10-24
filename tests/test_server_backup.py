@@ -185,6 +185,23 @@ def test_data_html_task_center_and_backfill_feedback():
     assert "} finally {" in html and "catch (e) { return; }" not in html
 
 
+def test_data_html_unified_assets_and_checkup():
+    """D1-11 E1/E2: 统一数据资产表 + 一键体检; 旧分散表/扫描块已移除"""
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    # E2 体检: 窗口选择/按钮/结果面板/行级修复 + 一键修复链
+    assert 'id="chkWin"' in html and 'id="btnCheck"' in html and 'id="chkPanel"' in html
+    assert "SCAN_DS" in html and "data-fix=" in html and "btnFixAll" in html
+    assert "runRepair" in html and "/admin/api/scan" in html
+    # E1 统一资产表: 上次补全列 + 补全按钮在资产表内
+    assert "上次补全" in html and "data-bf=" in html and "链路" in html
+    # 旧分散元素/函数已移除(bfAssets表/扫描缺口块/旧缺口窗口)
+    for gone in ('id="bfAssets"', 'id="gapWin"', 'id="btnScan"', 'id="btnRepair"',
+                 'id="scanMsg"', 'id="gapTable"', "loadBfAssets", "gapResult"):
+        assert gone not in html, f"遗留旧元素: {gone}"
+    # 任务结束自动刷新资产表
+    assert "if (tcWasRunning) loadDatasets()" in html
+
+
 def test_data_html_script_syntax():
     """模板内嵌 JS 语法门禁(node 解析)"""
     import shutil

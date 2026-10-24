@@ -24,8 +24,23 @@
 <section class="card">
   <div class="row-flex spread">
     <h1>数据管理</h1>
-    <button class="btn small" id="btnRefresh">刷新</button>
+    <div class="row-flex">
+      <select class="input narrow" id="chkWin">
+        <option value="7">近1周</option>
+        <option value="30">近1月</option>
+        <option value="90" selected>近1季度</option>
+        <option value="365">近1年</option>
+      </select>
+      <button class="btn" id="btnCheck">一键体检</button>
+      <button class="btn small" id="btnRefresh">刷新</button>
+    </div>
   </div>
+  <span class="hint" id="chkMsg"></span>
+  <div id="chkPanel" style="display:none;margin:6px 0">
+    <div id="chkSummary"></div>
+    <table class="table" id="chkTable"></table>
+  </div>
+  <p class="hint">完成度以交易日历为口径(2013基准线); 缺口悬停可见缺失日期; 不完整的数据集行内即可补全; 「一键体检」按窗口扫描并逐表修复。</p>
   <table class="table" id="dsTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
 </section>
 
@@ -89,7 +104,7 @@
 
 <section class="card">
   <h2>数据补全</h2>
-  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照。点击行内[补全]按需修复; 运行中其余按钮置灰(任务队列串行)。</p>
+  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照。补全按钮在上方「数据管理」资产表行内; 本卡为补全记录与反查。</p>
   <div class="row-flex" style="margin:4px 0">
     <label class="chk"><input type="checkbox" id="bfRecalc"> 补全后自动重算评分（score + 板块温度，保证视图生成用到完整评分）</label>
     <span class="hint" id="bfRecalcMsg"></span>
@@ -99,7 +114,6 @@
     <button class="btn small" id="btnBkQuery2">查该日被哪些补全写过</button>
     <span class="hint" id="bfQueryMsg"></span>
   </div>
-  <table class="table" id="bfAssets"><tbody><tr><td>加载中…</td></tr></tbody></table>
   <div class="row-flex" style="margin:6px 0">
     <span class="hint" id="bfMsg"></span>
     <span class="hint" id="bfLive"></span>
@@ -109,24 +123,10 @@
 
 <section class="card">
   <h2>手动更新</h2>
-  <p class="hint">任务状态与日志集中在顶部「任务中心」; 更新/修复走任务队列串行执行。</p>
+  <p class="hint">任务状态与日志见顶部「任务中心」; 缺口体检与修复在上方「数据管理」卡。</p>
   <div class="row-flex">
     <button class="btn primary" id="btnUpdate">增量更新数据（抓取＋重算评分）</button>
   </div>
-  <div class="row-flex" style="margin-top:6px">
-    <span>缺口窗口</span>
-    <select class="input narrow" id="gapWin">
-      <option value="7">近1周</option>
-      <option value="30">近1月</option>
-      <option value="90">近1季度</option>
-      <option value="365">近1年</option>
-    </select>
-    <button class="btn" id="btnScan">扫描缺口</button>
-    <button class="btn primary" id="btnRepair" style="display:none">修复缺失</button>
-    <span class="hint" id="scanMsg"></span>
-  </div>
-  <p class="hint" id="scanHint">以交易日历为基线扫描缺失交易日(周末不计); 修复走任务队列只补缺失日(幂等), 完成后自动重算评分。</p>
-  <table class="table" id="gapTable" style="display:none"></table>
 </section>
 
 <section class="card">
@@ -150,15 +150,41 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 async function loadDatasets() {
   try {
     const d = await api('/admin/api/datasets');
-    const pctCls = c => c == null ? 'hint' : (c >= 100 ? 'ok' : 'bad');
-    $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>行数</th><th>板块数</th><th>区间</th><th>完成度</th><th>缺口</th><th>健康</th><th>说明</th></tr>' +
-      d.datasets.map(t => `<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td><td>${t.rows}</td>
-        <td>${t.codes ?? '--'}</td>
-        <td class="hint">${esc(t.first || '--')} ~ ${esc(t.last || '--')}</td>
-        <td class="${pctCls(t.completeness)}">${t.completeness == null ? '--' : t.completeness + '%'}</td>
-        <td class="${t.missing_n ? 'bad' : 'hint'}" title="${esc((t.missing_recent || []).join(', '))}">${t.missing_n ? `缺 ${t.missing_n} 天` : '—'}</td>
-        <td class="${t.health === 'ok' ? 'ok' : 'bad'}">${t.health === 'ok' ? '正常' : t.health === 'warn' ? '注意' : '异常'}</td>
-        <td class="hint">${esc(t.note || '')}</td></tr>`).join('');
+    const jp = await api('/admin/api/jobpoll');
+    const bl = await api('/admin/api/backfill/logs');
+    const busy = !!(jp.running || jp.queued > 0);
+    const lastByDs = {};                              // 每补全项最新一次记录
+    bl.logs.forEach(l => { if (!(l.dataset in lastByDs)) lastByDs[l.dataset] = l; });
+    const byCode = {}; d.datasets.forEach(t => { byCode[t.code] = t; });
+    // D1-11 E1: 统一数据资产表 — 可补全项(带按钮/上次补全)在前, 链路维护项在后
+    const lastCell = ds => { const L = lastByDs[ds];
+      return !L ? '<span class="hint">—</span>'
+        : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} +${(L.days || []).length}日</span>`
+        : L.status === 'running' ? '<span class="hint">… 运行中</span>'
+        : `<span class="bad" title="${esc(L.error)}">✗ ${esc((L.error || '失败').slice(0, 12))}</span>`; };
+    const pctCell = t => t == null || t.completeness == null ? '<span class="hint">--</span>'
+      : `<span class="${t.completeness >= 100 ? 'ok' : t.completeness >= 80 ? '' : 'bad'}">${t.completeness}%</span>`;
+    const gapCell = t => !t || !t.missing_n ? '<span class="hint">—</span>'
+      : `<span class="bad" title="${esc((t.missing_recent || []).join(', '))}">缺 ${t.missing_n} 天</span>`;
+    const lastTd = t => !t || !t.last ? '<span class="hint">--</span>'
+      : `<span title="${esc(t.first || '')} ~ ${esc(t.last)}">${esc(t.last)}</span>`;
+    const rows = [], used = new Set();
+    for (const r of BF_ROWS) {
+      const t = r.asset ? byCode[r.asset] : null;
+      if (r.asset) used.add(r.asset);
+      const btn = `<button class="btn small" data-bf="${r.ds}" ${busy ? 'disabled' : ''}>补全</button>`;
+      rows.push(`<tr><td>${esc(r.label)}</td><td class="hint">${esc(t ? t.db : 'sentiment.db')}</td>
+        <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
+        <td>${lastCell(r.ds)}</td><td>${btn}</td></tr>`);
+    }
+    for (const t of d.datasets) {
+      if (used.has(t.code)) continue;                 // 已在上方补全行
+      rows.push(`<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
+        <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
+        <td class="hint">—</td><td class="hint" title="由更新/修复链维护">链路</td></tr>`);
+    }
+    $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>最新</th><th>完成度</th><th>缺口</th><th>上次补全</th><th>操作</th></tr>' + rows.join('');
+    document.querySelectorAll('#dsTable [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
     // D2-2: 评分数据状态
     $('scoreTable').innerHTML = '<tr><th>评分类型</th><th>来源</th><th>行数</th><th>板块数</th><th>覆盖交易日</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
       (d.scores || []).map(t => `<tr><td>${esc(t.name)}</td><td>${esc(t.source)}</td><td>${t.rows}</td>
@@ -277,8 +303,11 @@ async function poll(quick) {
       }
       btn.disabled = true;
       btn.textContent = '⏳ 任务执行中...';
+      bfRunning = true;                    // 补全行按钮同步禁用
     } else {
+      if (tcWasRunning) loadDatasets();    // D1-11 E2: 任务结束(修复/补全完成)自动刷新资产表
       tcWasRunning = false;
+      bfRunning = false;
       $('tcRun').style.display = 'none';
       $('tcIdle').style.display = '';
       $('tcState').textContent = '空闲';
@@ -311,42 +340,52 @@ async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下�
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 
-$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); loadBfAssets(); };
+$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); };
 
-/* D1-10 U1: 缺口扫描/修复 */
-let gapResult = null;
-$('btnScan').onclick = async () => {
-  $('scanMsg').textContent = '扫描中…';
-  $('gapTable').style.display = 'none';
-  $('btnRepair').style.display = 'none';
+/* ── D1-11 E2: 一键体检(窗口扫描 → 行级定向修复/一键修复链) ── */
+async function runRepair(win) {
   try {
-    const r = await api('/admin/api/scan', {method: 'POST',
-      body: JSON.stringify({window: parseInt($('gapWin').value)})});
-    gapResult = r;
+    const r = await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
+    $('chkMsg').textContent = r.msg;
+    $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
+    poll(true);
+  } catch (e) { $('chkMsg').textContent = e.message; }
+}
+$('btnCheck').onclick = async () => {
+  const btn = $('btnCheck');
+  btn.disabled = true; btn.textContent = '⏳ 体检中…';
+  $('chkMsg').textContent = '';
+  try {
+    const win = parseInt($('chkWin').value);
+    const r = await api('/admin/api/scan', {method: 'POST', body: JSON.stringify({window: win})});
     const miss = r.assets.filter(a => a.missing.length > 0);
     const total = miss.reduce((s, a) => s + a.missing.length, 0);
-    $('scanMsg').textContent = miss.length === 0
-      ? `✓ ${r.trading_days}个交易日全部完整(最新 ${r.latest})`
-      : `${miss.length}表缺共${total}日`;
-    if (miss.length) {
-      $('gapTable').style.display = '';
-      $('gapTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th></tr>' +
-        miss.map(a => `<tr><td>${esc(a.name)}</td><td class="hint">${esc(a.db)}</td>
-          <td class="bad">${a.missing.join(', ')}</td></tr>`).join('');
-      $('btnRepair').style.display = '';
+    if (!miss.length) {
+      $('chkSummary').innerHTML = `<span class="ok">✓ 近窗口 ${r.trading_days} 个交易日全部完整(最新 ${esc(r.latest)})</span>`;
+      $('chkTable').innerHTML = '';
+    } else {
+      $('chkSummary').innerHTML =
+        `<span class="bad">${miss.length} 表缺共 ${total} 日(近${r.window_days}天)</span>
+         <button class="btn primary small" id="btnFixAll" style="margin-left:8px">一键修复(更新链)</button>`;
+      $('chkTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th><th>修复方式</th><th></th></tr>' +
+        miss.map(a => {
+          const ds = SCAN_DS[a.code];
+          return `<tr><td>${esc(a.name)}</td><td class="hint">${esc(a.db)}</td>
+            <td class="bad" style="font-size:.85em">${a.missing.join(', ')}</td>
+            <td class="hint">${ds ? '定向补全' : '更新链'}</td>
+            <td><button class="btn small" data-fix="${esc(a.code)}">修复</button></td></tr>`;
+        }).join('');
     }
-  } catch (e) { $('scanMsg').textContent = '扫描失败: ' + e.message; }
-};
-$('btnRepair').onclick = async () => {
-  const btn = $('btnRepair');
-  btn.disabled = true; btn.textContent = '⏳ 已提交…';
-  try {
-    const r = await api('/admin/api/repair', {method: 'POST',
-      body: JSON.stringify({window: parseInt($('gapWin').value)})});
-    $('scanMsg').textContent = r.msg;
-    poll(true);
-  } catch (e) { $('scanMsg').textContent = e.message; }
-  btn.disabled = false; btn.textContent = '修复缺失';
+    $('chkPanel').style.display = '';
+    const fa = $('btnFixAll');
+    if (fa) fa.onclick = () => runRepair(win);
+    document.querySelectorAll('#chkTable [data-fix]').forEach(b =>
+      b.onclick = () => {
+        const ds = SCAN_DS[b.dataset.fix];
+        if (ds) bfRun(ds, b); else runRepair(win);
+      });
+  } catch (e) { $('chkMsg').textContent = '体检失败: ' + e.message; }
+  btn.disabled = false; btn.textContent = '一键体检';
 };
 
 /* ── B1: 数据备份 ── */
@@ -447,7 +486,7 @@ async function loadBackfillLogs(dataset = '', date = '') {
           <td class="hint" title="${esc(days)}">${esc(days.slice(0, 60))}${days.length > 60 ? '…' : ''}</td></tr>`;
       }).join('') : '<tr><td colspan="8" class="hint">暂无补全记录</td></tr>');
     if (date) $('bfQueryMsg').textContent = d.logs.length ? `该日被 ${d.logs.length} 条补全写过` : '该日无补全写入记录';
-    if (!!rg !== wasRunning) { wasRunning = !!rg; loadBfAssets(); }   // D1-10r: 队列状态翻转刷新按钮
+    if (!!rg !== wasRunning) { wasRunning = !!rg; loadDatasets(); }   // 队列状态翻转刷新资产表
   } catch (e) {
     $('bfTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`;
   } finally {
@@ -468,43 +507,11 @@ const BF_ROWS = [
   { ds: 'sector_history', label: '板块日线·历史回补(东财)', asset: 'sector_daily' },
   { ds: 'calendar', label: '交易日历·刷新', asset: null },
 ];
-let bfRunning = false;
-async function loadBfAssets() {
-  try {
-    const d = await api('/admin/api/datasets');
-    const running = await api('/admin/api/jobpoll');
-    const bfLogs = await api('/admin/api/backfill/logs');   // D2: 行级"上次补全"结果
-    const nowRunning = !!(running.running || running.queued > 0);
-    const stateChanged = nowRunning !== bfRunning;
-    bfRunning = nowRunning;
-    const byCode = {};
-    d.datasets.forEach(t => { byCode[t.code] = t; });
-    const lastByDs = {};                                    // 每数据集最新一条补全记录
-    bfLogs.logs.forEach(l => { if (!(l.dataset in lastByDs)) lastByDs[l.dataset] = l; });
-    $('bfAssets').innerHTML = '<tr><th>补全项</th><th>区间</th><th>完成度</th><th>缺口</th><th>上次补全</th><th></th></tr>' +
-      BF_ROWS.map(r => {
-        const t = r.asset ? byCode[r.asset] : null;
-        let range = '--', pct = '--', miss = '—', btn;
-        if (t) {
-          range = `${t.first || '--'} ~ ${t.last || '--'}`;
-          pct = t.completeness == null ? '--' : `<span class="${t.completeness >= 100 ? 'ok' : 'bad'}">${t.completeness}%</span>`;
-          miss = t.missing_n ? `<span class="bad">缺 ${t.missing_n} 天</span>` : '—';
-        }
-        const incomplete = !t || t.completeness === null || t.missing_n > 0 || (t.completeness !== null && t.completeness < 100);
-        btn = incomplete
-          ? `<button class="btn small" data-bf="${r.ds}" ${bfRunning ? 'disabled' : ''}>补全</button>`
-          : '<span class="ok">✓</span>';
-        const L = lastByDs[r.ds];
-        const last = !L ? '<span class="hint">—</span>'
-          : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} +${(L.days || []).length}日</span>`
-          : L.status === 'running' ? '<span class="hint">… 运行中</span>'
-          : `<span class="bad" title="${esc(L.error)}">✗ ${esc((L.error || '失败').slice(0, 14))}</span>`;
-        return `<tr><td>${esc(r.label)}</td><td class="hint">${range}</td><td>${pct}</td><td>${miss}</td><td>${last}</td><td>${btn}</td></tr>`;
-      }).join('');
-    document.querySelectorAll('#bfAssets [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
-    return stateChanged;
-  } catch (e) { $('bfAssets').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; return false; }
-}
+// D1-11 E2: 数据集code → 定向补全项(有则体检行修复走backfill, 否则走更新链)
+const SCAN_DS = {};
+BF_ROWS.forEach(r => { if (r.asset) SCAN_DS[r.asset] = r.ds; });
+SCAN_DS.calendar = 'calendar';
+let bfRunning = false;                    // D1-11 E1: 补全行已并入数据资产表(loadDatasets渲染)
 async function bfRun(dataset, btn) {
   if (bfRunning) return;
   btn.disabled = true; btn.textContent = '⏳';
@@ -514,7 +521,7 @@ async function bfRun(dataset, btn) {
     $('bfMsg').textContent = r.msg + ' — 进度见顶部任务中心';
     $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});   // D2: 即时可见反馈
     poll(true);
-    setTimeout(loadBfAssets, 3000); setTimeout(loadBfAssets, 30000);
+    setTimeout(loadDatasets, 3000); setTimeout(loadDatasets, 30000);
   } catch (e) { $('bfMsg').textContent = e.message; btn.disabled = false; btn.textContent = '补全'; }
 }
 $('btnBkQuery2').onclick = () => loadBackfillLogs('', $('bfDate').value.trim());
@@ -528,6 +535,6 @@ $('bfRecalc').onchange = async () => {
   } catch (e) { $('bfRecalcMsg').textContent = e.message; }
 };
 
-loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); loadBfAssets(); poll(true);
+loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); poll(true);
 </script>
 {% endblock %}
