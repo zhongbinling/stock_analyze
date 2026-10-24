@@ -302,6 +302,8 @@ def test_backups_html_binds_and_syntax():
     assert 'id="modalMask"' in html and "data-rgroup" in html and "data-restore" in html
     assert "RESTORE_INFO" in html and "pre-restore" in html
     assert "基础+评分" in html                       # 组恢复默认勾基础块的判定串
+    # D1-11r: 单条校验入口 + 剪贴板回退 + 成功态不立即关弹窗
+    assert 'data-vfile=' in html and "_fallbackCopy" in html and "restoreDone" in html
     data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "bkBlockBase" in data_html and "bkBlockAcc" in data_html
     assert "blocks" in data_html                     # 立即备份带范围

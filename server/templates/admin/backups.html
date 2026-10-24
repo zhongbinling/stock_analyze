@@ -104,7 +104,8 @@ function render() {
         <td class="hint">└ ${esc(m.asset)}</td><td class="hint">${esc(m.block)}</td>
         <td class="hint">${m.size_mb} MB</td><td class="hint">${esc(m.fresh)}</td>
         <td>${memState(m)}</td><td class="hint" style="font-size:.85em">${esc(m.file)}</td>
-        <td>${m.exists ? `<button class="btn small" data-restore="${esc(m.file)}">恢复</button>` : ''}</td></tr>`);
+        <td>${m.exists ? `<button class="btn small" data-vfile="${esc(m.file)}">校验</button>
+            <button class="btn small" data-restore="${esc(m.file)}">恢复</button>` : ''}</td></tr>`);
     }
   }
   $('bkRuns').innerHTML = '<tr><th>时间</th><th>类型</th><th>份数/资产</th><th>大小</th><th>新鲜度</th><th>校验状态</th><th>操作</th></tr>'
@@ -115,6 +116,8 @@ function render() {
       .forEach(x => x.style.display = x.style.display === 'none' ? '' : 'none'));
   document.querySelectorAll('#bkRuns [data-vfolder]').forEach(b =>
     b.onclick = ev => { ev.stopPropagation(); enqueueVerify(b.dataset.vfolder); });
+  document.querySelectorAll('#bkRuns [data-vfile]').forEach(b =>
+    b.onclick = () => enqueueVerify(b.dataset.vfile));   // D1-11r: 单条校验入口
   document.querySelectorAll('#bkRuns [data-rgroup]').forEach(b =>
     b.onclick = ev => {
       ev.stopPropagation();
@@ -181,6 +184,31 @@ let MODAL_CMD = '';
 function closeModal() { $('modalMask').style.display = 'none'; }
 $('modalMask').onclick = e => { if (e.target === $('modalMask')) closeModal(); }
 
+function copyText(t, btn) {                 // 局域网IP访问无clipboard API → execCommand回退
+  const done = () => { if (btn) btn.textContent = '已复制 ✓'; };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(t).then(done).catch(() => _fallbackCopy(t, done));
+  } else _fallbackCopy(t, done);
+}
+function _fallbackCopy(t, done) {
+  const ta = document.createElement('textarea');
+  ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); done(); } catch (e) { /* 用户可手动选中文本 */ }
+  ta.remove();
+}
+
+function restoreDone(n) {                   // 成功不立即关弹窗: 明确反馈+完成按钮
+  $('modalProg').style.display = '';
+  $('modalProg').textContent = `✓ 已恢复 ${n} 项, 清单已刷新`;
+  $('modalFoot').innerHTML = '<button class="btn primary" id="mDone">完成</button>';
+  $('mDone').onclick = closeModal;
+}
+function restoreFail(e) {
+  $('modalProg').textContent = '';
+  $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)} (已中断, 前面已恢复的资产不受影响)</p>`);
+}
+
 function showModal(title, bodyHtml, footHtml) {
   $('modalTitle').textContent = title;
   $('modalBody').innerHTML = bodyHtml;
@@ -215,10 +243,8 @@ function restoreOne(run, m) {
       `<button class="btn small" id="btnCopyCmd">复制命令</button>
        <button class="btn" id="mCancel">关闭</button>`);
     $('mCancel').onclick = closeModal;
-    $('btnCopyCmd').onclick = () => navigator.clipboard
-      .writeText(MODAL_CMD).then(() => { $('btnCopyCmd').textContent = '已复制 ✓'; });
-    $('cmdPre').onclick = () => navigator.clipboard
-      .writeText(MODAL_CMD).then(() => { $('btnCopyCmd').textContent = '已复制 ✓'; });
+    $('btnCopyCmd').onclick = () => copyText(MODAL_CMD, $('btnCopyCmd'));
+    $('cmdPre').onclick = () => copyText(MODAL_CMD, $('btnCopyCmd'));
     return;
   }
   const warn = info.warn ? `<p class="bad">⚠ ${esc(info.warn)}</p>` : '';
@@ -238,10 +264,10 @@ function restoreOne(run, m) {
   $('mGo').onclick = async () => {
     const go = $('mGo');
     go.disabled = true; go.textContent = '⏳ 恢复中…';
-    try { await doRestore([m], $('modalProg')); closeModal(); }
+    try { await doRestore([m], $('modalProg')); restoreDone(1); }
     catch (e) {
       go.disabled = false; go.textContent = '确认恢复';
-      $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)}</p>`);
+      restoreFail(e);
     }
   };
 }
@@ -270,10 +296,10 @@ function restoreGroup(run) {
     const list = run.members.filter(m => files.includes(m.file));
     const go = $('mGo');
     go.disabled = true; go.textContent = '⏳ 恢复中…';
-    try { await doRestore(list, $('modalProg')); closeModal(); }
+    try { await doRestore(list, $('modalProg')); restoreDone(list.length); }
     catch (e) {
       go.disabled = false; go.textContent = '恢复所选';
-      $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)} (已中断, 前面已恢复的资产不受影响)</p>`);
+      restoreFail(e);
     }
   };
 }
@@ -284,7 +310,7 @@ async function doRestore(list, progEl) {
     if (progEl) { progEl.style.display = ''; progEl.textContent = `恢复 ${i + 1}/${list.length}: ${m.asset} …`; }
     await api('/admin/api/backup/restore', {method: 'POST', body: JSON.stringify({file: m.file})});
   }
-  if (progEl) { progEl.textContent = `✓ 已恢复 ${list.length} 项`; }
+  if (progEl) { progEl.textContent = ''; }   // 成功态由 restoreDone 呈现
   loadManifest(); loadHistory();
 }
 
