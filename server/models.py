@@ -61,6 +61,7 @@ class Job(db.Model):
     status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
     rc = db.Column(db.Integer)
     log = db.Column(db.Text)                             # 截断保留最近400行
+    progress = db.Column(db.Float)                       # D1-10 U2: 0~100(日志[n/N]解析)
     started_at = db.Column(db.DateTime)                  # 本地时间, 便于直读
     finished_at = db.Column(db.DateTime)
     duration_s = db.Column(db.Float)

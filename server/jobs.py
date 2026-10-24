@@ -178,11 +178,15 @@ def _execute(item):
     db.session.add(job)
     db.session.commit()
     lines = []
+    _prog = re.compile(r"\[(\d+)/(\d+)\]")           # D1-10 U2: 从日志 [n/N] 解析进度
 
     def append(line):
         lines.append(str(line)[:2000])
         del lines[:-400]
         job.log = "\n".join(lines)
+        m = _prog.search(str(line))                  # 逐日/分步标记 → progress
+        if m and int(m.group(2)) > 0:
+            job.progress = round(int(m.group(1)) / int(m.group(2)) * 100, 1)
         db.session.commit()
 
     t0 = time.time()
@@ -271,6 +275,64 @@ def backup_retention() -> dict:
             "weekly": int(get_setting("backup_weekly_n", 8) or 8),
             "manual": int(get_setting("backup_manual_n", 5) or 5),
             "pre": 10}
+
+
+def task_repair(window_days: int = 7, trigger: str = "manual"):
+    """D1-10 U1: 缺口修复 — scan_gaps 找缺失交易日, 串幂等按日链补齐(index/池/SW)"""
+    def fn(append):
+        from server import market
+        gaps = market.scan_gaps(window_days)
+        miss_tables = [a for a in gaps["assets"] if a["missing"]]
+        total_missing = sum(len(a["missing"]) for a in miss_tables)
+        append(f"[repair] 窗口{window_days}天/{gaps['trading_days']}交易日, "
+               f"{len(miss_tables)}表缺共{total_missing}日")
+        if not miss_tables:
+            append(f"[{utcnow_str()}] [1/1] 无缺口, 完成")
+            return 0
+        # 按日修复: 对每个缺失日跑幂等链(步进度 [k/N])
+        need_index = any(a["code"] == "index" for a in miss_tables)
+        need_pool = any(a["code"] in ("pool", "sector_pool") for a in miss_tables)
+        need_sw = any(a["code"].startswith("sw_") or a["code"].startswith("raw_")
+                      or a["code"] in ("breadth", "sector_fflow", "margin")
+                      for a in miss_tables)
+        steps = []
+        if need_index:
+            steps.append("index")
+        if need_pool:
+            steps.append("pool")
+        if need_sw:
+            steps.append("sw")
+        for k, st in enumerate(steps, 1):
+            append(f"[{k}/{len(steps)}] 修复 {st} 段")
+            if st == "index":
+                rc = _run([sys.executable, "-u", "fetch_daily.py", "--no-sectors",
+                           "--no-breadth"], append)
+                if rc:
+                    return rc
+            elif st == "pool":
+                rc = _run([sys.executable, "-u", "fetch_daily.py",
+                           "--no-sectors"], append)
+                if rc:
+                    return rc
+            else:
+                rc = _run([sys.executable, "-u", "fetch_daily.py",
+                           "--no-sectors"], append)
+                if rc:
+                    return rc
+                from server import market as _m
+                _m  # noqa: F401 — fetch链内含fetch_sw_daily
+        # 池/板块段后重算评分(数据变了评分须跟上)
+        rc = _run([sys.executable, "-u", "score.py"], append)
+        if rc:
+            return rc
+        rc = _run([sys.executable, "-u", "sector.py", "calc"], append)
+        if rc:
+            return rc
+        after = market.scan_gaps(window_days)
+        after_miss = sum(len(a["missing"]) for a in after["assets"] if a["missing"])
+        append(f"[repair] 修复后剩余缺口 {after_miss} 日(原 {total_missing})")
+        return 0
+    return fn
 
 
 def task_backup(btype: str, trigger: str = "manual"):

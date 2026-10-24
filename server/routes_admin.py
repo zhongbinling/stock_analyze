@@ -187,11 +187,33 @@ def api_jobpoll():
     if cur:
         run = {"id": cur.id, "kind": cur.kind, "target": cur.target or "",
                "trigger": cur.trigger, "at": cur.started_at.strftime("%m-%d %H:%M:%S") if cur.started_at else "",
-               "log": (cur.log or "")[-4000:]}
+               "log": (cur.log or "")[-4000:],
+               "progress": cur.progress}          # D1-10 U2: 0~100
+    # D1-10 U2b: 每资产最新日期 vs 今日(数据集"已更新至X"徽标, 轻查询)
+    fresh = []
+    try:
+        from server import market
+        con = market._conn()
+        if con is not None:
+            today = datetime.now().strftime("%Y-%m-%d")
+            for code, _n, table, where, *_r in (market._ASSET_DATE_TABLES):
+                try:
+                    cond = f" WHERE {where}" if where else ""
+                    last = con.execute(
+                        f"SELECT MAX(date) FROM {table}{cond}").fetchone()[0]
+                    fresh.append({"code": code, "last": last,
+                                  "ok": last == today})
+                except Exception:  # noqa: BLE001
+                    pass
+            con.close()
+    except Exception:  # noqa: BLE001
+        pass
     return jsonify({"running": run, "queued": jobs.queue_size(),
                     "scheduler": "运行中" if jobs.scheduler_running() else "未启用",
+                    "fresh": fresh,
                     "recent": [{"id": j.id, "kind": j.kind, "target": j.target or "",
                                 "status": j.status, "rc": j.rc, "duration": j.duration_s,
+                                "progress": j.progress,
                                 "at": j.started_at.strftime("%m-%d %H:%M") if j.started_at else ""}
                                for j in recent]})
 
@@ -365,6 +387,36 @@ def api_backup_restore():
     audit("backup_restore" if ok else "backup_restore_reject", target=fname)
     return jsonify({"ok": ok, "msg": "已恢复(恢复前已自动快照 pre-restore)" if ok
                                      else "恢复失败, 详见 backup.log"}), (200 if ok else 500)
+
+
+# ---------------- D1-10 U1: 缺口扫描/修复 ----------------
+
+@bp_admin.post("/api/scan")
+@require_level(7)
+def api_scan():
+    from server import market
+    d = request.get_json(force=True) or {}
+    win = int(d.get("window", 7))
+    if win not in (7, 30, 90, 365):
+        return jsonify({"ok": False, "msg": "window 应为 7/30/90/365"}), 400
+    r = market.scan_gaps(win)
+    r["ok"] = True
+    return jsonify(r)
+
+
+@bp_admin.post("/api/repair")
+@require_level(7)
+def api_repair():
+    from server import jobs
+    d = request.get_json(force=True) or {}
+    win = int(d.get("window", 7))
+    if win not in (7, 30, 90, 365):
+        return jsonify({"ok": False, "msg": "window 应为 7/30/90/365"}), 400
+    ok, msg = jobs.enqueue("repair", jobs.task_repair(win, "manual"),
+                           target=f"近{win}天", trigger="manual")
+    audit("gap_repair_enqueue" if ok else "gap_repair_reject",
+          target=f"{win}d", detail=msg)
+    return jsonify({"ok": bool(ok), "msg": msg}), (200 if ok else 409)
 
 
 # ---------------- D1-2/D1-3: 数据补全 ----------------

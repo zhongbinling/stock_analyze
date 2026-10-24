@@ -93,6 +93,23 @@
     <button class="btn primary" id="btnUpdate">增量更新数据（抓取＋重算评分）</button>
     <span class="hint" id="jobState"></span>
   </div>
+  <div style="height:8px;background:var(--g);border-radius:4px;margin:6px 0;display:none" id="progWrap">
+    <div id="progBar" style="height:100%;width:0%;background:var(--bl);border-radius:4px;transition:width .5s"></div>
+  </div>
+  <div class="row-flex" style="margin-top:6px">
+    <span>缺口窗口</span>
+    <select class="input narrow" id="gapWin">
+      <option value="7">近1周</option>
+      <option value="30">近1月</option>
+      <option value="90">近1季度</option>
+      <option value="365">近1年</option>
+    </select>
+    <button class="btn" id="btnScan">扫描缺口</button>
+    <button class="btn primary" id="btnRepair" style="display:none">修复缺失</button>
+    <span class="hint" id="scanMsg"></span>
+  </div>
+  <p class="hint" id="scanHint">以交易日历为基线扫描缺失交易日(周末不计); 修复走任务队列只补缺失日(幂等), 完成后自动重算评分。</p>
+  <table class="table" id="gapTable" style="display:none"></table>
   <pre id="log" class="logpre" style="display:none"></pre>
 </section>
 
@@ -213,8 +230,23 @@ async function poll(quick) {
   try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
   $('schedState').textContent = '调度器: ' + j.scheduler;
   const btn = $('btnUpdate');
+  // D1-10 U2a: 进度条(运行中显示, progress来自日志[n/N]解析)
+  const pw = $('progWrap');
+  if (j.running && j.running.progress !== null && j.running.progress !== undefined) {
+    pw.style.display = 'block';
+    $('progBar').style.width = j.running.progress + '%';
+  } else if (!j.running) {
+    pw.style.display = 'none';
+    $('progBar').style.width = '0%';
+  }
+  // D1-10 U2b: 数据集"已更新至X"徽标(fresh)
+  if (j.fresh && j.fresh.length) {
+    const okN = j.fresh.filter(f => f.ok).length;
+    $('jobState').dataset.fresh = `${okN}/${j.fresh.length}`;
+  }
   if (j.running) {
-    $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})`;
+    $('jobState').textContent = `运行中: ${j.running.kind} ${j.running.target} (${j.running.at})`
+      + (j.running.progress != null ? ` ${j.running.progress}%` : '');
     $('log').style.display = 'block';
     $('log').textContent = j.running.log || '(等待输出…)';
     btn.disabled = true;
@@ -254,7 +286,43 @@ async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下�
   } catch (e) { alert('加载失败: ' + e.message); }
 }
 
-$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); };
+$('btnRefresh').onclick = () => { loadDatasets(); poll(true); loadBackups(); loadBfAssets(); };
+
+/* D1-10 U1: 缺口扫描/修复 */
+let gapResult = null;
+$('btnScan').onclick = async () => {
+  $('scanMsg').textContent = '扫描中…';
+  $('gapTable').style.display = 'none';
+  $('btnRepair').style.display = 'none';
+  try {
+    const r = await api('/admin/api/scan', {method: 'POST',
+      body: JSON.stringify({window: parseInt($('gapWin').value)})});
+    gapResult = r;
+    const miss = r.assets.filter(a => a.missing.length > 0);
+    const total = miss.reduce((s, a) => s + a.missing.length, 0);
+    $('scanMsg').textContent = miss.length === 0
+      ? `✓ ${r.trading_days}个交易日全部完整(最新 ${r.latest})`
+      : `${miss.length}表缺共${total}日`;
+    if (miss.length) {
+      $('gapTable').style.display = '';
+      $('gapTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th></tr>' +
+        miss.map(a => `<tr><td>${esc(a.name)}</td><td class="hint">${esc(a.db)}</td>
+          <td class="bad">${a.missing.join(', ')}</td></tr>`).join('');
+      $('btnRepair').style.display = '';
+    }
+  } catch (e) { $('scanMsg').textContent = '扫描失败: ' + e.message; }
+};
+$('btnRepair').onclick = async () => {
+  const btn = $('btnRepair');
+  btn.disabled = true; btn.textContent = '⏳ 已提交…';
+  try {
+    const r = await api('/admin/api/repair', {method: 'POST',
+      body: JSON.stringify({window: parseInt($('gapWin').value)})});
+    $('scanMsg').textContent = r.msg;
+    poll(true);
+  } catch (e) { $('scanMsg').textContent = e.message; }
+  btn.disabled = false; btn.textContent = '修复缺失';
+};
 
 /* ── B1: 数据备份 ── */
 async function loadBackups() {

@@ -202,6 +202,75 @@ BASELINE = "2013-01-01"     # D1-10 S2: 完成度基准线(用户确认的规则
 _HEALTH_RANK = {"ok": 0, "warn": 1, "bad": 2}
 
 
+def _trading_days_since(days: int) -> list:
+    """近N个自然日内的交易日(ISO升序) — U1缺口扫描基线(calendar回退index_daily)"""
+    from datetime import date, timedelta
+    con = _conn()
+    if con is None:
+        return []
+    try:
+        lo = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+        hi = date.today().strftime("%Y%m%d")
+        rows = con.execute(
+            "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date>=? AND cal_date<=?",
+            (lo, hi)).fetchall()
+        out = [_norm_date(r[0]) for r in rows]
+        if out:
+            return sorted(out)
+        # 回退: 主力指数日期
+        lo_iso = _norm_date(lo)
+        primary = _core_cfg()["index"]["primary"]
+        return [r[0] for r in con.execute(
+            "SELECT DISTINCT date FROM index_daily WHERE code=? AND date>=? ORDER BY date",
+            (primary, lo_iso))]
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
+def scan_gaps(window_days: int = 7) -> dict:
+    """D1-10 U1: 近窗口交易日 vs 各资产表覆盖 → {code: {name, missing: [...]}}"""
+    base = _trading_days_since(window_days)
+    if not base:
+        return {"window_days": window_days, "trading_days": 0, "assets": []}
+    base_set = set(base)
+    con = _conn()
+    assets = []
+    try:
+        raw_path = CORE / "data" / "raw_daily.db"
+        if raw_path.exists():
+            try:
+                con.execute(f"ATTACH DATABASE 'file:{raw_path.as_posix()}?mode=ro' AS rawdb")
+            except sqlite3.Error:
+                pass
+        for spec in _ASSET_DATE_TABLES + RAW_TABLES:
+            code, name, table, where, _src, _st, _note = spec
+            is_raw = spec in RAW_TABLES
+            qtable = f"rawdb.{table}" if is_raw else table
+            dcol = RAW_DATE_COL if is_raw else "date"
+            try:
+                cond = f" WHERE {where}" if where else ""
+                have = {r[0] for r in con.execute(
+                    f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
+                if is_raw:
+                    have = {_norm_date(x) for x in have}
+                missing = [d for d in base if d not in have]
+            except sqlite3.Error:
+                continue                    # 表未建(全新环境)
+            assets.append({"code": code, "name": name,
+                           "db": "raw_daily.db" if is_raw else "sentiment.db",
+                           "missing": missing})
+        return {"window_days": window_days, "trading_days": len(base),
+                "latest": base[-1], "assets": assets}
+    finally:
+        try:
+            con.execute("DETACH DATABASE rawdb")
+        except sqlite3.Error:
+            pass
+        con.close()
+
+
 def _norm_date(s) -> str:
     """calendar.cal_date(YYYYMMDD) → YYYY-MM-DD"""
     s = str(s)
