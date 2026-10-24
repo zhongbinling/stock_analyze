@@ -248,54 +248,55 @@ function tcFlash() {                       // 任务启动时任务中心蓝色�
   setTimeout(() => { card.style.boxShadow = ''; }, 1600);
 }
 async function poll(quick) {
-  let j;
-  try { j = await api('/admin/api/jobpoll'); } catch (e) { return; }
-  $('schedState').textContent = '调度器: ' + j.scheduler;
-  $('tcSched').textContent = `排队 ×${j.queued}`;
-  const btn = $('btnUpdate');
-  const run = j.running;
-  if (run || j.queued > 0) {
-    if (!tcWasRunning) tcFlash();
-    tcWasRunning = true;
-    $('tcRun').style.display = '';
-    $('tcIdle').style.display = 'none';
-    if (run) {
-      $('tcState').innerHTML = '<span class="ok">● 运行中</span>';
-      $('tcTask').textContent =
-        `${KIND_CN[run.kind] || run.kind} · ${run.target || ''} · ${run.at}`
-        + (run.progress != null ? ` · ${run.progress}%` : '');
-      $('tcPct').textContent = run.progress != null ? run.progress + '%' : '';
-      $('tcBar').style.width = (run.progress || 0) + '%';
-      $('tcLog').textContent = (run.log || '(等待输出…)').split('\n').slice(-14).join('\n');
-      $('tcLog').scrollTop = $('tcLog').scrollHeight;
+  let j = null;
+  try { j = await api('/admin/api/jobpoll'); } catch (e) { /* 网络抖动/服务重启: 本轮跳过, 不中断轮询 */ }
+  if (j) {
+    $('schedState').textContent = '调度器: ' + j.scheduler;
+    $('tcSched').textContent = `排队 ×${j.queued}`;
+    const btn = $('btnUpdate');
+    const run = j.running;
+    if (run || j.queued > 0) {
+      if (!tcWasRunning) tcFlash();
+      tcWasRunning = true;
+      $('tcRun').style.display = '';
+      $('tcIdle').style.display = 'none';
+      if (run) {
+        $('tcState').innerHTML = '<span class="ok">● 运行中</span>';
+        $('tcTask').textContent =
+          `${KIND_CN[run.kind] || run.kind} · ${run.target || ''} · ${run.at}`;
+        $('tcPct').textContent = run.progress != null ? run.progress + '%' : '';
+        $('tcBar').style.width = (run.progress || 0) + '%';
+        $('tcLog').textContent = (run.log || '(等待输出…)').split('\n').slice(-14).join('\n');
+        $('tcLog').scrollTop = $('tcLog').scrollHeight;
+      } else {
+        $('tcState').innerHTML = `<span class="hint">● 排队中 ×${j.queued}</span>`;
+        $('tcTask').textContent = '';
+        $('tcPct').textContent = '';
+        $('tcBar').style.width = '0%';
+        $('tcLog').textContent = '';
+      }
+      btn.disabled = true;
+      btn.textContent = '⏳ 任务执行中...';
     } else {
-      $('tcState').innerHTML = `<span class="hint">● 排队中 ×${j.queued}</span>`;
-      $('tcTask').textContent = '';
-      $('tcPct').textContent = '';
-      $('tcBar').style.width = '0%';
-      $('tcLog').textContent = '';
+      tcWasRunning = false;
+      $('tcRun').style.display = 'none';
+      $('tcIdle').style.display = '';
+      $('tcState').textContent = '空闲';
+      btn.disabled = false;
+      btn.textContent = '增量更新数据（抓取＋重算评分）';
     }
-    btn.disabled = true;
-    btn.textContent = '⏳ 任务执行中...';
-  } else {
-    tcWasRunning = false;
-    $('tcRun').style.display = 'none';
-    $('tcIdle').style.display = '';
-    $('tcState').textContent = '空闲';
-    btn.disabled = false;
-    btn.textContent = '增量更新数据（抓取＋重算评分）';
+    $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th><th></th></tr>' +
+      (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(JOB_TARGET_CN[t.target] || t.target)}</td>
+        <td class="hint">${esc(t.trigger)}</td>
+        <td class="${t.status === 'done' ? 'ok' : 'bad'}">${t.status === 'done' ? '✓ 成功' : '✗ 失败'}</td>
+        <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td>
+        <td><button class="btn small" data-joblog="${t.id}">日志</button></td></tr>`).join('')
+        : '<tr><td colspan="8" class="hint">暂无任务</td></tr>');
+    document.querySelectorAll('#jobTable [data-joblog]').forEach(b =>
+      b.onclick = () => toggleJobLog(parseInt(b.dataset.joblog), b));
   }
-  $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th><th></th></tr>' +
-    (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(JOB_TARGET_CN[t.target] || t.target)}</td>
-      <td class="hint">${esc(t.trigger)}</td>
-      <td class="${t.status === 'done' ? 'ok' : 'bad'}">${t.status === 'done' ? '✓ 成功' : '✗ 失败'}</td>
-      <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td>
-      <td><button class="btn small" data-joblog="${t.id}">日志</button></td></tr>`).join('')
-      : '<tr><td colspan="8" class="hint">暂无任务</td></tr>');
-  document.querySelectorAll('#jobTable [data-joblog]').forEach(b =>
-    b.onclick = () => toggleJobLog(parseInt(b.dataset.joblog), b));
   clearTimeout(pollTimer);
-  pollTimer = setTimeout(() => poll(), (run || j.queued > 0) ? 2500 : 15000);
+  pollTimer = setTimeout(() => poll(), (j && (j.running || j.queued > 0)) ? 2500 : 15000);
 }
 
 async function toggleJobLog(jid, btn) {          // D2-1: 历史任务日志下钻
@@ -424,12 +425,13 @@ const JOB_TARGET_CN = {zt_ts: '涨停结构·tushare回补', zt_est: '涨停家�
   breadth: '涨跌家数·tushare回补', calendar: '交易日历·刷新'};   // 存量Job行的代码→可读名
 let bfPollTimer = null, wasRunning = false;
 async function loadBackfillLogs(dataset = '', date = '') {
+  let rg = null;
   try {
     const qs = new URLSearchParams();
     if (dataset) qs.set('dataset', dataset);
     if (date) qs.set('date', date);
     const d = await api('/admin/api/backfill/logs' + (qs.toString() ? '?' + qs : ''));
-    const rg = d.running;
+    rg = d.running;
     $('bfLive').innerHTML = rg
       ? `<span class="hint">补全运行中: ${esc(rg.target)} ${rg.n}/${rg.total} (${rg.pct}%)</span>` : '';
     $('bfTable').innerHTML = '<tr><th>时间</th><th>数据集</th><th>区间</th><th>写入行数</th><th>写入天数</th><th>触发</th><th>状态</th><th>说明</th></tr>' +
@@ -445,10 +447,13 @@ async function loadBackfillLogs(dataset = '', date = '') {
           <td class="hint" title="${esc(days)}">${esc(days.slice(0, 60))}${days.length > 60 ? '…' : ''}</td></tr>`;
       }).join('') : '<tr><td colspan="8" class="hint">暂无补全记录</td></tr>');
     if (date) $('bfQueryMsg').textContent = d.logs.length ? `该日被 ${d.logs.length} 条补全写过` : '该日无补全写入记录';
-    clearTimeout(bfPollTimer);
-    bfPollTimer = setTimeout(() => loadBackfillLogs(dataset, date), rg ? 5000 : 20000);   // 运行中5s刷新
     if (!!rg !== wasRunning) { wasRunning = !!rg; loadBfAssets(); }   // D1-10r: 队列状态翻转刷新按钮
-  } catch (e) { $('bfTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`; }
+  } catch (e) {
+    $('bfTable').innerHTML = `<tr><td class="bad">加载失败: ${esc(e.message)}</td></tr>`;
+  } finally {
+    clearTimeout(bfPollTimer);
+    bfPollTimer = setTimeout(() => loadBackfillLogs(dataset, date), rg ? 5000 : 20000);  // 失败也不断轮询(网络抖动自愈)
+  }
 }
 /* D1-10 F1: 补全表格化 — 行级[补全]按钮; 有资产映射的行显示完成度,
    无映射的补全类型(zt_est/calendar等)静态行常显按钮(按需手动) */

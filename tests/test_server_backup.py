@@ -179,6 +179,10 @@ def test_data_html_task_center_and_backfill_feedback():
     # D2: 补全行"上次补全"列 + 提交后滚屏到任务中心
     assert "上次补全" in html and "lastByDs" in html
     assert "scrollIntoView" in html and "poll(true)" in html
+    # D1-11r: 轮询必须自愈 — 单一调度点(失败/成功都排下一轮), 不许 catch-return 中断
+    assert html.count("pollTimer = setTimeout") == 1, "poll轮询应有唯一调度点"
+    assert html.count("bfPollTimer = setTimeout") == 1, "补全日志轮询应有唯一调度点"
+    assert "} finally {" in html and "catch (e) { return; }" not in html
 
 
 def test_data_html_script_syntax():
