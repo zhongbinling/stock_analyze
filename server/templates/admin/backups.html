@@ -16,8 +16,8 @@
       <span class="hint" id="verifyMsg"></span>
       <span class="hint" id="verifyPct"></span>
     </div>
-    <div style="background:var(--bg2,#eee);border-radius:4px;height:8px;overflow:hidden">
-      <div id="verifyBar" style="height:100%;width:0;background:#4caf50;transition:width .5s"></div>
+    <div style="background:var(--page,#eee);border-radius:4px;height:8px;overflow:hidden">
+      <div id="verifyBar" style="height:100%;width:0;background:var(--ok-bg,#4caf50);transition:width .5s"></div>
     </div>
     <pre class="hint" id="verifyLog" style="margin:4px 0 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></pre>
   </div>
@@ -84,7 +84,7 @@ function render() {
     const vc = `${mems.filter(m => m.verify && m.verify.ok && m.exists).length}✓ `
       + `${mems.filter(m => !m.exists || (m.verify && !m.verify.ok)).length}✗ `
       + `${mems.filter(m => m.exists && !m.verify).length}?`;
-    rows.push(`<tr class="grp" data-folder="${esc(r.folder)}" style="cursor:pointer;background:var(--bg2,#f5f5f5)">
+    rows.push(`<tr class="grp" data-folder="${esc(r.folder)}" style="cursor:pointer;background:var(--surface,inherit)">
       <td>${esc(r.time)}</td><td><span class="tag">${esc(r.type_label)}</span></td>
       <td>${r.files_n} 份</td><td>${r.total_mb} MB</td><td class="hint">${esc(r.fresh)}</td>
       <td>${vc}</td>

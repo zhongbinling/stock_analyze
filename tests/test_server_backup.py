@@ -243,6 +243,15 @@ def test_api_backup_verify_folder_target_and_unknown(app_env):
     assert r.status_code == 404
 
 
+def test_api_backup_verify_empty_body_ok(app_env):
+    """D1-11r: 页面按钮POST不带body → 不得400(get_json对空body抛错已修)"""
+    from server import jobs
+    c = app_env["client"]
+    r = c.post("/admin/api/backup/verify")           # 无 body
+    assert r.status_code == 200 and r.get_json()["ok"]
+    assert jobs._q.get_nowait()["kind"] == "verify"
+
+
 def test_backups_html_binds_and_syntax():
     """C1: 模板绑定(组校验/清单API/入口链接) + JS语法门禁"""
     import shutil
@@ -250,6 +259,7 @@ def test_backups_html_binds_and_syntax():
     html = (REPO / "server" / "templates" / "admin" / "backups.html").read_text(encoding="utf-8")
     assert 'id="btnVerifyAll"' in html and "data-vfolder" in html
     assert "/admin/api/backups/manifest" in html and "jobpoll" in html
+    assert "--bg2" not in html, "使用了不存在的主题变量(暗色模式会回退成亮色)"
     data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "backups_page" in data_html                 # 数据管理页入口
     if not shutil.which("node"):

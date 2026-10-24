@@ -304,7 +304,7 @@ def api_backups_manifest():
     """D1-11 C1: manifest按运行(zip/目录)分组的备份清单 + 汇总"""
     bk = _backup_mod()
     m = bk._load_manifest()
-    runs, seen = {}, {}
+    runs = {}
     for e in m["entries"]:
         folder = e["file"].split("/")[0] if "/" in e["file"] else "(旧平铺)"
         v = e.get("verify") or {}
@@ -321,7 +321,6 @@ def api_backups_manifest():
             runs[folder] = {"folder": folder, "type": e.get("type", ""),
                             "type_label": TYPE_LABELS.get(e.get("type", ""), e.get("type", "")),
                             "time": e.get("time", ""), "members": []}
-            seen[folder] = True
         runs[folder]["members"].append(member)
     run_list = []
     for r in runs.values():
@@ -440,7 +439,7 @@ def api_backup_verify():
     """D1-11 C2: 校验入队(异步job) — 全量校验需数分钟, 同步等待必超时;
     结果由 verify 逐条写回 manifest, 页面轮询任务结束后刷新"""
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}   # 空 body 视为全部(页面按钮不带body)
     target = str(d.get("file", "")).strip() or "--all"
     bk = _backup_mod()
     if target != "--all":
