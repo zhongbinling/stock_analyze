@@ -29,3 +29,4 @@ out/*.html
 
 # 备份产物(核心资产快照, 见 core/backup.py)
 /backups/
+logs/
