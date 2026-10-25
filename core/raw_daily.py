@@ -173,7 +173,14 @@ def agg(start="20050101") -> bool:
             if total:
                 rows.append((lv, idx, name, d_iso, up, down, flat, total))
         if rows:
-            sent.executemany("INSERT OR REPLACE INTO sw_breadth VALUES(?,?,?,?,?,?,?,?)", rows)
+            from db import guarded_batch, all_checks, chk_same
+            guarded_batch(
+                sent, "INSERT OR REPLACE INTO sw_breadth VALUES(?,?,?,?,?,?,?,?)", rows,
+                label=f"sw_breadth {d_iso}",
+                check=all_checks(
+                    chk_same(3, d_iso),
+                    lambda rs: None if all(r[4] >= 0 and r[5] >= 0 and r[7] == r[4] + r[5] + r[6]
+                                           for r in rs) else "涨跌家数算术不一致(up+down+flat≠total或负值)"))
         if i % 50 == 0:
             sent.commit()
             print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")

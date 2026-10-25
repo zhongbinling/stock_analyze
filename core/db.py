@@ -238,6 +238,81 @@ def guarded_batch(conn, sql, rows, *, label, check=None) -> int:
     return len(rows)
 
 
+# ---------------- D1-12 F2收尾: 可组合批次校验构件 ----------------
+
+def chk_same(idx: int, expect):
+    """列恒等校验: 所有行 rows[r][idx] == expect(单日/单码批次防混入)"""
+    def f(rows):
+        bad = [r[idx] for r in rows if r[idx] != expect][:3]
+        return None if not bad else f"{idx}列混入异值 {bad}"
+    return f
+
+
+def chk_unique(*idxs):
+    """组合键批内唯一校验(防上游重复行被OR REPLACE吞掉)"""
+    def f(rows):
+        keys = [tuple(r[i] for i in idxs) for r in rows]
+        return None if len(set(keys)) == len(keys) \
+            else f"组合键{idxs}批内重复 {len(keys) - len(set(keys))} 行"
+    return f
+
+
+def chk_range(idx: int, lo, hi):
+    """值域校验(容None; NaN按越界处理)"""
+    def f(rows):
+        for r in rows:
+            v = r[idx]
+            if v is None:
+                continue
+            if v != v or v < lo or v > hi:   # v!=v 即 NaN
+                return f"{idx}列越界 {v!r} (合法 {lo}~{hi})"
+        return None
+    return f
+
+
+def all_checks(*fns):
+    """组合多个check → 依次执行, 首个非None原因返回"""
+    def f(rows):
+        for fn in fns:
+            why = fn(rows)
+            if why:
+                return why
+        return None
+    return f
+
+
+# mood 单行值域(越界=上游脏值, 拒写防静默污染; 界限宽松只拦明显异常)
+_MOOD_DOMAIN = {"zt_count": (0, 20000), "dt_count": (0, 20000), "zb_count": (0, 20000),
+                "lb2_count": (0, 20000), "yzt_count": (0, 20000),
+                "up_count": (0, 20000), "down_count": (0, 20000),
+                "lb_max": (0, 60), "zb_rate": (0, 100), "jl_rate": (0, 1000),
+                "prev_zt_chg": (-100, 100)}
+_MOOD_DATE_RE = __import__("re").compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def upsert_mood(conn, date, **kw):
+    """部分字段更新: 只写传入的字段, 不覆盖其它列。
+
+    D1-12 F2: 值域校验(家数/率/连板高度/日期格式), 越界抛RuntimeError —
+    调用方(fetch_pools等)按日容错记失败, 脏值不再静默入库。
+    """
+    if not kw:
+        return
+    if not _MOOD_DATE_RE.match(str(date or "")):
+        raise RuntimeError(f"mood 日期非法: {date!r}")
+    for k, v in kw.items():
+        dom = _MOOD_DOMAIN.get(k)
+        if dom and v is not None and (v != v or v < dom[0] or v > dom[1]):
+            raise RuntimeError(f"mood {date} {k}={v!r} 越界(合法 {dom[0]}~{dom[1]})")
+    cols, vals = list(kw.keys()), [kw[c] for c in kw]
+    sets = ",".join(f"{c}=excluded.{c}" for c in cols)
+    conn.execute(
+        f"INSERT INTO mood_raw(date,{','.join(cols)}) VALUES(?,{','.join('?' * len(cols))}) "
+        f"ON CONFLICT(date) DO UPDATE SET {sets}",
+        [date] + vals)
+    conn.commit()
+
+
 def get_mood_dates(conn) -> set:
     rows = conn.execute("SELECT date FROM mood_raw WHERE zt_count IS NOT NULL").fetchall()
     return {r[0] for r in rows}

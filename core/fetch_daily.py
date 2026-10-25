@@ -367,25 +367,36 @@ def fetch_margin():
         start = _next_ymd(last) if last else "20200101"
         today = time.strftime("%Y%m%d")
         total = 0
+        import re as _re
+        _iso_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
         while start <= today:
             df = tushare_api.margin(start, today)
             if df.empty:
                 break
+            mrows = []
             for d, g in df.groupby("trade_date"):
                 iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
                 tot = g.sum(numeric_only=True)
                 sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
                 szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
-                conn.execute(
-                    "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
-                    "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
-                    "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
-                    "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
-                    (iso, float(tot["rzye"]), float(tot["rzmre"]),
-                     float(tot["rqye"]), float(tot["rzrqye"]),
-                     float(sse) if sse else None, float(szse) if szse else None))
-                total += 1
-            conn.commit()
+                mrows.append((iso, float(tot["rzye"]), float(tot["rzmre"]),
+                              float(tot["rqye"]), float(tot["rzrqye"]),
+                              float(sse) if sse else None, float(szse) if szse else None))
+            # D1-12 F2: 守卫批次 — 日期ISO且落在分页窗口内(防错位/脏行), 单事务零污染
+            from db import guarded_batch, all_checks, chk_unique
+            guarded_batch(
+                conn,
+                "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+                "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
+                "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
+                mrows, label=f"margin {start}~{today}",
+                check=all_checks(
+                    chk_unique(0),
+                    lambda rs: None if all(
+                        _iso_re.match(r[0]) and start <= r[0].replace("-", "") <= today
+                        for r in rs) else f"日期格式/窗口越界(应 {start}~{today})"))
+            total += len(mrows)
             last_d = df["trade_date"].max()
             if last_d >= today:
                 break

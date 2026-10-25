@@ -125,10 +125,16 @@ def agg(start="20070101") -> bool:
                 v = ((be or 0) + (bb or 0) - (se or 0) - (sb or 0)) * 10000   # 万元→元
                 agg_[idx] = agg_.get(idx, 0.0) + v
         d_iso = _iso(d)
-        sent.executemany(
-            "INSERT OR REPLACE INTO sw_fflow VALUES(?,?,?,?,?)",
-            [(meta[idx][0], idx, meta[idx][1], d_iso, round(v, 0))
-             for idx, v in agg_.items() if idx in meta])
+        from db import guarded_batch, all_checks, chk_same, chk_unique
+        rows_out = [(meta[idx][0], idx, meta[idx][1], d_iso, round(v, 0))
+                    for idx, v in agg_.items() if idx in meta]
+        if rows_out:
+            guarded_batch(
+                sent, "INSERT OR REPLACE INTO sw_fflow VALUES(?,?,?,?,?)", rows_out,
+                label=f"sw_fflow {d_iso}",
+                check=all_checks(
+                    chk_same(3, d_iso), chk_unique(0, 1),
+                    lambda rs: None if all(r[4] == r[4] for r in rs) else "main_net 含NaN"))
         if i % 50 == 0:
             sent.commit()
             print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")

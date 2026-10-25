@@ -61,14 +61,29 @@ def _enabled_industries(conn) -> list:
 def _upsert_bars(conn, code, df) -> int:
     rows = [(code, r["date"], r["open"], r["close"], r["high"], r["low"], r["amount"])
             for _, r in df.iterrows()]
-    conn.executemany(
-        "INSERT INTO sector_daily(code,date,open,close,high,low,amount) VALUES(?,?,?,?,?,?,?) "
-        "ON CONFLICT(code,date) DO UPDATE SET open=excluded.open,close=excluded.close,"
-        "high=excluded.high,low=excluded.low,amount=excluded.amount", rows)
     if rows:
+        from db import guarded_batch, all_checks, chk_same, chk_unique
+        guarded_batch(
+            conn,
+            "INSERT INTO sector_daily(code,date,open,close,high,low,amount) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(code,date) DO UPDATE SET open=excluded.open,close=excluded.close,"
+            "high=excluded.high,low=excluded.low,amount=excluded.amount", rows,
+            label=f"bars {code}",
+            check=all_checks(
+                chk_same(0, code), chk_unique(1),
+                lambda rs: None if all(_ohlc_ok(r) for r in rs) else "OHLC不自洽(high≥max(o,c)≥min(o,c)≥low)"))
         conn.execute("UPDATE sectors SET first_date=?, last_date=? WHERE code=?",
                      (rows[0][1], rows[-1][1], code))
+        conn.commit()   # D1-12r: 提交sectors首末日期, 否则隐式事务挂起与下一批guard的BEGIN冲突
     return len(rows)
+
+
+def _ohlc_ok(r) -> bool:
+    """OHLC自洽(空值跳过): high≥max(open,close) 且 low≤min(open,close) 且 high≥low"""
+    o, c, h, l = r[2], r[3], r[4], r[5]
+    if any(v is None or v != v for v in (o, c, h, l)):    # None/NaN 任一缺失不校验
+        return True
+    return h >= max(o, c) - 1e-9 and l <= min(o, c) + 1e-9 and h >= l - 1e-9
 
 
 def _upsert_fflow(conn, code, df) -> int:

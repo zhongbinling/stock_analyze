@@ -162,3 +162,57 @@ def test_calendar_good_batch_written(cal_env, monkeypatch):
     monkeypatch.setattr(TA, "trade_cal", lambda *a, **k: good)
     assert FD.fetch_calendar() is True
     assert cal_env.execute("SELECT COUNT(*) FROM calendar").fetchone()[0] == 672
+
+
+# ── D1-12 F2收尾: 校验构件 + mood值域 + 批写点守卫 ──
+
+def test_check_helpers():
+    import db as DB
+    rows = [("a", "2026-01-01", 5), ("a", "2026-01-02", 7)]
+    assert DB.chk_same(0, "a")(rows) is None
+    assert DB.chk_same(0, "b")(rows) is not None
+    assert DB.chk_unique(1)(rows) is None
+    assert DB.chk_unique(0)(rows) is not None               # 'a'重复
+    assert DB.chk_range(2, 0, 10)(rows) is None
+    assert DB.chk_range(2, 0, 6)(rows) is not None
+    assert DB.chk_range(2, 0, 10)([("a", "d", float("nan"))]) is not None  # NaN越界
+    assert DB.chk_range(2, 0, 10)([("a", "d", None)]) is None              # None容许
+    combo = DB.all_checks(DB.chk_same(0, "a"), DB.chk_unique(1))
+    assert combo(rows) is None
+    assert combo([("a", "d", 1), ("a", "d", 2)]) is not None
+
+
+def test_upsert_mood_domain_validation():
+    import db as DB
+    c = sqlite3.connect(":memory:")
+    c.execute("""CREATE TABLE mood_raw(date TEXT PRIMARY KEY, zt_count INTEGER,
+      dt_count INTEGER, zb_count INTEGER, zb_rate REAL, lb_max INTEGER,
+      lb2_count INTEGER, jl_rate REAL, prev_zt_chg REAL, yzt_count INTEGER,
+      up_count INTEGER, down_count INTEGER)""")
+    DB.upsert_mood(c, "2026-10-23", zt_count=50, dt_count=3, zb_rate=12.5, lb_max=8)
+    assert c.execute("SELECT zt_count FROM mood_raw").fetchone()[0] == 50
+    for bad in ({"zt_count": -1}, {"zt_count": 99999}, {"lb_max": 99},
+                {"zb_rate": 150.0}, {"jl_rate": -5.0}, {"prev_zt_chg": 200.0}):
+        with pytest.raises(RuntimeError, match="越界"):
+            DB.upsert_mood(c, "2026-10-24", **bad)
+    with pytest.raises(RuntimeError, match="日期非法"):
+        DB.upsert_mood(c, "20261024", zt_count=5)
+    assert c.execute("SELECT COUNT(*) FROM mood_raw").fetchone()[0] == 1  # 拒写零污染
+
+
+def test_upsert_bars_guard_rejects_bad_ohlc():
+    import sectors as S
+    import pandas as pd
+    c = sqlite3.connect(":memory:")
+    c.execute("CREATE TABLE sector_daily(code TEXT, date TEXT, open REAL, close REAL, "
+              "high REAL, low REAL, amount REAL, PRIMARY KEY(code, date))")
+    c.execute("CREATE TABLE sectors(code TEXT PRIMARY KEY, name TEXT, kind TEXT, "
+              "enabled INTEGER, first_date TEXT, last_date TEXT, updated_at TEXT)")
+    bad = pd.DataFrame([{"date": "2026-10-19", "open": 10, "close": 11,
+                         "high": 9, "low": 8, "amount": 1}])       # high < open
+    with pytest.raises(RuntimeError, match="OHLC"):
+        S._upsert_bars(c, "BK0001", bad)
+    assert c.execute("SELECT COUNT(*) FROM sector_daily").fetchone()[0] == 0
+    good = pd.DataFrame([{"date": "2026-10-19", "open": 8, "close": 9,
+                          "high": 10, "low": 7, "amount": 1}])
+    assert S._upsert_bars(c, "BK0001", good) == 1
