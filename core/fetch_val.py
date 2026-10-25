@@ -8,7 +8,6 @@
 用法: python fetch_val.py --start 20140601   # 回补; 日增由更新链挂载
 """
 import argparse
-import sqlite3
 import sys
 import time
 from pathlib import Path
