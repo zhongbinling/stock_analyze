@@ -58,11 +58,13 @@ def test_build_payload_filters_non_trading(fixture_db, tmp_path, monkeypatch):
 
 
 def test_generated_html_trading_day_axes(fixture_html):
-    """D1-11h: 曲线改交易日类目轴 — 废除连续time轴(周末刻度/空隙的来源)"""
+    """D1-11h: 曲线改交易日类目轴 — 废除连续time轴(周末刻度/空隙的来源);
+    D1-11r2: 类目标签必须完整YYYY-MM-DD(去年份导致跨年日期错位对比)"""
     html = Path(fixture_html).read_text(encoding="utf-8")
     assert "type: 'time', axisLabel" not in html
     assert "xAxis: catAxis" in html
-    assert "type: 'category', data: D.dates.map" in html
+    assert "D.dates.map(d => d)" in html
+    assert "D.dates.map(d => d.slice(5))" not in html
 
 
 def test_scan_gaps_flags_thin_coverage(tmp_path, monkeypatch):

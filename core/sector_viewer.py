@@ -577,9 +577,11 @@ function curveLegendHidden(names) {
 function drawCurve() {
   const side = document.getElementById('side');
   side.style.display = 'none';               // D1-8#5: 曲线交互时隐藏, hover热力图再显示
-  // D1-11r: 曲线x轴改交易日类目轴(与热力图一致) — 连续time轴会把周末画成
-  // 空列并标出10-17/10-18等非交易日刻度(用户误读为"缺数据"), 且周末空隙占~28%宽度
-  const catAxis = { type: 'category', data: D.dates.map(d => d.slice(5)),
+  // D1-11r2: 曲线x轴改交易日类目轴(与热力图一致) — 连续time轴会把周末画成
+  // 空列并标出10-17/10-18等非交易日刻度(用户误读为"缺数据"), 且周末空隙占~28%宽度。
+  // 标签用完整YYYY-MM-DD(D1-11h曾用slice(5)去年份 → 15年区间"10-9"逐年重复,
+  // 悬停/对比跨年日期必然错位, 用户曾把2015-10与2026-10当成同一天)
+  const catAxis = { type: 'category', data: D.dates.map(d => d),
     axisLabel: { color: PAL.axis, fontSize: 9, hideOverlap: true } };
   const mktMap = new Map((D.mkt || []).filter(m => m[1] !== null));
   const mktSeriesData = D.dates.map(d => mktMap.has(d) ? mktMap.get(d) : null);
