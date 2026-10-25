@@ -268,6 +268,22 @@ def pool_backfill(conn):
 
 # ---------------------------------------------------------------- 日常入口
 
+def is_trading_day(conn, iso: str) -> bool:
+    """D1-11r: 当日是否交易日 — calendar优先(is_open), 未覆盖段回退周一~五粗口径。
+
+    周末/节假日运行更新链时, 东财实时板块板是上一交易日的收盘状态,
+    若照写会把旧状态盖章成"今日"产生伪交易日行(如2026-10-24周六)。
+    """
+    ymd = iso.replace("-", "")
+    try:
+        r = conn.execute("SELECT is_open FROM calendar WHERE cal_date=?", (ymd,)).fetchone()
+        if r is not None:
+            return bool(r[0])
+    except Exception:  # noqa: BLE001
+        pass
+    return datetime.strptime(iso, "%Y-%m-%d").weekday() < 5
+
+
 def update_daily(conn=None, auto_backfill=True):
     """日常增量: 清单 → 增量日线 → 快照家数 → 资金流(周频) → 当日池聚合;
     首次运行(sector_daily为空)自动全量回补"""
@@ -314,14 +330,18 @@ def update_daily(conn=None, auto_backfill=True):
         print(f"[sectors] 增量日线: {ok_n}/{len(codes)} 板块至 {today} ({time.time()-t0:.0f}s)")
         refresh_fundflow(conn)
 
-    # 当日快照: 板块涨跌家数(积累制)
-    for code, (up, down) in snapshot.items():
-        if up is None and down is None:
-            continue
-        conn.execute(
-            "INSERT INTO sector_daily(code,date,up_count,down_count) VALUES(?,?,?,?) "
-            "ON CONFLICT(code,date) DO UPDATE SET up_count=excluded.up_count,"
-            "down_count=excluded.down_count", (code, today, up, down))
+    # 当日快照: 板块涨跌家数(积累制) — D1-11r: 仅交易日写入
+    # (周末实时板=上一交易日状态重复盖章 → 伪交易日行污染热力图)
+    if is_trading_day(conn, today):
+        for code, (up, down) in snapshot.items():
+            if up is None and down is None:
+                continue
+            conn.execute(
+                "INSERT INTO sector_daily(code,date,up_count,down_count) VALUES(?,?,?,?) "
+                "ON CONFLICT(code,date) DO UPDATE SET up_count=excluded.up_count,"
+                "down_count=excluded.down_count", (code, today, up, down))
+    else:
+        print(f"[sectors] 当日快照跳过({today} 非交易日, 周末不产生伪交易日行)")
     conn.commit()
     remap_pending(conn)
     agg_today(conn)

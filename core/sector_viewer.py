@@ -37,6 +37,20 @@ def build_payload(years=2):
     conn = sqlite3.connect(f"file:{DB.as_posix()}?mode=ro", uri=True)
     # P5: 全历史(不再按years截断); years仅保留CLI兼容
     dates = [r[0] for r in conn.execute("SELECT DISTINCT date FROM sector_scores ORDER BY date")]
+    # D1-11r: 轴仅保留交易日(日历覆盖段内) — 伪交易日行(如周末误盖章的2026-10-24)
+    # 不得进入视图; 日历未覆盖的历史段(2024-10前)原样保留
+    try:
+        opens = {r[0] for r in conn.execute(
+            "SELECT cal_date FROM calendar WHERE is_open=1")}
+        if opens:
+            lo, hi = min(opens), max(opens)
+            kept = [d for d in dates
+                    if d.replace("-", "") < lo or d.replace("-", "") > hi
+                    or d.replace("-", "") in opens]
+            if kept:
+                dates = kept
+    except sqlite3.Error:
+        pass                      # 旧库无calendar表 → 不过滤
     dset = set(dates)
     ph = ",".join("?" * len(dates))
     rows = conn.execute(
@@ -284,11 +298,6 @@ const N_D = D.dates.length, N_C = D.codes.length;
 // P5 紧凑矩阵解码: int8 + 空值位图 → 有符号访问
 const _u8 = (b64) => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
 const MAT_CELLS = _u8(D.mat.b64), MAT_NULL = _u8(D.mat.null);
-function echats_fmt_date(v) {              // D1-9#2: 年份变化显年, 其余显月份(防重叠)
-  const d = new Date(v), y = d.getFullYear();
-  if (y !== echats_fmt_date._y) { echats_fmt_date._y = y; return String(y); }
-  return `${d.getMonth() + 1}月`;
-}
 function matAt(di, ci) {
   const k = di * N_C + ci;
   if (!((MAT_NULL[k >> 3] >> (k & 7)) & 1)) return null;
@@ -568,9 +577,14 @@ function curveLegendHidden(names) {
 function drawCurve() {
   const side = document.getElementById('side');
   side.style.display = 'none';               // D1-8#5: 曲线交互时隐藏, hover热力图再显示
+  // D1-11r: 曲线x轴改交易日类目轴(与热力图一致) — 连续time轴会把周末画成
+  // 空列并标出10-17/10-18等非交易日刻度(用户误读为"缺数据"), 且周末空隙占~28%宽度
+  const catAxis = { type: 'category', data: D.dates.map(d => d.slice(5)),
+    axisLabel: { color: PAL.axis, fontSize: 9, hideOverlap: true } };
+  const mktMap = new Map((D.mkt || []).filter(m => m[1] !== null));
+  const mktSeriesData = D.dates.map(d => mktMap.has(d) ? mktMap.get(d) : null);
   if (selected.length === 0) {
     // S3-F: 默认显示大盘情绪分曲线
-    const mktData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
     curveC.setOption({
       animation: false,
       title: { text: '大盘情绪分(点击左侧板块可叠加对比)', left: 10, top: 6,
@@ -579,12 +593,11 @@ function drawCurve() {
         textStyle: { color: PAL.strong },
         valueFormatter: v => v === null ? '--' : (v > 0 ? '+' : '') + v },
       grid: { left: 40, right: 12, top: 30, bottom: 40 },
-      xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9,
-                 hideOverlap: true, formatter: v => echats_fmt_date(v) } },
+      xAxis: catAxis,
       yAxis: { type: 'value', min: -105, max: 105,
         axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
       dataZoom: curveZoomOpt(),
-      series: [{ name: '大盘情绪分', type: 'line', data: mktData, showSymbol: false,
+      series: [{ name: '大盘情绪分', type: 'line', data: mktSeriesData, showSymbol: false,
         lineStyle: { width: 2, color: PAL.neg }, itemStyle: { color: PAL.neg },
         markLine: { silent: true, symbol: 'none', label: { show: false },
           lineStyle: { color: PAL.a, type: 'dashed', width: 1 },
@@ -599,7 +612,7 @@ function drawCurve() {
     const data = [];
     for (let di = 0; di < N_D; di++) {
       const v = scoreAt(di, ci);
-      data.push(v === null ? null : [D.dates[di], v]);
+      data.push(v === null ? null : v);      // D1-11r: 类目轴按索引对齐D.dates
     }
     return { name: D.names[ci], type: 'line', data: data, showSymbol: false,
       lineStyle: { width: si === 0 ? 2 : 1.6, color: PALETTE[si] },
@@ -611,8 +624,7 @@ function drawCurve() {
         data: [[{ yAxis: 60 }, { yAxis: 100 }], [{ yAxis: -100 }, { yAxis: -60 }]] } : undefined };
   });
   // 大盘情绪分始终作为背景层(图例可点击隐藏)
-  const mktBgData = (D.mkt || []).map(m => m[1] === null ? null : [m[0], m[1]]);
-  const mktSeries = { name: '大盘情绪分', type: 'line', data: mktBgData,
+  const mktSeries = { name: '大盘情绪分', type: 'line', data: mktSeriesData,
     showSymbol: false, lineStyle: { width: 1, color: PAL.a, type: 'dashed' },
     itemStyle: { color: PAL.a }, silent: true, z: 1 };
   // 选中板块曲线在上层
@@ -627,8 +639,7 @@ function drawCurve() {
       textStyle: { color: PAL.strong },
       valueFormatter: v => v === null || v === undefined ? '--' : (v > 0 ? '+' : '') + v },
     grid: { left: 40, right: 12, top: 32, bottom: 40 },
-    xAxis: { type: 'time', axisLabel: { color: PAL.axis, fontSize: 9,
-               hideOverlap: true, formatter: v => echats_fmt_date(v) } },
+    xAxis: catAxis,
     yAxis: { type: 'value', min: -105, max: 105,
       axisLabel: { color: PAL.axis, fontSize: 9 }, splitLine: { lineStyle: { color: PAL.grid } } },
     dataZoom: curveZoomOpt(),
