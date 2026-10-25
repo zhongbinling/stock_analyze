@@ -131,12 +131,15 @@ def build(start="20050101", refresh=False) -> bool:
         lb_max = max((s for ts, s in streak.items() if flags[ts][0]), default=0)
         if d not in have_mood:
             d_iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-            upsert_mood(sent, d_iso,
-                        zt_count=zt_n, dt_count=dt_n, zb_count=zb_n,
-                        zb_rate=(zb_n / (zt_n + zb_n) * 100) if (zt_n + zb_n) else None,
-                        lb_max=lb_max, lb2_count=lb2,
-                        jl_rate=(lb2 / prev_zt_n * 100) if prev_zt_n else None,
-                        yzt_count=prev_zt_n, zt_source="est2")
+            try:    # D1-12r: mood值域校验会抛错 — 单日脏数据跳过, 不炸整个est2回补
+                upsert_mood(sent, d_iso,
+                            zt_count=zt_n, dt_count=dt_n, zb_count=zb_n,
+                            zb_rate=(zb_n / (zt_n + zb_n) * 100) if (zt_n + zb_n) else None,
+                            lb_max=lb_max, lb2_count=lb2,
+                            jl_rate=(lb2 / prev_zt_n * 100) if prev_zt_n else None,
+                            yzt_count=prev_zt_n, zt_source="est2")
+            except RuntimeError as e:
+                print(f"  ✗ mood {d_iso}: {e}")
         prev_streak, prev_zt_n = streak, zt_n
         # 行业聚合 → sw_pool(est)
         comps = members_on(d, conn=sent)
