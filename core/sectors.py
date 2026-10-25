@@ -288,8 +288,13 @@ def _update_via_dc(win_days: int = 30) -> bool:
     """D1-12 G1: 板块日线+涨跌家数 tushare dc 主源(近30自然日窗口幂等回补)。
 
     push2his 限流常态化的稳定路径; 返回 False(无token/接口异常/存在失败日)
-    时由调用方回退原东财路径。"""
+    时由调用方回退原东财路径。注意: 无token必须返回False — 若返回True,
+    update_daily会以为主源成功而彻底跳过板块日线。"""
     try:
+        import tushare_api as T
+        if not T.has_token():
+            print("[sectors] dc主源: 无 tushare token, 回退东财")
+            return False
         from datetime import date as _d, timedelta as _td
         import fetch_dc
         start = (_d.today() - _td(days=win_days)).strftime("%Y%m%d")
@@ -359,6 +364,7 @@ def update_daily(conn=None, auto_backfill=True):
     if n == 0 and auto_backfill:
         backfill_history(conn)
         pool_backfill(conn)
+        _snapshot_updown(conn, today, snapshot)   # 深史回补后同样落当日快照(原行为保留)
     else:
         # D1-12 G1: dc主源(tushare, 免push2his限流) → 失败回退东财(逐板块kline+实时板快照)
         if not _update_via_dc():

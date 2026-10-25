@@ -126,6 +126,15 @@ def test_dc_run_skips_empty_days(dc_env, monkeypatch):
     conn.close()
 
 
+def test_update_via_dc_no_token_falls_back(dc_env, monkeypatch):
+    """D1-12r: 无token时dc主源必须返回False — 返回True会让update_daily
+    以为主源成功而彻底跳过板块日线(fetch_dc.run的独立无token跳过语义不适用主源)"""
+    import sectors as S
+    import tushare_api as TA
+    monkeypatch.setattr(TA, "has_token", lambda: False)
+    assert S._update_via_dc() is False
+
+
 def test_update_daily_dc_primary_routing(dc_env, monkeypatch):
     """G1: update_daily 走 dc 主源时不触东财路径; dc失败回退kline+快照;
     资金流两路径都执行"""
