@@ -310,3 +310,54 @@ def test_run_caps_start_to_window(dc_env, monkeypatch, capsys):
     FD.run("20260101")
     out = capsys.readouterr().out
     assert "截断" in out and "2026-10-16" in out
+
+
+def test_dc_window_probe_aborts_on_api_error(dc_env, monkeypatch, capsys):
+    """D1-12r: 探测中接口异常 → 立即中止且不写缓存(防瞬态错误污染边界7天)"""
+    import json as _json
+    FD = dc_env["FD"]
+    c = sqlite3.connect(str(dc_env["path"]))
+    days = [f"2026-09-{d:02d}" for d in range(1, 29)] + \
+           ["2026-10-16", "2026-10-19", "2026-10-20"]
+    for d in days:
+        c.execute("INSERT OR IGNORE INTO index_daily VALUES('1.000001', ?, 1)", (d,))
+    c.commit()
+    c.close()
+
+    def flaky(api, fields="", **kw):
+        d = kw.get("trade_date", "")
+        if d >= "20261016":
+            return pd.DataFrame([("BK0000.DC", 1)], columns=["ts_code", "x"])
+        if d < "20261001":                  # 二分探测会经过的9月段抛网络错
+            raise RuntimeError("conn reset")
+        return pd.DataFrame(columns=["ts_code", "x"])
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", flaky)
+    monkeypatch.setattr(FD, "connect", lambda: sqlite3.connect(str(dc_env["path"])))
+    monkeypatch.setattr(FD, "BASE", dc_env["path"].parent)
+    assert FD.dc_window_start() is None     # 中止
+    assert "中止" in capsys.readouterr().out
+    assert not (dc_env["path"].parent / "data" / "dc_window.json").exists()  # 未污染缓存
+
+
+def test_dc_window_anchor_walks_back(dc_env, monkeypatch):
+    """D1-12r: 末日无数据(未出数)回退前几日找锚点, 不轻易放弃探测"""
+    FD = dc_env["FD"]
+    c = sqlite3.connect(str(dc_env["path"]))
+    days = [f"2026-09-{d:02d}" for d in range(1, 29)] + \
+           ["2026-10-16", "2026-10-19", "2026-10-20"]
+    for d in days:
+        c.execute("INSERT OR IGNORE INTO index_daily VALUES('1.000001', ?, 1)", (d,))
+    c.commit()
+    c.close()
+
+    def late(api, fields="", **kw):         # 最新2日未出数, 10-16起有数据
+        d = kw.get("trade_date", "")
+        ok = "20260915" <= d < "20261019" or d == "20261016"
+        return pd.DataFrame([("BK0000.DC", 1)], columns=["ts_code", "x"]) if ok \
+            else pd.DataFrame(columns=["ts_code", "x"])
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", late)
+    monkeypatch.setattr(FD, "connect", lambda: sqlite3.connect(str(dc_env["path"])))
+    monkeypatch.setattr(FD, "BASE", dc_env["path"].parent)
+    assert FD.dc_window_start() == "20260915"

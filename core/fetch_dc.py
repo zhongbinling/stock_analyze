@@ -70,6 +70,7 @@ def dc_window_start(refresh_days: int = 7):
     """G3: 探测 dc_daily 可用窗口最早交易日(二分, ~12次调用), 缓存refresh_days天。
 
     用于截断 run() 的 start(窗口外日期逐日空耗调用); 探测失败返回 None。
+    网络异常立即中止且不写缓存 — 避免瞬态错误把过晚边界污染缓存7天。
     """
     import datetime as _dt
     import json as _json
@@ -91,18 +92,31 @@ def dc_window_start(refresh_days: int = 7):
         return None
 
     def has(d):
+        """True/False=有无数据; None=接口异常(调用方应中止探测)"""
         try:
             return not T.call("dc_daily", "ts_code", trade_date=d).empty
         except Exception:  # noqa: BLE001
-            return False
-
-    if not has(days[-1]):                   # 最新日无数据(节假日后未出数) → 验证前一日
-        if len(days) < 2 or not has(days[-2]):
             return None
-    lo, hi = 0, len(days) - 1               # days[hi]有数据, 找最小有数据下标
+
+    anchor = None                          # 近端锚点: 末5个交易日内找有数据日
+    for d in reversed(days[-5:]):
+        h = has(d)
+        if h is None:
+            print(f"[dc] 窗口探测中止({d} 接口异常), 本轮不缓存")
+            return None
+        if h:
+            anchor = days.index(d)
+            break
+    if anchor is None:
+        return None                        # 近端全无数据(源异常/长期未出数)
+    lo, hi = 0, anchor                     # days[anchor]有数据, 找最小有数据下标
     while lo < hi:
         mid = (lo + hi) // 2
-        if has(days[mid]):
+        h = has(days[mid])
+        if h is None:
+            print(f"[dc] 窗口探测中止({days[mid]} 接口异常), 本轮不缓存")
+            return None
+        if h:
             hi = mid
         else:
             lo = mid + 1
