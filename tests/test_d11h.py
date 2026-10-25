@@ -61,3 +61,41 @@ def test_generated_html_trading_day_axes(fixture_html):
     assert "type: 'time', axisLabel" not in html
     assert "xAxis: catAxis" in html
     assert "type: 'category', data: D.dates.map" in html
+
+
+def test_scan_gaps_flags_thin_coverage(tmp_path, monkeypatch):
+    """D1-11h: sector_daily 半截覆盖(30行 vs 健康日200行)也算缺口 — 体检可报可修"""
+    import shutil
+    p = tmp_path / "s.db"
+    c = sqlite3.connect(str(p))
+    c.executescript("""
+      CREATE TABLE calendar(cal_date TEXT PRIMARY KEY, is_open INTEGER);
+      CREATE TABLE index_daily(code TEXT, date TEXT, close REAL);
+      CREATE TABLE sector_daily(code TEXT, date TEXT, close REAL);
+    """)
+    days = ["2026-10-16", "2026-10-19", "2026-10-20"]
+    for d in days:
+        c.execute("INSERT INTO calendar VALUES(?,1)", (d.replace("-", ""),))
+        c.execute("INSERT INTO index_daily VALUES('1.000001',?,3000)", (d,))
+    older = [f"2026-09-{x:02d}" for x in range(1, 11)]        # 10个历史健康日(水位锚)
+    for d in older + ["2026-10-16"]:
+        for i in range(200):                                   # 健康日 200 行/日
+            c.execute("INSERT INTO sector_daily VALUES(?, ?, 1)", (f"BK{i:04d}", d))
+    for i in range(30):                                        # 10-19 半截(30<水位25%=50) — 算缺口
+        c.execute("INSERT INTO sector_daily VALUES(?, '2026-10-19', 1)", (f"BK{i:04d}",))
+    c.commit()
+    c.close()
+    import server.market as M
+    monkeypatch.setattr(M, "SENT_DB", p)
+    monkeypatch.setattr(M, "_cfg_cache", None)
+    cfgcore = tmp_path / "c"
+    cfgcore.mkdir()
+    shutil.copy(CORE / "config.yaml", cfgcore / "config.yaml")
+    monkeypatch.setattr(M, "CORE", cfgcore)
+    r = M.scan_gaps(9)
+    by = {a["code"]: a["missing"] for a in r["assets"]}
+    assert by["sector_daily"] == ["2026-10-19", "2026-10-20"]   # 半截30行+无行都算缺
+    assert by["index"] == []                                     # 全有不受影响
+    # datasets完成度同口径(资产表不再对半截覆盖显示100%)
+    import inspect
+    assert "_covered_dates" in inspect.getsource(M.datasets)

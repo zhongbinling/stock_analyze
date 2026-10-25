@@ -197,7 +197,7 @@ _ASSET_DATE_TABLES = [
     ("margin", "融资融券(tushare)", "margin_daily", None, "tushare", 7, ""),
     # D1-10 S1: SW底座表(D1-6起新增, 此前未注册导致无完成度)
     ("sw_daily", "SW行业指数日线(官方)", "sw_daily", None, "tushare", 7,
-     "官方回溯各指数不一(L3自2005)"),
+     "遗留·官方停更段不再追补; 温度已用SW等权自算指数(sw_sic)"),
     ("sw_sic", "SW等权自算指数", "sw_index_comp", None, "本系统聚合", 4,
      "温度量价输入(成分等权累乘)"),
     ("sw_breadth", "SW涨跌家数", "sw_breadth", None, "成分聚合", 4, ""),
@@ -243,7 +243,11 @@ def _trading_days_since(days: int) -> list:
 
 
 def scan_gaps(window_days: int = 7) -> dict:
-    """D1-10 U1: 近窗口交易日 vs 各资产表覆盖 → {code: {name, missing: [...]}}"""
+    """D1-10 U1: 近窗口交易日 vs 各资产表覆盖 → {code: {name, missing: [...]}}
+
+    D1-11h: 覆盖口径含最低行数 — sector_daily 一天行数不足(半截覆盖,
+    如2026-10-19 仅47/523板块)同样判为缺口, 体检可报、修复链可修。
+    """
     base = _trading_days_since(window_days)
     if not base:
         return {"window_days": window_days, "trading_days": 0, "assets": []}
@@ -259,13 +263,14 @@ def scan_gaps(window_days: int = 7) -> dict:
                 pass
         for spec in _ASSET_DATE_TABLES + RAW_TABLES:
             code, name, table, where, _src, _st, _note = spec
+            if table in _SCAN_SKIP:
+                continue
             is_raw = spec in RAW_TABLES
             qtable = f"rawdb.{table}" if is_raw else table
             dcol = RAW_DATE_COL if is_raw else "date"
             try:
                 cond = f" WHERE {where}" if where else ""
-                have = {r[0] for r in con.execute(
-                    f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
+                have = _covered_dates(con, qtable, dcol, cond, table)
                 if is_raw:
                     have = {_norm_date(x) for x in have}
                 missing = [d for d in base if d not in have]
@@ -290,6 +295,30 @@ def _norm_date(s) -> str:
     if len(s) == 8 and "-" not in s:
         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
     return s
+
+
+# D1-11h: 半截覆盖判定(尺度无关) — 行数低于 max(近10健康日水位×25%, 全期峰值×10%)
+# 的日期视为未覆盖。起因: 2026-10-19/20 更新链未跑成, sector_daily 仅47/523板块有行,
+# 日期存在但内容残缺, 原DISTINCT-date口径的体检/完成度均无法发现。
+_MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10)}
+# D1-11h: 体检排除的遗留数据集 — sw_daily 官方源停更段无数据可补,
+# 温度链已用 sw_index_comp(D1-9), 参与体检只会产生永续假缺口。
+_SCAN_SKIP = {"sw_daily"}
+
+
+def _covered_dates(con, qtable, dcol, cond, table) -> set:
+    """表的已覆盖日期集; 配置了行数比的表按'健康日水位'过滤(半截=未覆盖)"""
+    rule = _MIN_ROW_RATIO.get(table)
+    if not rule:
+        return {r[0] for r in con.execute(f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
+    stats = con.execute(
+        f"SELECT {dcol}, COUNT(*) FROM {qtable}{cond} GROUP BY {dcol}").fetchall()
+    if not stats:
+        return set()
+    counts = sorted((c for _, c in stats), reverse=True)
+    healthy = counts[min(10, len(counts)) - 1]      # 近期健康水位(第10大日行数)
+    floor = max(healthy * rule[0], counts[0] * rule[1])
+    return {d for d, c in stats if c >= floor}
 
 
 def _expected_days(con, first, last, primary) -> list:
@@ -344,8 +373,7 @@ def datasets() -> list:
                 cond = f" WHERE {where}" if where else ""
                 rows, first, last = con.execute(
                     f"SELECT COUNT(*), MIN({dcol}), MAX({dcol}) FROM {qtable}{cond}").fetchone()
-                have = {r[0] for r in con.execute(
-                    f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
+                have = _covered_dates(con, qtable, dcol, cond, table)   # D1-11h: 半截覆盖=未覆盖
                 if is_raw:                         # raw库YMD → ISO归一
                     first, last = _norm_date(first), _norm_date(last)
                     have = {_norm_date(x) for x in have}
