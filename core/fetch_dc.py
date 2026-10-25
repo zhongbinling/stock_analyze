@@ -40,6 +40,83 @@ def _thin_dates(conn, dates, need) -> list:
     return out
 
 
+# ---------------------------------------------------------------- D1-12 G3: 校准与窗口探测
+
+def _calibrate(sample: dict, rows, val_idx: int, key_idx: int, label: str):
+    """G3: dc落地前与存量(东财旧值)抽样比对 — 中位差>1%且样本≥20告警(不阻断)。
+
+    dc同源权威照常写入; 告警=上游口径漂移信号(任务日志可见)。
+    近端多为dc自写入, 比对自然趋零, 仅真实漂移才触发。
+    """
+    diffs = []
+    for r in rows:
+        old = sample.get(r[key_idx])
+        if old is None:
+            continue
+        old = float(old)
+        if abs(old) < 1:                    # 0/近0值不参与相对差
+            continue
+        d = abs(float(r[val_idx]) - old) / abs(old)
+        if d > 1e-9:                        # 完全一致不计
+            diffs.append(d)
+    if len(diffs) >= 20:
+        med = sorted(diffs)[len(diffs) // 2]
+        if med > 0.01:
+            print(f"  ⚠ [calib] {label}: 与存量中位差 {med * 100:.2f}% "
+                  f"({len(diffs)}对不一致) — 疑似口径漂移, 已按dc写入")
+
+
+def dc_window_start(refresh_days: int = 7):
+    """G3: 探测 dc_daily 可用窗口最早交易日(二分, ~12次调用), 缓存refresh_days天。
+
+    用于截断 run() 的 start(窗口外日期逐日空耗调用); 探测失败返回 None。
+    """
+    import datetime as _dt
+    import json as _json
+    cache = BASE / "data" / "dc_window.json"
+    today = _dt.date.today()
+    if cache.exists():
+        try:
+            c = _json.loads(cache.read_text(encoding="utf-8"))
+            if _dt.date.fromisoformat(c["probed"]) >= today - _dt.timedelta(days=refresh_days):
+                return c["start"]
+        except (ValueError, KeyError):
+            pass
+    conn = connect()
+    days = [r[0].replace("-", "") for r in conn.execute(
+        "SELECT DISTINCT date FROM index_daily WHERE date >= date('now', '-4 year') "
+        "ORDER BY date")]
+    conn.close()
+    if len(days) < 30:
+        return None
+
+    def has(d):
+        try:
+            return not T.call("dc_daily", "ts_code", trade_date=d).empty
+        except Exception:  # noqa: BLE001
+            return False
+
+    if not has(days[-1]):                   # 最新日无数据(节假日后未出数) → 验证前一日
+        if len(days) < 2 or not has(days[-2]):
+            return None
+    lo, hi = 0, len(days) - 1               # days[hi]有数据, 找最小有数据下标
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if has(days[mid]):
+            hi = mid
+        else:
+            lo = mid + 1
+    start = days[lo]
+    try:
+        cache.parent.mkdir(exist_ok=True)
+        cache.write_text(_json.dumps(
+            {"start": start, "probed": today.isoformat()}), encoding="utf-8")
+    except OSError:
+        pass
+    print(f"[dc] 可用窗口起点: {start} (二分探测)")
+    return start
+
+
 def run(start="20260901") -> bool:
     """板块日线+涨跌家数幂等回补: 只处理覆盖不足的交易日; 单日两批走守卫写入"""
     if not T.has_token():
@@ -53,6 +130,10 @@ def run(start="20260901") -> bool:
         conn.close()
         return True
     iso = norm_date(start)
+    win = dc_window_start()                  # G3: 截断至dc窗口, 窗口外日期空耗调用
+    if win and ymd(iso) < win:
+        print(f"[dc] start {ymd(iso)} 早于dc窗口起点 {win}, 已截断")
+        iso = norm_date(win)
     dates = trading_dates(conn, load_cfg()["index"]["primary"], start=iso)
     todo = _thin_dates(conn, dates, len(codes))
     print(f"[dc] {len(todo)}/{len(dates)} 交易日待补 (自 {iso}, 启用板块 {len(codes)})")
@@ -73,6 +154,10 @@ def run(start="20260901") -> bool:
                 # 否则空批次会触发守卫拒绝并误判主源失败而回退东财
                 print(f"  [{i}/{len(todo)}] {d}: dc日线无数据(未出数/超窗口), 跳过")
                 continue
+            _calibrate(dict(conn.execute(          # G3: 与存量(东财旧值)抽样比对
+                "SELECT code, close FROM sector_daily "
+                "WHERE date=? AND close IS NOT NULL LIMIT 300", (d,))),
+                rows, val_idx=5, key_idx=0, label=f"日线 {d}")
             guarded_day_write(
                 conn,
                 "INSERT INTO sector_daily(code,date,open,high,low,close,amount) "
@@ -155,6 +240,10 @@ def refresh_fflow_dc(conn=None, win_days: int = 10) -> bool:
             if not rows:
                 print(f"  [{i}/{len(todo)}] {d}: dc无数据(未出数), 跳过")
                 continue
+            _calibrate(dict(conn.execute(          # G3: 与存量(东财旧值)抽样比对
+                "SELECT code, main_net FROM sector_fundflow "
+                "WHERE date=? AND main_net IS NOT NULL LIMIT 300", (d,))),
+                rows, val_idx=2, key_idx=0, label=f"资金流 {d}")
             guarded_day_write(conn, FFLOW_UPSERT, rows, d,
                               table="sector_fundflow", date_col="date")
             print(f"  [{i}/{len(todo)}] {d}: {len(rows)} 板块")
@@ -193,6 +282,10 @@ def backfill_fflow_dc(start="20230901") -> bool:
                     if r["net_amount"] is not None and str(r["trade_date"]) >= ymd(iso)]
             if not rows:
                 continue
+            _calibrate(dict(conn.execute(          # G3: 与存量(东财旧值)抽样比对
+                "SELECT date, main_net FROM sector_fundflow "
+                "WHERE code=? AND main_net IS NOT NULL LIMIT 300", (code,))),
+                rows, val_idx=2, key_idx=1, label=f"fflow {code}")
             guarded_batch(conn, FFLOW_UPSERT, rows, label=f"fflow {code}",
                           check=lambda rs: None if len({r[1] for r in rs}) == len(rs)
                           else "批内日期重复")

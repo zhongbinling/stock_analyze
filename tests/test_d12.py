@@ -241,3 +241,72 @@ def test_update_daily_dc_primary_routing(dc_env, monkeypatch):
     S.update_daily()
     assert calls["em"] == [1] and calls["snap"] == [1]   # 回退: kline+快照都跑
     assert calls["ff"] == [1, 1]
+
+
+# ── D1-12 G3: 校准与窗口探测 ──
+
+def test_calibrate_warns_on_drift(dc_env, capsys):
+    """G3: 完全一致/小样本不告警; 漂移告警见test_calibrate_drift_message"""
+    FD = dc_env["FD"]
+    sample = {f"BK{i:04d}": 100.0 for i in range(30)}
+    same_rows = [(f"BK{i:04d}", "2026-10-19", 100.0) for i in range(30)]
+    FD._calibrate(sample, same_rows, val_idx=2, key_idx=0, label="t")
+    assert "calib" not in capsys.readouterr().out           # 完全一致不告警
+    small = [(f"BK{i:04d}", "2026-10-19", 999.0) for i in range(5)]
+    FD._calibrate(sample, small, val_idx=2, key_idx=0, label="t")
+    assert "calib" not in capsys.readouterr().out           # 样本<20不告警
+
+
+def test_calibrate_drift_message(dc_env, capsys):
+    FD = dc_env["FD"]
+    sample = {f"BK{i:04d}": 100.0 for i in range(30)}
+    FD._calibrate(sample, [(f"BK{i:04d}", "d", 104.0) for i in range(30)],
+                  val_idx=2, key_idx=0, label="日线")
+    out = capsys.readouterr().out
+    assert "calib" in out and "4.00%" in out
+
+
+def test_dc_window_start_binary_and_cache(dc_env, monkeypatch):
+    """G3: 二分探测窗口起点 + 7天缓存(二次调用零API)"""
+    import json as _json
+    FD = dc_env["FD"]
+    # 夹具日历: 10-16/19/20; 构造更长交易日序列(30+天)供二分
+    c = sqlite3.connect(str(dc_env["path"]))
+    days = [f"2026-09-{d:02d}" for d in range(1, 29)] + \
+           ["2026-10-16", "2026-10-19", "2026-10-20"]
+    for d in days:
+        c.execute("INSERT OR IGNORE INTO index_daily VALUES('1.000001', ?, 1)", (d,))
+    c.commit()
+    c.close()
+    boundary = "20261016"                     # 夹具序列中首个有数据的交易日
+    calls = []
+
+    def fake_call(api, fields="", **kw):
+        calls.append(kw.get("trade_date"))
+        return pd.DataFrame([("BK0000.DC", 1)], columns=["ts_code", "x"]) \
+            if kw.get("trade_date", "") >= boundary else pd.DataFrame(columns=["ts_code", "x"])
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", fake_call)
+    monkeypatch.setattr(FD, "connect",
+                        lambda: sqlite3.connect(str(dc_env["path"])))
+    monkeypatch.setattr(FD, "BASE", dc_env["path"].parent)   # 缓存文件入tmp
+    assert FD.dc_window_start() == boundary
+    n1 = len(calls)
+    assert FD.dc_window_start() == boundary                  # 命中缓存
+    assert len(calls) == n1                                  # 零API调用
+    cache = dc_env["path"].parent / "data" / "dc_window.json"
+    assert _json.loads(cache.read_text(encoding="utf-8"))["start"] == boundary
+
+
+def test_run_caps_start_to_window(dc_env, monkeypatch, capsys):
+    """G3: start早于dc窗口起点 → 截断, 避免窗口外日期逐日空耗"""
+    FD = dc_env["FD"]
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call",
+                        lambda api, fields="", **kw: pd.DataFrame(columns=["ts_code"]))
+    monkeypatch.setattr(FD, "dc_window_start", lambda refresh_days=7: "20261016")
+    monkeypatch.setattr(FD, "connect",
+                        lambda: sqlite3.connect(str(dc_env["path"])))
+    FD.run("20260101")
+    out = capsys.readouterr().out
+    assert "截断" in out and "2026-10-16" in out
