@@ -284,9 +284,69 @@ def is_trading_day(conn, iso: str) -> bool:
     return datetime.strptime(iso, "%Y-%m-%d").weekday() < 5
 
 
+def _update_via_dc(win_days: int = 30) -> bool:
+    """D1-12 G1: 板块日线+涨跌家数 tushare dc 主源(近30自然日窗口幂等回补)。
+
+    push2his 限流常态化的稳定路径; 返回 False(无token/接口异常/存在失败日)
+    时由调用方回退原东财路径。"""
+    try:
+        from datetime import date as _d, timedelta as _td
+        import fetch_dc
+        start = (_d.today() - _td(days=win_days)).strftime("%Y%m%d")
+        return bool(fetch_dc.run(start))
+    except Exception as e:  # noqa: BLE001
+        print(f"[sectors] dc主源异常, 回退东财: {type(e).__name__}: {e}")
+        return False
+
+
+def _kline_incremental_em(conn, beg, today):
+    """东财逐板块增量日线(push2his, 兜底路径; 熔断: 连续10次失败快速跳过)"""
+    codes = _enabled_industries(conn)
+    t0 = time.time()
+    ok_n, fails = 0, 0
+    for i, code in enumerate(codes, 1):
+        try:
+            df = em_api.sector_kline(code, beg=beg)
+            if not df.empty:
+                _upsert_bars(conn, code, df)
+                ok_n += 1
+                fails = 0
+            else:
+                fails += 1
+        except Exception as e:  # noqa: BLE001
+            fails += 1
+            if fails == 1:
+                print(f"  ✗ {code} 日线失败: {e}")
+        if fails >= 10:      # 熔断: push2his限流/不可达时快速跳过, 不再逐板块爬超时
+            print(f"  ✗✗ 连续{fails}次失败(push2his可能限流), 跳过本次日线增量; 稍后重跑续传")
+            break
+        time.sleep(SLEEP)
+        if i % 50 == 0:
+            conn.commit()
+            print(f"  [{i}/{len(codes)}] {ok_n}成功 {time.time()-t0:.0f}s")
+    conn.commit()
+    print(f"[sectors] 增量日线(东财兜底): {ok_n}/{len(codes)} 板块至 {today} "
+          f"({time.time()-t0:.0f}s)")
+
+
+def _snapshot_updown(conn, today, snapshot):
+    """当日快照: 板块涨跌家数(东财实时板, 兜底路径) — D1-11r: 仅交易日写入
+    (周末实时板=上一交易日状态重复盖章 → 伪交易日行污染热力图)"""
+    if is_trading_day(conn, today):
+        for code, (up, down) in snapshot.items():
+            if up is None and down is None:
+                continue
+            conn.execute(
+                "INSERT INTO sector_daily(code,date,up_count,down_count) VALUES(?,?,?,?) "
+                "ON CONFLICT(code,date) DO UPDATE SET up_count=excluded.up_count,"
+                "down_count=excluded.down_count", (code, today, up, down))
+    else:
+        print(f"[sectors] 当日快照跳过({today} 非交易日, 周末不产生伪交易日行)")
+
+
 def update_daily(conn=None, auto_backfill=True):
-    """日常增量: 清单 → 增量日线 → 快照家数 → 资金流(周频) → 当日池聚合;
-    首次运行(sector_daily为空)自动全量回补"""
+    """日常增量: 清单 → 板块日线+涨跌家数(dc主源/东财兜底) → 资金流(周频) → 当日池聚合;
+    首次运行(sector_daily为空)自动全量回补(深度历史仍走东财)"""
     conn = conn or connect()
     try:
         snapshot = refresh_lists(conn)
@@ -300,48 +360,15 @@ def update_daily(conn=None, auto_backfill=True):
         backfill_history(conn)
         pool_backfill(conn)
     else:
-        last = conn.execute("SELECT MAX(date) FROM sector_daily").fetchone()[0]
-        beg = ((datetime.strptime(last, "%Y-%m-%d") - timedelta(days=10))
-               .strftime("%Y%m%d")) if last else HIST_BEG
-        codes = _enabled_industries(conn)
-        t0 = time.time()
-        ok_n, fails = 0, 0
-        for i, code in enumerate(codes, 1):
-            try:
-                df = em_api.sector_kline(code, beg=beg)
-                if not df.empty:
-                    _upsert_bars(conn, code, df)
-                    ok_n += 1
-                    fails = 0
-                else:
-                    fails += 1
-            except Exception as e:  # noqa: BLE001
-                fails += 1
-                if fails == 1:
-                    print(f"  ✗ {code} 日线失败: {e}")
-            if fails >= 10:      # 熔断: push2his限流/不可达时快速跳过, 不再逐板块爬超时
-                print(f"  ✗✗ 连续{fails}次失败(push2his可能限流), 跳过本次日线增量; 稍后重跑续传")
-                break
-            time.sleep(SLEEP)
-            if i % 50 == 0:
-                conn.commit()
-                print(f"  [{i}/{len(codes)}] {ok_n}成功 {time.time()-t0:.0f}s")
-        conn.commit()
-        print(f"[sectors] 增量日线: {ok_n}/{len(codes)} 板块至 {today} ({time.time()-t0:.0f}s)")
-        refresh_fundflow(conn)
+        # D1-12 G1: dc主源(tushare, 免push2his限流) → 失败回退东财(逐板块kline+实时板快照)
+        if not _update_via_dc():
+            last = conn.execute("SELECT MAX(date) FROM sector_daily").fetchone()[0]
+            beg = ((datetime.strptime(last, "%Y-%m-%d") - timedelta(days=10))
+                   .strftime("%Y%m%d")) if last else HIST_BEG
+            _kline_incremental_em(conn, beg, today)
+            _snapshot_updown(conn, today, snapshot)
+    refresh_fundflow(conn)
 
-    # 当日快照: 板块涨跌家数(积累制) — D1-11r: 仅交易日写入
-    # (周末实时板=上一交易日状态重复盖章 → 伪交易日行污染热力图)
-    if is_trading_day(conn, today):
-        for code, (up, down) in snapshot.items():
-            if up is None and down is None:
-                continue
-            conn.execute(
-                "INSERT INTO sector_daily(code,date,up_count,down_count) VALUES(?,?,?,?) "
-                "ON CONFLICT(code,date) DO UPDATE SET up_count=excluded.up_count,"
-                "down_count=excluded.down_count", (code, today, up, down))
-    else:
-        print(f"[sectors] 当日快照跳过({today} 非交易日, 周末不产生伪交易日行)")
     conn.commit()
     remap_pending(conn)
     agg_today(conn)

@@ -27,12 +27,14 @@ def test_is_trading_day():
 
 
 def test_snapshot_guard_wired():
-    """D1-11h: 当日快照写入前有交易日守卫(周末不产生伪交易日行)"""
+    """D1-11h: 当日快照写入前有交易日守卫(周末不产生伪交易日行);
+    D1-12 G1后守卫移至 _snapshot_updown(东财兜底路径)"""
     import inspect
     import sectors as S
-    src = inspect.getsource(S.update_daily)
+    src = inspect.getsource(S._snapshot_updown)
     assert "is_trading_day(conn, today)" in src
     assert "非交易日" in src
+    assert "_snapshot_updown(conn, today, snapshot)" in inspect.getsource(S.update_daily)
 
 
 def test_build_payload_filters_non_trading(fixture_db, tmp_path, monkeypatch):

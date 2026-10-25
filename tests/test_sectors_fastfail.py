@@ -40,6 +40,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(S, "remap_pending", lambda conn: None)
     monkeypatch.setattr(S, "agg_today", lambda conn: None)
     monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    # D1-12 G1: 本组测试针对东财兜底路径 — 强制dc主源失败(亦防误连真实库)
+    monkeypatch.setattr(S, "_update_via_dc", lambda **k: False)
     return {"path": p, "monkeypatch": monkeypatch}
 
 
@@ -72,7 +74,7 @@ def test_incremental_streak_reset_on_success(env, capsys):
     S.update_daily(conn=None, auto_backfill=False)
     out = capsys.readouterr().out
     assert "连续10次失败" not in out               # 交替失败不触发熔断
-    assert "增量日线: 6/12" in out                 # 6个成功(偶数次调用)
+    assert "增量日线(东财兜底): 6/12" in out                 # 6个成功(偶数次调用)
 
 
 def test_incremental_progress_printed(env, capsys):
@@ -85,4 +87,4 @@ def test_incremental_progress_printed(env, capsys):
     S.update_daily(conn=None, auto_backfill=False)
     out = capsys.readouterr().out
     assert "连续10次失败" in out                  # 空数据连续也熔断
-    assert "增量日线: 0/12" in out                # 结束汇总必输出(不再静默爬行)
+    assert "增量日线(东财兜底): 0/12" in out                # 结束汇总必输出(不再静默爬行)

@@ -68,6 +68,11 @@ def run(start="20260901") -> bool:
                      float(r["close"]), float(r["amount"]))
                     for _, r in df.iterrows()
                     if (c := r["ts_code"].split(".")[0]) in codes]
+            if not rows:
+                # G1: dc对某日无数据(未出数/超dc窗口) → 跳过不计失败,
+                # 否则空批次会触发守卫拒绝并误判主源失败而回退东财
+                print(f"  [{i}/{len(todo)}] {d}: dc日线无数据(未出数/超窗口), 跳过")
+                continue
             guarded_day_write(
                 conn,
                 "INSERT INTO sector_daily(code,date,open,high,low,close,amount) "
@@ -80,12 +85,15 @@ def run(start="20260901") -> bool:
                      for _, r in df2.iterrows()
                      if (c := r["ts_code"].split(".")[0]) in codes
                      and r["up_num"] is not None]
-            guarded_day_write(
-                conn,
-                "INSERT INTO sector_daily(code,date,up_count,down_count) "
-                "VALUES(?,?,?,?) ON CONFLICT(code,date) DO UPDATE SET "
-                "up_count=excluded.up_count,down_count=excluded.down_count",
-                rows2, d, table="sector_daily", date_col="date")
+            if rows2:
+                guarded_day_write(
+                    conn,
+                    "INSERT INTO sector_daily(code,date,up_count,down_count) "
+                    "VALUES(?,?,?,?) ON CONFLICT(code,date) DO UPDATE SET "
+                    "up_count=excluded.up_count,down_count=excluded.down_count",
+                    rows2, d, table="sector_daily", date_col="date")
+            else:
+                print(f"  [{i}/{len(todo)}] {d}: dc涨跌家数无数据, 跳过")
             ok += 1
             print(f"  [{i}/{len(todo)}] {d}: 日线{len(rows)} 涨跌{len(rows2)}")
         except Exception as e:  # noqa: BLE001

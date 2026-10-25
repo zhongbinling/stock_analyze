@@ -111,3 +111,44 @@ def test_dc_daily_registered_everywhere():
     assert jobs.BACKFILL_DEFAULT_START["dc_daily"] == "20260901"
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "dc_daily" in html and "tushare近端" in html
+
+
+def test_dc_run_skips_empty_days(dc_env, monkeypatch):
+    """G1: dc对某日无数据(未出数/超窗口) → 跳过不计失败(误判会触发东财回退)"""
+    FD = dc_env["FD"]
+    empty = pd.DataFrame(columns=["ts_code", "open", "high", "low", "close", "amount"])
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", lambda api, fields="", **kw: empty)
+    assert FD.run("20261016") is True              # 跳过≠失败
+    conn = sqlite3.connect(str(dc_env["path"]))
+    assert conn.execute("SELECT COUNT(*) FROM sector_daily "
+                        "WHERE date='2026-10-20'").fetchone()[0] == 0
+    conn.close()
+
+
+def test_update_daily_dc_primary_routing(dc_env, monkeypatch):
+    """G1: update_daily 走 dc 主源时不触东财路径; dc失败回退kline+快照;
+    资金流两路径都执行"""
+    import sectors as S
+    calls = {"em": [], "snap": [], "ff": []}
+    monkeypatch.setattr(S, "connect", lambda: sqlite3.connect(str(dc_env["path"])))
+    monkeypatch.setattr(S, "refresh_lists", lambda c: {})
+    monkeypatch.setattr(S, "_kline_incremental_em",
+                        lambda *a: calls["em"].append(1))
+    monkeypatch.setattr(S, "_snapshot_updown",
+                        lambda *a: calls["snap"].append(1))
+    monkeypatch.setattr(S, "refresh_fundflow",
+                        lambda c, force=False: calls["ff"].append(1))
+    monkeypatch.setattr(S, "remap_pending", lambda c: None)
+    monkeypatch.setattr(S, "agg_today", lambda c: None)
+    monkeypatch.setattr(S, "_unmatched", [])
+
+    monkeypatch.setattr(S, "_update_via_dc", lambda **k: True)
+    S.update_daily()
+    assert not calls["em"] and not calls["snap"]      # dc主源: 东财路径未触发
+    assert calls["ff"] == [1]                         # 资金流独立执行
+
+    monkeypatch.setattr(S, "_update_via_dc", lambda **k: False)
+    S.update_daily()
+    assert calls["em"] == [1] and calls["snap"] == [1]   # 回退: kline+快照都跑
+    assert calls["ff"] == [1, 1]
