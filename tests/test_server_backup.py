@@ -208,7 +208,8 @@ def test_data_html_unified_assets_and_checkup():
     assert 'id="regTable"' in html and "NON_TS" in html and "基础与映射" in html
     assert "<h2>补全记录</h2>" in html and "<h2>数据补全</h2>" not in html
     # D1-11r: 双击竞态防护(入队成功立即置busy) + 按钮原标签恢复 + 刷新补全记录
-    assert "bfRunning = true;" in html and "const orig = btn.textContent" in html
+    assert html.count("bfRunning = true;") >= 2      # bfRun + 修复全部缺口
+    assert "const orig = btn.textContent" in html
     assert "loadBackfillLogs(); };" in html
 
 

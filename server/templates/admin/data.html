@@ -416,6 +416,7 @@ $('btnCheck').onclick = async () => {
     if (fa) fa.onclick = () => runRepair(win);
     const fg = $('btnFixAllGap');
     if (fg) fg.onclick = async () => {          // D1-13①: 按体检结果逐项修复, 队列串行
+      if (bfRunning) { $('chkMsg').textContent = '队列忙, 稍后再试'; return; }
       const targets = [...new Set(miss.map(a => SCAN_DS[a.code]).filter(Boolean))];
       fg.disabled = true; fg.textContent = '⏳ 入队中…';
       try {
@@ -425,6 +426,7 @@ $('btnCheck').onclick = async () => {
           await api('/admin/api/backfill/run', {method: 'POST',
             body: JSON.stringify({dataset: ds, norecalc: true})});
         await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
+        bfRunning = true;                       // 立即生效防双击重复入队(同bfRun)
         pendingRecheck = true;
         $('chkMsg').textContent = `已入队: ${targets.length} 项定向补全 + 更新链(收尾统一重算), 队列清空后自动复检`;
         $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});

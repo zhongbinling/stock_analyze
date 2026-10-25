@@ -231,7 +231,7 @@ def api_strategy_get():
 @require_level(7)
 def api_strategy_set():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     # D2-3: 部分更新 — 只校验/保存本次出现的键(兼容旧全量提交与新开关单独保存)
     keys = ("auto_update", "update_cron", "auto_generate", "generate_cron", "backfill_recalc")
     present = [k for k in keys if k in d]
@@ -420,7 +420,7 @@ def api_backups():
 @require_level(7)
 def api_backup_settings():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     errs = []
     if str(d.get("backup_enabled")) not in ("0", "1"):
         errs.append("backup_enabled 应为 0/1")
@@ -472,7 +472,7 @@ def api_backup_verify():
 @require_level(9)
 def api_backup_restore():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     fname = str(d.get("file", "")).strip()
     # D1-10 B1: 合法名 = 平铺文件名 或 {dir}/{file}(zip/子目录布局, 仅一层)
     import re as _re
@@ -503,7 +503,7 @@ def api_backup_restore():
 @require_level(7)
 def api_scan():
     from server import market
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     win = int(d.get("window", 7))
     if win not in (7, 30, 90, 365):
         return jsonify({"ok": False, "msg": "window 应为 7/30/90/365"}), 400
@@ -516,7 +516,7 @@ def api_scan():
 @require_level(7)
 def api_repair():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     win = int(d.get("window", 7))
     if win not in (7, 30, 90, 365):
         return jsonify({"ok": False, "msg": "window 应为 7/30/90/365"}), 400
@@ -536,7 +536,7 @@ _START_RE = re.compile(r"^\d{8}$|^\d{4}-\d{2}-\d{2}$")
 @require_level(7)
 def api_backfill_run():
     from server import jobs
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     dataset = str(d.get("dataset", "")).strip()
     start = str(d.get("start", "")).strip() or jobs.BACKFILL_DEFAULT_START.get(dataset, "")
     if dataset not in jobs.BACKFILL_DATASETS:
@@ -597,7 +597,7 @@ def api_sources():
 @bp_admin.post("/api/sources")
 @require_level(7)
 def api_sources_save():
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     ts_key_changed = False
     for code, v in (d or {}).items():
         ds = DataSource.query.filter_by(code=code).first()
@@ -685,7 +685,7 @@ def api_defs():
 @bp_admin.post("/api/defs")
 @require_level(7)
 def api_def_create():
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     from server.jobs import component_meta
     name = str(d.get("name", "")).strip()
     env = d.get("env")
@@ -716,7 +716,7 @@ def api_def_update(vid):
     vd = db.session.get(ViewDef, vid)
     if not vd:
         return jsonify({"ok": False, "msg": "规则不存在"}), 404
-    d = request.get_json(force=True) or {}
+    d = request.get_json(force=True, silent=True) or {}
     from server.jobs import component_meta
     if "name" in d:
         name = str(d.get("name", "")).strip()
