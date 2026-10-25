@@ -40,8 +40,9 @@
     <div id="chkSummary"></div>
     <table class="table" id="chkTable"></table>
   </div>
-  <p class="hint">完成度以交易日历为口径(2013基准线); 缺口悬停可见缺失日期; 可补全数据集行内[补全], 链路数据集行内[修复](走更新链); 「一键体检」按窗口扫描并逐表修复。</p>
+  <p class="hint">覆盖目标 = 自最早日(≥2013基线)起的全部交易日; [补全]=定向补全器补全部历史缺失(幂等, 悬停见各自基线), [修复]=按体检窗口走更新链(抓取+评分+温度)。「一键体检」扫描并逐表修复。</p>
   <table class="table" id="dsTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+  <table class="table" id="regTable" style="display:none;margin-top:10px"></table>
 </section>
 
 <section class="card">
@@ -103,8 +104,8 @@
 </section>
 
 <section class="card">
-  <h2>数据补全</h2>
-  <p class="hint">补全自动跳过已有日期(幂等); 执行前自动打 pre-backfill 快照。补全按钮在上方「数据管理」资产表行内; 本卡为补全记录与反查。</p>
+  <h2>补全记录</h2>
+  <p class="hint">各补全任务的执行记录与按日期反查(哪些补全写过某日); 补全操作入口在上方「数据管理」资产表行内。</p>
   <div class="row-flex" style="margin:4px 0">
     <label class="chk"><input type="checkbox" id="bfRecalc"> 补全后自动重算评分（score + 板块温度，保证视图生成用到完整评分）</label>
     <span class="hint" id="bfRecalcMsg"></span>
@@ -168,27 +169,47 @@ async function loadDatasets() {
       : `<span class="bad" title="${esc((t.missing_recent || []).join(', '))}">缺 ${t.missing_n} 天</span>`;
     const lastTd = t => !t || !t.last ? '<span class="hint">--</span>'
       : `<span title="${esc(t.first || '')} ~ ${esc(t.last)}">${esc(t.last)}</span>`;
-    const rows = [], used = new Set();
+    const rows = [], regRows = [], used = new Set();
     for (const r of BF_ROWS) {
       const t = r.asset ? byCode[r.asset] : null;
       if (r.asset) used.add(r.asset);
-      const btn = `<button class="btn small" data-bf="${r.ds}" ${busy ? 'disabled' : ''}>补全</button>`;
+      const btn = `<button class="btn small" data-bf="${r.ds}" ${busy ? 'disabled' : ''}`
+        + ` title="补全全部缺失日(${r.base || '全历史'}, 已有日跳过·幂等)">补全</button>`;
       rows.push(`<tr><td>${esc(r.label)}</td><td class="hint">${esc(t ? t.db : 'sentiment.db')}</td>
+        <td class="hint">${t && t.first ? esc(t.first) : '--'}</td>
         <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
         <td>${lastCell(r.ds)}</td><td>${btn}</td></tr>`);
     }
     for (const t of d.datasets) {
       if (used.has(t.code)) continue;                 // 已在上方补全行
+      if (NON_TS.has(t.code)) {                       // D1-13⑤: 非时序资产拆独立分组
+        const act = REG_DS[t.code]
+          ? `<button class="btn small" data-reg="${t.code}" ${busy ? 'disabled' : ''}>刷新</button>`
+          : `<button class="btn small" data-regrun="1" ${busy ? 'disabled' : ''}
+              title="走更新链重建">刷新</button>`;
+        regRows.push(`<tr><td>${esc(t.name)}</td><td>${t.rows ?? '--'} 行</td>
+          <td class="hint">${esc(t.last || '--')}</td><td>${act}</td></tr>`);
+        continue;
+      }
       // D1-11r: 链路数据集也要可操作 — 行内[修复]走更新链(抓取+评分+温度)
       const fix = `<button class="btn small" data-fixrun="1" ${busy ? 'disabled' : ''}`
-        + ` title="走更新链(抓取+评分+温度)修复缺失日">修复</button>`;
+        + ` title="按体检窗口走更新链(抓取+评分+温度)修复缺失日">修复</button>`;
       rows.push(`<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
+        <td class="hint">${t.first ? esc(t.first) : '--'}</td>
         <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
         <td class="hint">—</td><td>${fix}</td></tr>`);
     }
-    $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>最新</th><th>完成度</th><th>缺口</th><th>上次补全</th><th>操作</th></tr>' + rows.join('');
+    $('dsTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>最早</th><th>最新</th><th>完成度</th><th>缺口</th><th>上次补全</th><th>操作</th></tr>'
+      + (rows.length ? rows.join('') : '<tr><td colspan="8" class="hint">无时序数据集</td></tr>');
     document.querySelectorAll('#dsTable [data-bf]').forEach(b => b.onclick = () => bfRun(b.dataset.bf, b));
     document.querySelectorAll('#dsTable [data-fixrun]').forEach(b =>
+      b.onclick = () => runRepair(parseInt($('chkWin').value)));
+    $('regTable').innerHTML = regRows.length
+      ? '<tr><th>基础与映射</th><th>行数</th><th>最新更新</th><th></th></tr>' + regRows.join('') : '';
+    $('regTable').style.display = regRows.length ? '' : 'none';
+    document.querySelectorAll('#regTable [data-reg]').forEach(b =>
+      b.onclick = () => bfRun(REG_DS[b.dataset.reg], b));
+    document.querySelectorAll('#regTable [data-regrun]').forEach(b =>
       b.onclick = () => runRepair(parseInt($('chkWin').value)));
     // D2-2: 评分数据状态
     $('scoreTable').innerHTML = '<tr><th>评分类型</th><th>来源</th><th>行数</th><th>板块数</th><th>覆盖交易日</th><th>区间</th><th>健康</th><th>说明</th></tr>' +
@@ -310,7 +331,13 @@ async function poll(quick) {
       btn.textContent = '⏳ 任务执行中...';
       bfRunning = true;                    // 补全行按钮同步禁用
     } else {
-      if (tcWasRunning) loadDatasets();    // D1-11 E2: 任务结束(修复/补全完成)自动刷新资产表
+      if (tcWasRunning) {
+        loadDatasets();    // D1-11 E2: 任务结束(修复/补全完成)自动刷新资产表
+        if (pendingRecheck) {          // D1-13①: 修复全部缺口后自动复检(体检→修复→复检闭环)
+          pendingRecheck = false;
+          setTimeout(() => $('btnCheck').click(), 800);
+        }
+      }
       tcWasRunning = false;
       bfRunning = false;
       $('tcRun').style.display = 'none';
@@ -371,7 +398,10 @@ $('btnCheck').onclick = async () => {
     } else {
       $('chkSummary').innerHTML =
         `<span class="bad">${miss.length} 表缺共 ${total} 日(近${r.window_days}天)</span>
-         <button class="btn primary small" id="btnFixAll" style="margin-left:8px">一键修复(更新链)</button>`;
+         <button class="btn primary small" id="btnFixAllGap" style="margin-left:8px"
+           title="定向补全逐项入队(补全在前)+链路表合并一次更新链收尾, 完成后自动复检">修复全部缺口</button>
+         <button class="btn small" id="btnFixAll" style="margin-left:6px"
+           title="只跑一次更新链(抓取+评分+温度)">一键修复(更新链)</button>`;
       $('chkTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th><th>修复方式</th><th></th></tr>' +
         miss.map(a => {
           const ds = SCAN_DS[a.code];
@@ -384,6 +414,24 @@ $('btnCheck').onclick = async () => {
     $('chkPanel').style.display = '';
     const fa = $('btnFixAll');
     if (fa) fa.onclick = () => runRepair(win);
+    const fg = $('btnFixAllGap');
+    if (fg) fg.onclick = async () => {          // D1-13①: 按体检结果逐项修复, 队列串行
+      const targets = [...new Set(miss.map(a => SCAN_DS[a.code]).filter(Boolean))];
+      const chainNeeded = miss.some(a => !SCAN_DS[a.code]);
+      fg.disabled = true; fg.textContent = '⏳ 入队中…';
+      try {
+        for (const ds of targets)
+          await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({dataset: ds})});
+        if (chainNeeded)
+          await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
+        pendingRecheck = true;
+        $('chkMsg').textContent = `已入队: ${targets.length} 项定向补全`
+          + (chainNeeded ? ' + 更新链(收尾重算)' : '') + ', 队列清空后自动复检';
+        $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
+        poll(true);
+      } catch (e) { $('chkMsg').textContent = '入队失败: ' + e.message; }
+      fg.disabled = false; fg.textContent = '修复全部缺口';
+    };
     document.querySelectorAll('#chkTable [data-fix]').forEach(b =>
       b.onclick = () => {
         const ds = SCAN_DS[b.dataset.fix];
@@ -502,22 +550,26 @@ async function loadBackfillLogs(dataset = '', date = '') {
 /* D1-10 F1: 补全表格化 — 行级[补全]按钮; 有资产映射的行显示完成度,
    无映射的补全类型(zt_est/calendar等)静态行常显按钮(按需手动) */
 const BF_ROWS = [
-  { ds: 'sw_breadth', label: 'SW涨跌家数(2005起)', asset: 'sw_breadth' },
-  { ds: 'sw_pool', label: 'SW涨停结构(2005起)', asset: 'sw_pool' },
-  { ds: 'sw_fflow', label: 'SW主力资金流(2007起)', asset: 'sw_fflow' },
-  { ds: 'sw_daily', label: 'SW行业指数日线(官方)', asset: 'sw_daily' },
-  { ds: 'zt_ts', label: '涨停结构·tushare(2020起)', asset: 'pool' },
-  { ds: 'zt_ts', label: '板块涨停聚合·THS行业(2020起)', asset: 'sector_pool' },
-  { ds: 'zt_est', label: '涨停家数·估算(2012-2019)', asset: null },
-  { ds: 'breadth', label: '涨跌家数·tushare(2018起)', asset: 'breadth' },
-  { ds: 'sector_history', label: '板块日线·历史回补(东财)', asset: 'sector_daily' },
-  { ds: 'dc_daily', label: '板块日线·tushare近端(推荐)', asset: 'sector_daily' },
-  { ds: 'calendar', label: '交易日历·刷新', asset: null },
+  { ds: 'sw_breadth', label: 'SW涨跌家数(2005起)', asset: 'sw_breadth', base: '自2005起' },
+  { ds: 'sw_pool', label: 'SW涨停结构(2005起)', asset: 'sw_pool', base: '自2005起' },
+  { ds: 'sw_fflow', label: 'SW主力资金流(2007起)', asset: 'sw_fflow', base: '自2007起' },
+  { ds: 'sw_daily', label: 'SW行业指数日线(官方)', asset: 'sw_daily', base: '遗留·官方停更段不追补' },
+  { ds: 'zt_ts', label: '涨停结构·tushare(2020起)', asset: 'pool', base: '自2020起' },
+  { ds: 'zt_ts', label: '板块涨停聚合·THS行业(2020起)', asset: 'sector_pool', base: '自2020起' },
+  { ds: 'zt_est', label: '涨停家数·估算(2012-2019)', asset: null, base: '2012-2019段' },
+  { ds: 'breadth', label: '涨跌家数·tushare(2018起)', asset: 'breadth', base: '自2018起' },
+  { ds: 'sector_history', label: '板块日线·历史回补(东财)', asset: 'sector_daily', base: '自2012起·深史(东财)' },
+  { ds: 'dc_daily', label: '板块日线·tushare近端(推荐)', asset: 'sector_daily', base: '近端·tushare dc窗口' },
+  { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年' },
 ];
 // D1-11 E2: 数据集code → 定向补全项(有则体检行修复走backfill, 否则走更新链)
 const SCAN_DS = {};
 BF_ROWS.forEach(r => { if (r.asset) SCAN_DS[r.asset] = r.ds; });
 SCAN_DS.calendar = 'calendar';
+// D1-13⑤: 非时序资产(清单/日历/映射)拆「基础与映射」分组; REG_DS=有定向刷新器
+const NON_TS = new Set(['sectors', 'calendar', 'sw1', 'sw2']);
+const REG_DS = { calendar: 'calendar' };
+let pendingRecheck = false;               // D1-13①: 修复全部缺口完成后自动复检
 let bfRunning = false;                    // D1-11 E1: 补全行已并入数据资产表(loadDatasets渲染)
 async function bfRun(dataset, btn) {
   if (bfRunning) return;

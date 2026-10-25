@@ -200,7 +200,12 @@ def test_data_html_unified_assets_and_checkup():
                  'id="scanMsg"', 'id="gapTable"', "loadBfAssets", "gapResult"):
         assert gone not in html, f"遗留旧元素: {gone}"
     # 任务结束自动刷新资产表
-    assert "if (tcWasRunning) loadDatasets()" in html
+    assert "if (tcWasRunning) {" in html and "loadDatasets();" in html
+    # D1-13: 修复全部缺口(闭环复检) / 最早列 / 补全语义悬停 / 非时序分组 / 补全记录卡
+    assert 'id="btnFixAllGap"' in html and "pendingRecheck" in html
+    assert "<th>最早</th>" in html and "已有日跳过" in html and "自2005起" in html
+    assert 'id="regTable"' in html and "NON_TS" in html and "基础与映射" in html
+    assert "<h2>补全记录</h2>" in html and "<h2>数据补全</h2>" not in html
     # D1-11r: 双击竞态防护(入队成功立即置busy) + 按钮原标签恢复 + 刷新补全记录
     assert "bfRunning = true;" in html and "const orig = btn.textContent" in html
     assert "loadBackfillLogs(); };" in html
