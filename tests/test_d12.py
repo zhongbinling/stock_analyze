@@ -26,6 +26,8 @@ def dc_env(tmp_path, monkeypatch):
       CREATE TABLE calendar(cal_date TEXT PRIMARY KEY, is_open INTEGER);
       CREATE TABLE index_daily(code TEXT, date TEXT, close REAL);
       CREATE TABLE mood_raw(date TEXT PRIMARY KEY, zt_count INTEGER);
+      CREATE TABLE sector_fundflow(code TEXT, date TEXT, main_net REAL,
+        PRIMARY KEY(code, date));
     """)
     for i in range(3):
         conn.execute("INSERT INTO sectors VALUES(?,?,'industry',1,NULL,NULL,NULL)",
@@ -105,12 +107,88 @@ def test_dc_run_guard_rejects_dup_batch(dc_env, monkeypatch):
 def test_dc_daily_registered_everywhere():
     """注册接线: BACKFILLS + jobs标签/默认起始 + 资产表行"""
     import fetch_daily as FD2
-    assert "dc_daily" in FD2.BACKFILLS
+    assert "dc_daily" in FD2.BACKFILLS and "dc_fflow" in FD2.BACKFILLS
+    assert FD2.BACKFILLS["dc_fflow"][3] == "20230901"
     from server import jobs
-    assert "dc_daily" in jobs.BACKFILL_DATASETS
-    assert jobs.BACKFILL_DEFAULT_START["dc_daily"] == "20260901"
+    assert "dc_daily" in jobs.BACKFILL_DATASETS and "dc_fflow" in jobs.BACKFILL_DATASETS
+    assert jobs.BACKFILL_DEFAULT_START["dc_fflow"] == "20230901"
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "dc_daily" in html and "tushare近端" in html
+    assert "dc_fflow" in html and "自2023-09起" in html
+
+
+# ── D1-12 G2: 资金流 dc 迁移 ──
+
+def _mf_df():
+    return pd.DataFrame([
+        ("BK0000.DC", 1.5e8), ("BK0001.DC", -2.5e8),
+        ("BK0002.DC", 3.0e8), ("BK9999.DC", 9.9e9),
+    ], columns=["ts_code", "net_amount"])
+
+
+def test_refresh_fflow_dc_fills_thin_days(dc_env, monkeypatch):
+    """G2: 日更主源 — thin日(行数<90%启用板块)按trade_date补, 健康日跳过, 未启用过滤"""
+    FD = dc_env["FD"]
+    c = sqlite3.connect(str(dc_env["path"]))
+    for i in range(3):                                 # 10-16 健康(3/3)
+        c.execute("INSERT INTO sector_fundflow VALUES(?, '2026-10-16', 1.0)",
+                  (f"BK{i:04d}",))
+    c.commit()
+    c.close()
+    calls = []
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", lambda api, fields="", **kw:
+                        calls.append(kw.get("trade_date")) or _mf_df())
+    assert FD.refresh_fflow_dc(conn=sqlite3.connect(str(dc_env["path"]))) is True
+    assert calls == ["20261019", "20261020"]           # 只补thin日(10-19/20)
+    c = sqlite3.connect(str(dc_env["path"]))
+    row = c.execute("SELECT main_net FROM sector_fundflow "
+                    "WHERE code='BK0001' AND date='2026-10-20'").fetchone()
+    assert row == (-2.5e8,)
+    assert c.execute("SELECT COUNT(*) FROM sector_fundflow "
+                     "WHERE code='BK9999'").fetchone()[0] == 0
+    c.close()
+
+
+def test_backfill_fflow_dc_per_code(dc_env, monkeypatch):
+    """G2: 历史回补 — 按代码全史, 本地过滤start前, guarded_batch写入"""
+    FD = dc_env["FD"]
+    hist = pd.DataFrame([
+        ("20230501", 1.0),      # 早于默认start → 滤除
+        ("20260101", 2.0), ("20261019", 3.0),
+    ], columns=["trade_date", "net_amount"])
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", lambda api, fields="", **kw: hist)
+    monkeypatch.setattr(FD, "connect", lambda: sqlite3.connect(str(dc_env["path"])))
+    assert FD.backfill_fflow_dc("20230901") is True
+    c = sqlite3.connect(str(dc_env["path"]))
+    assert c.execute("SELECT COUNT(*) FROM sector_fundflow").fetchone()[0] == 6  # 3板块×2日
+    assert c.execute("SELECT COUNT(*) FROM sector_fundflow "
+                     "WHERE date='2023-05-01'").fetchone()[0] == 0
+    c.close()
+
+
+def test_refresh_fundflow_routes_dc(dc_env, monkeypatch):
+    """G2: refresh_fundflow 走 dc 主源不触东财; dc失败回退; 5天跳过仍在"""
+    import sectors as S
+    import fetch_dc as FD
+    conn = sqlite3.connect(str(dc_env["path"]))
+    calls = {"dc": [], "em": []}
+    monkeypatch.setattr(FD, "refresh_fflow_dc",
+                        lambda c, win_days=10: calls["dc"].append(1) or True)
+    monkeypatch.setattr(S.em_api, "sector_fundflow",
+                        lambda code: calls["em"].append(1) or pd.DataFrame())
+    S.refresh_fundflow(conn, force=True)
+    assert calls == {"dc": [1], "em": []}              # dc成功, 东财未触
+    monkeypatch.setattr(FD, "refresh_fflow_dc",
+                        lambda c, win_days=10: calls["dc"].append(1) or False)
+    S.refresh_fundflow(conn, force=True)
+    assert calls["em"]                                  # dc失败回退东财
+    conn.execute("INSERT INTO sector_fundflow VALUES('BK0000', '2026-10-24', 1.0)")
+    conn.commit()
+    S.refresh_fundflow(conn, force=False)               # 近5天内已新 → 全跳过
+    assert calls["dc"] == [1, 1]
+    conn.close()
 
 
 def test_dc_run_skips_empty_days(dc_env, monkeypatch):

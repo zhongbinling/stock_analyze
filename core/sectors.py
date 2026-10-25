@@ -114,12 +114,19 @@ def backfill_history(conn, beg: str = HIST_BEG):
 
 
 def refresh_fundflow(conn, force=False):
-    """资金流(约最近120日全量返回, 幂等); 默认7天内跳过; 连续失败熔断"""
+    """板块资金流: dc主源(tushare按日, 近10日thin补齐) → 东财逐板块兜底;
+    默认5天内已新跳过(周频节奏), 连续失败熔断"""
     if not force:
         last = conn.execute("SELECT MAX(date) FROM sector_fundflow").fetchone()[0]
         if last and last >= (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"):
             print("[sectors] 资金流近期已新, 跳过")
             return
+    try:                                    # D1-12 G2: dc主源(免东财限流)
+        import fetch_dc
+        if fetch_dc.refresh_fflow_dc(conn):
+            return
+    except Exception as e:  # noqa: BLE001
+        print(f"[sectors] 资金流dc主源异常, 回退东财: {type(e).__name__}: {e}")
     codes = _enabled_industries(conn)
     print(f"[sectors] 资金流刷新: {len(codes)} 板块")
     t0, fails = time.time(), 0

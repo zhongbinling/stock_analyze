@@ -17,7 +17,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
-from db import connect, trading_dates, guarded_day_write  # noqa: E402
+from db import connect, trading_dates, guarded_day_write, guarded_batch  # noqa: E402
 import tushare_api as T  # noqa: E402
 from fetch_daily import load_cfg, norm_date, ymd  # noqa: E402
 
@@ -41,7 +41,7 @@ def _thin_dates(conn, dates, need) -> list:
 
 
 def run(start="20260901") -> bool:
-    """幂等回补: 只处理覆盖不足的交易日; 单日两批(日线+涨跌家数)均走守卫写入"""
+    """板块日线+涨跌家数幂等回补: 只处理覆盖不足的交易日; 单日两批走守卫写入"""
     if not T.has_token():
         print("[dc] 无 tushare token, 跳过")
         return True
@@ -106,6 +106,109 @@ def run(start="20260901") -> bool:
     conn.close()
     print(f"[dc] 结束 {time.time()-t0:.0f}s, 共{n}行"
           + (f", 失败{fails}日(重跑自愈)" if fails else ""))
+    return fails == 0
+
+
+# ---------------------------------------------------------------- D1-12 G2: 资金流
+
+FFLOW_UPSERT = ("INSERT INTO sector_fundflow(code,date,main_net) VALUES(?,?,?) "
+                "ON CONFLICT(code,date) DO UPDATE SET main_net=excluded.main_net")
+
+
+def _thin_fflow_dates(conn, dates, need) -> list:
+    """资金流覆盖不足90%的交易日(EM残期28/508即此判出)"""
+    out = []
+    for d in dates:
+        n = conn.execute("SELECT COUNT(*) FROM sector_fundflow WHERE date=?",
+                         (d,)).fetchone()[0]
+        if n < need * 0.9:
+            out.append(d)
+    return out
+
+
+def refresh_fflow_dc(conn=None, win_days: int = 10) -> bool:
+    """G2 日更主源: 近10自然日thin日按trade_date查(一次拿全板块), 守卫写入。
+
+    返回 False(无token/异常)时由调用方回退东财逐板块。"""
+    conn = conn or connect()
+    if not T.has_token():
+        print("[fflow-dc] 无 tushare token")
+        return False
+    codes = _enabled_codes(conn)
+    if not codes:
+        return True
+    from datetime import date as _d, timedelta as _td
+    start = (_d.today() - _td(days=win_days)).strftime("%Y%m%d")
+    dates = trading_dates(conn, load_cfg()["index"]["primary"], start=norm_date(start))
+    todo = _thin_fflow_dates(conn, dates, len(codes))
+    print(f"[fflow-dc] {len(todo)}/{len(dates)} 交易日待补 (启用板块 {len(codes)})")
+    if not todo:
+        return True
+    fails = 0
+    for i, d in enumerate(todo, 1):
+        try:
+            df = T.call("moneyflow_ind_dc", "ts_code,net_amount", trade_date=ymd(d))
+            rows = [(c, d, float(r["net_amount"]))
+                    for _, r in df.iterrows()
+                    if (c := r["ts_code"].split(".")[0]) in codes
+                    and r["net_amount"] is not None]
+            if not rows:
+                print(f"  [{i}/{len(todo)}] {d}: dc无数据(未出数), 跳过")
+                continue
+            guarded_day_write(conn, FFLOW_UPSERT, rows, d,
+                              table="sector_fundflow", date_col="date")
+            print(f"  [{i}/{len(todo)}] {d}: {len(rows)} 板块")
+        except Exception as e:  # noqa: BLE001
+            fails += 1
+            print(f"  ✗ {d}: {e}")
+            if fails >= 5:
+                print("  ✗✗ 连续失败中断(重跑自愈)")
+                return False
+    return fails == 0
+
+
+def backfill_fflow_dc(start="20230901") -> bool:
+    """G2 历史回补: 按代码查全历史(2023-09起, 源最早), 每代码一批守卫写入(upsert幂等)。
+
+    按代码一次调用拿全史(日更见refresh_fflow_dc), EM缺的2023-09~2026-04段
+    与残缺日(28/508期)一并补齐。"""
+    if not T.has_token():
+        print("[fflow-dc] 无 tushare token, 跳过")
+        return True
+    t0 = time.time()
+    conn = connect()
+    codes = _enabled_codes(conn)
+    iso = norm_date(start)
+    print(f"[fflow-dc] 按代码回补 {len(codes)} 板块, 目标自 {iso} 起")
+    if not codes:
+        conn.close()
+        return True
+    ok, fails = 0, 0
+    for i, code in enumerate(sorted(codes), 1):
+        try:
+            df = T.call("moneyflow_ind_dc", "trade_date,net_amount",
+                        ts_code=f"{code}.DC")
+            rows = [(code, norm_date(str(r["trade_date"])), float(r["net_amount"]))
+                    for _, r in df.iterrows()
+                    if r["net_amount"] is not None and str(r["trade_date"]) >= ymd(iso)]
+            if not rows:
+                continue
+            guarded_batch(conn, FFLOW_UPSERT, rows, label=f"fflow {code}",
+                          check=lambda rs: None if len({r[1] for r in rs}) == len(rs)
+                          else "批内日期重复")
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            fails += 1
+            print(f"  ✗ {code}: {e}")
+            if fails >= 10:
+                print("  ✗✗ 连续失败中断(重跑续传)")
+                break
+        if i % 50 == 0:
+            print(f"  [{i}/{len(codes)}] {ok}成功 {time.time()-t0:.0f}s")
+    n = conn.execute("SELECT COUNT(*) FROM sector_fundflow").fetchone()[0]
+    conn.close()
+    print(f"[fflow-dc] 结束 {time.time()-t0:.0f}s, 共{n}行"
+          + (f", 失败{fails}(重跑自愈)" if fails else ""))
     return fails == 0
 
 
