@@ -543,7 +543,9 @@ def api_backfill_run():
         return jsonify({"ok": False, "msg": f"dataset 应为 {'/'.join(jobs.BACKFILL_DATASETS)}"}), 400
     if not _START_RE.match(start):
         return jsonify({"ok": False, "msg": "start 应为 YYYYMMDD 或 YYYY-MM-DD"}), 400
-    ok, msg = jobs.enqueue("backfill", jobs.task_backfill(dataset, start, "manual"),
+    norecalc = bool(d.get("norecalc"))       # D1-13r: 批处理补全跳过逐项重算(收尾链统一算)
+    ok, msg = jobs.enqueue("backfill", jobs.task_backfill(dataset, start, "manual",
+                                                          norecalc=norecalc),
                            target=jobs.BACKFILL_DATASETS[dataset], trigger="manual")
     audit("backfill_run_enqueue" if ok else "backfill_run_reject",
           target=dataset, detail=f"start={start}; {msg}")

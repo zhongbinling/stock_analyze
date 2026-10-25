@@ -203,6 +203,7 @@ def test_data_html_unified_assets_and_checkup():
     assert "if (tcWasRunning) {" in html and "loadDatasets();" in html
     # D1-13: 修复全部缺口(闭环复检) / 最早列 / 补全语义悬停 / 非时序分组 / 补全记录卡
     assert 'id="btnFixAllGap"' in html and "pendingRecheck" in html
+    assert "norecalc: true" in html             # D1-13r: 批处理补全跳过逐项重算
     assert "<th>最早</th>" in html and "已有日跳过" in html and "自2005起" in html
     assert 'id="regTable"' in html and "NON_TS" in html and "基础与映射" in html
     assert "<h2>补全记录</h2>" in html and "<h2>数据补全</h2>" not in html
@@ -300,6 +301,30 @@ def test_api_backup_verify_empty_body_ok(app_env):
     r = c.post("/admin/api/backup/verify")           # 无 body
     assert r.status_code == 200 and r.get_json()["ok"]
     assert jobs._q.get_nowait()["kind"] == "verify"
+
+
+def test_task_backfill_norecalc(server_app, monkeypatch):
+    """D1-13r: norecalc=True 跳过逐项评分重算入队(修复全部缺口由收尾更新链统一算);
+    默认路径保留自动重算"""
+    from server import jobs
+
+    def fake_run(cmd, append, cwd=None, env_extra=None):
+        append("@@BACKFILL@@ " + json.dumps({
+            "dataset": "calendar", "label": "交易日历", "status": "ok",
+            "date_from": "2026-01-01", "date_to": "2026-01-02",
+            "rows_written": 10, "days": [{"date": "2026-01-01", "rows": 10}],
+            "duration_s": 1, "error": None}))
+        return 0
+    monkeypatch.setattr(jobs, "_run", fake_run)
+    with server_app["app"].app_context():
+        jobs.set_setting("backfill_recalc", "1")
+        assert jobs.task_backfill("calendar", "20240101",
+                                  norecalc=True)(lambda s: None) == 0
+        assert jobs.queue_size() == 0                # 未入队逐项重算
+        assert jobs.task_backfill("calendar", "20240101")(lambda s: None) == 0
+        assert jobs.queue_size() == 1                # 默认路径仍自动重算
+        assert jobs._q.get_nowait()["kind"] == "recalc"
+        jobs.set_setting("backfill_recalc", "0")
 
 
 def test_api_backup_run_blocks(app_env):

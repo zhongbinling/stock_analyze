@@ -492,8 +492,12 @@ BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
                           "dc_daily": "20260901"}
 
 
-def task_backfill(dataset: str, start: str, trigger: str = "manual"):
-    """返回补全任务函数(闭包): subprocess 跑统一CLI, 解析结果JSON → 落 DataBackfillLog"""
+def task_backfill(dataset: str, start: str, trigger: str = "manual",
+                  norecalc: bool = False):
+    """返回补全任务函数(闭包): subprocess 跑统一CLI, 解析结果JSON → 落 DataBackfillLog
+
+    norecalc: 批处理场景(修复全部缺口)跳过逐项自动重算 — 由收尾更新链统一重算一次,
+    避免N项补全触发N次评分重算(每次15~20分钟)。"""
     def fn(append):
         from server.models import DataBackfillLog
         log = DataBackfillLog(dataset=dataset, label=BACKFILL_DATASETS.get(dataset, dataset),
@@ -534,7 +538,8 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual"):
         db.session.commit()
         # D2-3: 有实际写入且开关开 → 自动入队评分重算(独立job, 历史清晰)
         if (log.status == "done" and (log.rows_written or 0) > 0
-                and get_setting("backfill_recalc", "1") == "1"):
+                and get_setting("backfill_recalc", "1") == "1"
+                and not norecalc):   # D1-13r: 批处理补全由收尾更新链统一重算
             ok2, msg2 = enqueue("recalc", task_recalc, target="评分重算", trigger="schedule")
             append(f"> 基础数据已更新({log.rows_written}行), "
                    + (f"已自动入队评分重算" if ok2 else f"⚠ 评分重算入队失败: {msg2}"))

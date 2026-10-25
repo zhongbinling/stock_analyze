@@ -417,16 +417,16 @@ $('btnCheck').onclick = async () => {
     const fg = $('btnFixAllGap');
     if (fg) fg.onclick = async () => {          // D1-13①: 按体检结果逐项修复, 队列串行
       const targets = [...new Set(miss.map(a => SCAN_DS[a.code]).filter(Boolean))];
-      const chainNeeded = miss.some(a => !SCAN_DS[a.code]);
       fg.disabled = true; fg.textContent = '⏳ 入队中…';
       try {
+        // D1-13r: 定向补全逐项入队但跳过逐项重算(norecalc) — N项补全只由
+        // 收尾更新链统一重算一次, 否则backfill_recalc开关会触发N次评分重算
         for (const ds of targets)
-          await api('/admin/api/backfill/run', {method: 'POST', body: JSON.stringify({dataset: ds})});
-        if (chainNeeded)
-          await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
+          await api('/admin/api/backfill/run', {method: 'POST',
+            body: JSON.stringify({dataset: ds, norecalc: true})});
+        await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
         pendingRecheck = true;
-        $('chkMsg').textContent = `已入队: ${targets.length} 项定向补全`
-          + (chainNeeded ? ' + 更新链(收尾重算)' : '') + ', 队列清空后自动复检';
+        $('chkMsg').textContent = `已入队: ${targets.length} 项定向补全 + 更新链(收尾统一重算), 队列清空后自动复检`;
         $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
         poll(true);
       } catch (e) { $('chkMsg').textContent = '入队失败: ' + e.message; }
