@@ -564,6 +564,7 @@ const BF_ROWS = [
   { ds: 'dc_daily', label: '板块日线·tushare近端(推荐)', asset: 'sector_daily', base: '近端·tushare dc窗口' },
   { ds: 'dc_fflow', label: '板块资金流·tushare回补(2023-09起)', asset: 'sector_fflow', base: '自2023-09起' },
   { ds: 'index_val', label: '指数估值PE/PB(50/300/500/1000等)', asset: 'index_val', base: '自2014-06起' },
+  { ds: 'margin_hist', label: '两融余额·历史回补(沪深北三所合计)', asset: 'margin', base: '自2010-03-31起' },
   { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年' },
 ];
 // D1-11 E2: 数据集code → 定向补全项(有则体检行修复走backfill, 否则走更新链)

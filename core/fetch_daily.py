@@ -356,60 +356,93 @@ def fetch_tushare_mood_today():
         print(f"[ts-mood] 失败(不影响主流程): {type(e).__name__}: {e}")
 
 
+def _shift_ymd(iso: str, days: int) -> str:
+    from datetime import date, timedelta
+    y, m, d = map(int, iso.split("-"))
+    return (date(y, m, d) + timedelta(days=days)).strftime("%Y%m%d")
+
+
+def _pull_margin(conn, start_ymd: str, end_ymd: str) -> int:
+    """分页拉取[start,end]两融汇总(三所明细groupby求和)并守卫写入, 幂等upsert"""
+    import re as _re
+    from db import guarded_batch, all_checks, chk_unique
+    import tushare_api
+    _iso_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    total = 0
+    while start_ymd <= end_ymd:
+        df = tushare_api.margin(start_ymd, end_ymd)
+        if df.empty:
+            break
+        mrows = []
+        for d, g in df.groupby("trade_date"):
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            tot = g.sum(numeric_only=True)
+            sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
+            szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
+            mrows.append((iso, float(tot["rzye"]), float(tot["rzmre"]),
+                          float(tot["rqye"]), float(tot["rzrqye"]),
+                          float(sse) if sse else None, float(szse) if szse else None))
+        # D1-12 F2: 守卫批次 — 日期ISO且落在分页窗口内(防错位/脏行), 单事务零污染
+        guarded_batch(
+            conn,
+            "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+            "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
+            "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
+            mrows, label=f"margin {start_ymd}~{end_ymd}",
+            check=all_checks(
+                chk_unique(0),
+                lambda rs: None if all(
+                    _iso_re.match(r[0]) and start_ymd <= r[0].replace("-", "") <= end_ymd
+                    for r in rs) else f"日期格式/窗口越界(应 {start_ymd}~{end_ymd})"))
+        total += len(mrows)
+        last_d = df["trade_date"].max()
+        if last_d >= end_ymd:
+            break
+        start_ymd = _shift_ymd(f"{last_d[:4]}-{last_d[4:6]}-{last_d[6:8]}", 1)   # 分页续拉
+    return total
+
+
 def fetch_margin():
-    """融资融券汇总(tushare, 可选): 增量/首次回补(2020起) → margin_daily"""
+    """融资融券汇总(tushare, 可选): 增量(回看3天重叠) → margin_daily
+
+    D1-14 H2: 增量起点从"最后日期+1"改为回看3天 — 深市/北交所当日数据
+    延迟发布, 起点跳过会让当天只落沪市行成为永久缺口(2026-10-23即中招);
+    upsert幂等覆盖, 重叠窗口自动补齐延迟行。"""
     try:
         import tushare_api
         if not tushare_api.has_token():
             return
         conn = connect()
         last = conn.execute("SELECT MAX(date) FROM margin_daily").fetchone()[0]
-        start = _next_ymd(last) if last else "20200101"
+        start = _shift_ymd(last, -3) if last else "20100331"   # 首装直接全史(2010-03-31起)
         today = time.strftime("%Y%m%d")
-        total = 0
-        import re as _re
-        _iso_re = _re.compile(r"^\d{4}-\d{2}-\d{2}$")
-        while start <= today:
-            df = tushare_api.margin(start, today)
-            if df.empty:
-                break
-            mrows = []
-            for d, g in df.groupby("trade_date"):
-                iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-                tot = g.sum(numeric_only=True)
-                sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
-                szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
-                mrows.append((iso, float(tot["rzye"]), float(tot["rzmre"]),
-                              float(tot["rqye"]), float(tot["rzrqye"]),
-                              float(sse) if sse else None, float(szse) if szse else None))
-            # D1-12 F2: 守卫批次 — 日期ISO且落在分页窗口内(防错位/脏行), 单事务零污染
-            from db import guarded_batch, all_checks, chk_unique
-            guarded_batch(
-                conn,
-                "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
-                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
-                "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
-                "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
-                mrows, label=f"margin {start}~{today}",
-                check=all_checks(
-                    chk_unique(0),
-                    lambda rs: None if all(
-                        _iso_re.match(r[0]) and start <= r[0].replace("-", "") <= today
-                        for r in rs) else f"日期格式/窗口越界(应 {start}~{today})"))
-            total += len(mrows)
-            last_d = df["trade_date"].max()
-            if last_d >= today:
-                break
-            start = _next_ymd(f"{last_d[:4]}-{last_d[4:6]}-{last_d[6:8]}")   # 分页续拉
+        total = _pull_margin(conn, start, today)
         print(f"[margin] 两融汇总: 本次写入 {total} 日")
     except Exception as e:  # noqa: BLE001
         print(f"[margin] 失败(不影响主流程): {type(e).__name__}: {e}")
 
 
-def _next_ymd(iso: str) -> str:
-    from datetime import date, timedelta
-    y, m, d = map(int, iso.split("-"))
-    return (date(y, m, d) + timedelta(days=1)).strftime("%Y%m%d")
+def backfill_margin(start="20100331") -> bool:
+    """D1-14 H2: 历史段回补 [start, 库内最早日-1]; 库空则全量(由fetch_margin首装路径覆盖)"""
+    import tushare_api
+    if not tushare_api.has_token():
+        print("[margin-hist] 无 tushare token, 跳过")
+        return True
+    conn = connect()
+    first = conn.execute("SELECT MIN(date) FROM margin_daily").fetchone()[0]
+    iso = norm_date(str(start))
+    end = _shift_ymd(first, -1) if first else time.strftime("%Y%m%d")
+    if end < iso.replace("-", ""):
+        print(f"[margin-hist] 无更早段可补 (库内最早 {first})")
+        conn.close()
+        return True
+    print(f"[margin-hist] 回补 {iso} ~ {end}")
+    t0 = time.time()
+    total = _pull_margin(conn, iso.replace("-", ""), end)
+    conn.close()
+    print(f"[margin-hist] 结束 {time.time()-t0:.0f}s, 写入 {total} 日")
+    return True
 
 
 def backfill_tushare(start: str = "20200102"):
@@ -622,6 +655,9 @@ BACKFILLS = {
     "index_val": ("指数估值PE/PB回补(2014-06起)",
                   [("index_val_daily", None, "date")],
                   lambda start: __import__("fetch_val").run(start), "20140601"),
+    "margin_hist": ("两融余额历史回补(2010-03起)",
+                    [("margin_daily", None, "date")],
+                    lambda start: backfill_margin(start), "20100331"),
     "sw_breadth": ("板块涨跌家数·SW层级(2005起)", [("sw_breadth", None, "date")],
                    lambda start: backfill_sw_breadth(start), "20050101"),
     "sw_pool": ("涨停结构·SW层级(2005起, 含全市场段)", [("sw_pool", None, "date"),
