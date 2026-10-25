@@ -114,19 +114,23 @@ def backfill_history(conn, beg: str = HIST_BEG):
 
 
 def refresh_fundflow(conn, force=False):
-    """板块资金流: dc主源(tushare按日, 近10日thin补齐) → 东财逐板块兜底;
-    默认5天内已新跳过(周频节奏), 连续失败熔断"""
-    if not force:
-        last = conn.execute("SELECT MAX(date) FROM sector_fundflow").fetchone()[0]
-        if last and last >= (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"):
-            print("[sectors] 资金流近期已新, 跳过")
-            return
+    """板块资金流: dc主源(tushare按日, thin判定即新鲜度判定 → 每日轻检查)
+    → 东财逐板块兜底(保留5天周频跳过); 连续失败熔断。
+
+    D1-12r: dc检查成本仅每交易日一次COUNT, 解绑5天周频——此前周一拉数后
+    周二~周四都被skip卡住, fflow最差滞后3天; force仅作用于东财分支
+    (深史回补强刷), dc路径由thin幂等判定自足。"""
     try:                                    # D1-12 G2: dc主源(免东财限流)
         import fetch_dc
         if fetch_dc.refresh_fflow_dc(conn):
             return
     except Exception as e:  # noqa: BLE001
         print(f"[sectors] 资金流dc主源异常, 回退东财: {type(e).__name__}: {e}")
+    if not force:
+        last = conn.execute("SELECT MAX(date) FROM sector_fundflow").fetchone()[0]
+        if last and last >= (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d"):
+            print("[sectors] 资金流近期已新, 跳过")
+            return
     codes = _enabled_industries(conn)
     print(f"[sectors] 资金流刷新: {len(codes)} 板块")
     t0, fails = time.time(), 0

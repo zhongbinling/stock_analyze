@@ -98,7 +98,14 @@ def test_progress_parsed_from_log(server_app, monkeypatch):
         append("  [5/10] 30s")
         return 0
     monkeypatch.setattr(jobs, "_run", fake_run)
-    # task_repair单趟全链: scan(真实库有缺口)→fetch+score+sector各一次
+    # task_repair单趟全链: scan→fetch+score+sector各一次。
+    # D1-12r: 原测试隐式依赖真实库存在缺口(缺口全愈后fetch不再执行而失效),
+    # 改为自带缺口夹具, 与真实数据状态解耦
+    from server import market
+    monkeypatch.setattr(market, "scan_gaps", lambda win: {
+        "window_days": win, "trading_days": 5, "latest": "2026-10-23",
+        "assets": [{"code": "mood_raw", "name": "涨停池", "db": "sentiment.db",
+                    "missing": ["2026-10-22"]}]})
     fn = jobs.task_repair(7)
     with server_app["app"].app_context():
         rc = fn(lambda s: None)

@@ -169,7 +169,8 @@ def test_backfill_fflow_dc_per_code(dc_env, monkeypatch):
 
 
 def test_refresh_fundflow_routes_dc(dc_env, monkeypatch):
-    """G2: refresh_fundflow 走 dc 主源不触东财; dc失败回退; 5天跳过仍在"""
+    """G2: refresh_fundflow 走 dc 主源不触东财; dc失败回退; dc每日轻检查
+    (thin即新鲜度), 5天跳过仅剩东财分支"""
     import sectors as S
     import fetch_dc as FD
     conn = sqlite3.connect(str(dc_env["path"]))
@@ -183,11 +184,12 @@ def test_refresh_fundflow_routes_dc(dc_env, monkeypatch):
     monkeypatch.setattr(FD, "refresh_fflow_dc",
                         lambda c, win_days=10: calls["dc"].append(1) or False)
     S.refresh_fundflow(conn, force=True)
-    assert calls["em"]                                  # dc失败回退东财
+    assert calls["em"]                                  # dc失败回退东财(force绕过skip)
     conn.execute("INSERT INTO sector_fundflow VALUES('BK0000', '2026-10-24', 1.0)")
     conn.commit()
-    S.refresh_fundflow(conn, force=False)               # 近5天内已新 → 全跳过
-    assert calls["dc"] == [1, 1]
+    calls["em"].clear()
+    S.refresh_fundflow(conn, force=False)               # dc每日检查(再调一次)
+    assert len(calls["dc"]) == 3 and not calls["em"]    # 近5天已新 → 仅东财分支被跳过
     conn.close()
 
 
