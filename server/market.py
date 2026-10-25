@@ -204,6 +204,9 @@ _ASSET_DATE_TABLES = [
     ("sw_pool", "SW涨停结构", "sw_pool", None, "估算+官方", 4,
      "2005-2019估算/2020+官方覆盖"),
     ("sw_fflow", "SW主力资金流", "sw_fflow", None, "成分聚合", 4, "moneyflow 2007起"),
+    # D1-14 H1: 指数估值(50/300/500/1000/上证/创业板/科创50, 2014-06起)
+    ("index_val", "指数估值PE/PB", "index_val_daily", None, "tushare", 7,
+     "宽基7指数·中证全指不在源清单"),
 ]
 # D1-10 S1: raw_daily.db 跨库表(ATTACH只读挂载后并入datasets); 日期列=trade_date
 RAW_TABLES = [
@@ -300,7 +303,8 @@ def _norm_date(s) -> str:
 # D1-11h: 半截覆盖判定(尺度无关) — 行数低于 max(近10健康日水位×25%, 全期峰值×10%)
 # 的日期视为未覆盖。起因: 2026-10-19/20 更新链未跑成, sector_daily 仅47/523板块有行,
 # 日期存在但内容残缺, 原DISTINCT-date口径的体检/完成度均无法发现。
-_MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10)}
+_MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10),
+                  "index_val_daily": (0.6, 0.3)}   # D1-14: 7指数/日, <5行=半截
 # D1-11h: 体检排除的遗留数据集 — sw_daily 官方源停更段无数据可补,
 # 温度链已用 sw_index_comp(D1-9), 参与体检只会产生永续假缺口。
 _SCAN_SKIP = {"sw_daily"}

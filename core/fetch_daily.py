@@ -619,6 +619,9 @@ BACKFILLS = {
     "dc_fflow": ("板块资金流·tushare回补(2023-09起)",
                  [("sector_fundflow", None, "date")],
                  lambda start: __import__("fetch_dc").backfill_fflow_dc(start), "20230901"),
+    "index_val": ("指数估值PE/PB回补(2014-06起)",
+                  [("index_val_daily", None, "date")],
+                  lambda start: __import__("fetch_val").run(start), "20140601"),
     "sw_breadth": ("板块涨跌家数·SW层级(2005起)", [("sw_breadth", None, "date")],
                    lambda start: backfill_sw_breadth(start), "20050101"),
     "sw_pool": ("涨停结构·SW层级(2005起, 含全市场段)", [("sw_pool", None, "date"),
@@ -733,6 +736,11 @@ def main():
         fetch_sectors()
     fetch_calendar()
     fetch_margin()
+    try:                                  # D1-14 H1: 指数估值日增(可选链, 失败不影响主流程)
+        import fetch_val
+        fetch_val.refresh()
+    except Exception as e:  # noqa: BLE001
+        print(f"[val] 挂载异常(跳过): {type(e).__name__}: {e}")
     fetch_tushare_mood_today()
     fetch_sw_daily()
     if args.ts_backfill:

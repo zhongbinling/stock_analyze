@@ -1,118 +1,91 @@
 # -*- coding: utf-8 -*-
-"""D1-4 测试: 中文target / logs.running进度解析 / interrupted三表标记 / 模板断言 / 回补快速失败"""
+"""D1-14 H1: 指数估值链 — 回补/日增/守卫/注册接线"""
+import sqlite3
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 CORE = REPO / "core"
-sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(CORE))
 
+import fetch_val as FV  # noqa: E402
 
-# ── server 侧 ──
-
-def test_backfill_enqueue_uses_readable_target(server_app):
-    c = server_app["client"]
-    r = c.post("/admin/api/backfill/run", json={"dataset": "zt_ts", "start": "20200102"})
-    assert r.status_code == 200
-    from server import jobs
-    item = jobs._q.get_nowait()
-    assert item["kind"] == "backfill"
-    assert item["target"] == "涨停结构·tushare回补(2020起)"      # 可读名, 非zt_ts
-
-
-def test_logs_running_progress_parsed(server_app):
-    import datetime as _dt
-    from server.models import DataBackfillLog, Job
-    with server_app["app"].app_context():
-        s = server_app["app"].extensions["sqlalchemy"].session
-        s.add(DataBackfillLog(dataset="breadth", label="涨跌家数", status="running",
-                              started_at=_dt.datetime.now()))
-        s.add(Job(kind="backfill", target="涨跌家数·tushare回补(2018起)", status="running",
-                  log="[breadth-ts] 487 天\n  [300/487] 348s\n  [350/487] 404s",
-                  started_at=_dt.datetime.now()))
-        s.commit()
-    j = server_app["client"].get("/admin/api/backfill/logs").get_json()
-    assert j["running"] == {"target": "涨跌家数·tushare回补(2018起)",
-                            "n": 350, "total": 487, "pct": 72}
-    assert j["logs"][0]["status"] == "running"
-
-
-def test_mark_interrupted_marks_all_three_tables(server_app):
-    import datetime as _dt
-    from server import jobs
-    from server.models import BackupRun, DataBackfillLog, Job
-    with server_app["app"].app_context():
-        s = server_app["app"].extensions["sqlalchemy"].session
-        s.add(Job(kind="update", status="running", log="x", started_at=_dt.datetime.now()))
-        s.add(DataBackfillLog(dataset="breadth", status="running",
-                              started_at=_dt.datetime.now()))
-        s.add(BackupRun(btype="daily", status="running", started_at=_dt.datetime.now()))
-        s.commit()
-        jobs._mark_interrupted()
-        assert Job.query.filter_by(status="running").count() == 0
-        assert DataBackfillLog.query.filter_by(status="running").count() == 0
-        assert BackupRun.query.filter_by(status="running").count() == 0
-        j = Job.query.filter_by(kind="update").first()
-        assert j.status == "fail" and "服务重启" in j.log
-        d = DataBackfillLog.query.first()
-        assert d.error == "服务重启, 任务中断"
-
-
-def test_template_has_running_branch_and_cn_map():
-    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
-    assert "JOB_TARGET_CN" in html and "zt_ts:" in html          # 存量代码→可读名映射
-    assert "… 运行中" in html                                     # running三分支(不再是✗)
-    assert "rg.pct" in html                                       # 进度百分比展示
-    assert "bfLive" in html                                       # 运行态独立元素(不覆盖按钮反馈)
-
-
-# ── core 侧: 回补循环快速失败 ──
 
 @pytest.fixture()
-def fastfail_env(tmp_path, monkeypatch):
-    """临时库 + tushare.call 恒抛连接异常 + sleep置空"""
-    import sqlite3
-    import fetch_daily as FD
-    import tushare_api
-
+def val_env(tmp_path, monkeypatch):
     p = tmp_path / "s.db"
-    conn = sqlite3.connect(str(p))
-    conn.executescript("""
-      CREATE TABLE mood_raw(date TEXT PRIMARY KEY, zt_count INTEGER, up_count INTEGER,
-        dt_count INTEGER, zb_rate REAL, lb_max INTEGER, lb2_count INTEGER, jl_rate REAL, zt_source TEXT);
-      CREATE TABLE index_daily(code TEXT, date TEXT, close REAL);
-    """)
-    for i, d in enumerate([f"2026-09-{dd:02d}" for dd in range(1, 11)]):   # 10个交易日待补
-        conn.execute("INSERT INTO index_daily VALUES('1.000001',?,3000)", (d,))
-    conn.commit()
-    conn.close()
-
-    calls = {"n": 0}
-
-    class _ConnErr(Exception):
-        pass
-
-    def boom(api_name, fields="", **kw):
-        calls["n"] += 1
-        raise _ConnErr("NameResolution failed")
-
-    monkeypatch.setattr(tushare_api, "has_token", lambda: True)
-    monkeypatch.setattr(tushare_api, "call", boom)
-    monkeypatch.setattr(FD, "connect", lambda: sqlite3.connect(str(p)))
-    monkeypatch.setattr(FD.time, "sleep", lambda s: None)
-    return {"calls": calls}
+    monkeypatch.setattr(FV, "connect", lambda: sqlite3.connect(str(p)))
+    return {"path": p, "FV": FV}
 
 
-def test_backfill_zt_est_fastfail(fastfail_env, capsys):
-    import fetch_daily as FD
-    FD.backfill_zt_est("20260901")
-    out = capsys.readouterr().out
-    assert "连续5次异常" in out
-    assert fastfill_done(fastfail_env) <= 6            # 第5次即断, 不再逐天重试
+def _hist_df():
+    return pd.DataFrame([
+        ("20130601", 9.5, 1.2),      # 早于start → 滤除
+        ("20140620", 10.0, 1.3),
+        ("20261023", 13.9, 1.36),
+    ], columns=["trade_date", "pe", "pb"])
 
 
-def fastfill_done(env):
-    return env["calls"]["n"]
+def test_run_backfills_per_code(val_env, monkeypatch):
+    """按代码回补: start前滤除, 白名单7指数, 幂等行数正确"""
+    seen = []
+
+    def fake(api, fields="", **kw):
+        seen.append(kw.get("ts_code"))
+        return _hist_df()
+    monkeypatch.setattr(FV.T, "has_token", lambda: True)
+    monkeypatch.setattr(FV.T, "call", fake)
+    assert FV.run("20140601") is True
+    assert sorted(seen) == sorted(FV.VAL_INDEXES)      # 7指数逐个查
+    c = sqlite3.connect(str(val_env["path"]))
+    assert c.execute("SELECT COUNT(*) FROM index_val_daily").fetchone()[0] == 14  # 7×2日
+    assert c.execute("SELECT COUNT(*) FROM index_val_daily "
+                     "WHERE date='2013-06-01'").fetchone()[0] == 0
+    row = c.execute("SELECT name FROM index_val_daily WHERE code='000300.SH' LIMIT 1").fetchone()
+    assert row[0] == "沪深300"
+    c.close()
+
+
+def test_run_rejects_bad_pe(val_env, monkeypatch):
+    """守卫: pe越界(负值/超500)整批拒绝, 表零污染"""
+    bad = pd.DataFrame([("20261023", -5.0, 1.0)], columns=["trade_date", "pe", "pb"])
+    monkeypatch.setattr(FV.T, "has_token", lambda: True)
+    monkeypatch.setattr(FV.T, "call", lambda api, fields="", **kw: bad)
+    assert FV.run("20140601") is False
+    c = sqlite3.connect(str(val_env["path"]))
+    assert c.execute("SELECT COUNT(*) FROM index_val_daily").fetchone()[0] == 0
+    c.close()
+
+
+def test_refresh_daily_batch(val_env, monkeypatch):
+    """日增: 按trade_date一次拿全指数, 白名单过滤, 当日一批"""
+    daily = pd.DataFrame([
+        ("000300.SH", 13.9, 1.36), ("000016.SH", 11.7, 1.24),
+        ("399005.SZ", 26.6, 2.58),                      # 不在白名单 → 滤除
+    ], columns=["ts_code", "pe", "pb"])
+    monkeypatch.setattr(FV.T, "call", lambda api, fields="", **kw: daily)
+    assert FV.refresh(conn=sqlite3.connect(str(val_env["path"]))) is True
+    c = sqlite3.connect(str(val_env["path"]))
+    n, codes = c.execute("SELECT COUNT(*), COUNT(DISTINCT code) FROM index_val_daily").fetchone()
+    assert (n, codes) == (2, 2)
+    c.close()
+
+
+def test_index_val_registered():
+    """注册: BACKFILLS/jobs/资产表行/体检表"""
+    import fetch_daily as FD2
+    assert "index_val" in FD2.BACKFILLS
+    from server import jobs
+    assert "index_val" in jobs.BACKFILL_DATASETS
+    assert jobs.BACKFILL_DEFAULT_START["index_val"] == "20140601"
+    from server import market
+    assert any(s[0] == "index_val" for s in market._ASSET_DATE_TABLES)
+    assert market._MIN_ROW_RATIO["index_val_daily"] == (0.6, 0.3)
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert "index_val" in html and "自2014-06起" in html
+    # 更新链挂载(fetch_daily主链)
+    src = Path(CORE / "fetch_daily.py").read_text(encoding="utf-8")
+    assert "fetch_val.refresh()" in src

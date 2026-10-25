@@ -61,8 +61,12 @@ def mkt(tmp_path, monkeypatch):
     return M
 
 
-def test_scan_gaps_trading_day_baseline(mkt):
-    r = mkt.scan_gaps(9)                            # 窗口含10-16(今日10-24, 9自然日)
+def test_scan_gaps_trading_day_baseline(mkt, monkeypatch):
+    # D1-14r: 原测试隐式依赖真实"今天"(10-24)使窗口覆盖10-16 — 日期翻转即失效;
+    # 固定交易日基线, 与真实日期解耦
+    _days = ["2026-10-16", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-23"]
+    monkeypatch.setattr(mkt, "_trading_days_since", lambda w: list(_days))
+    r = mkt.scan_gaps(9)
     assert r["trading_days"] == 5                    # 5交易日(周末不计)
     by = {a["code"]: a["missing"] for a in r["assets"]}
     assert by["sw_pool"] == ["2026-10-21", "2026-10-23"]

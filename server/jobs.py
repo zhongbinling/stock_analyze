@@ -480,7 +480,8 @@ BACKFILL_DATASETS = {"zt_est": "涨停家数·估算回补(2012-2019)",
                      "sw_fflow": "主力资金流·SW层级(2007起)",
                      "sw_daily": "SW行业指数日线(官方~2012-08起)",
                      "dc_daily": "板块日线·tushare近端(推荐)",
-                     "dc_fflow": "板块资金流·tushare(2023-09起)"}
+                     "dc_fflow": "板块资金流·tushare(2023-09起)",
+                     "index_val": "指数估值PE/PB(2014-06起)"}
 # 默认起始日(与 core BACKFILLS 第4元素保持同步): start 留空时使用, 避免统一默认
 # 20200102 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
 BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
@@ -491,7 +492,8 @@ BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
                           "sw_fflow": "20070101",
                           "sw_daily": "19990101",
                           "dc_daily": "20260901",
-                          "dc_fflow": "20230901"}
+                          "dc_fflow": "20230901",
+                          "index_val": "20140601"}
 
 
 def task_backfill(dataset: str, start: str, trigger: str = "manual",
