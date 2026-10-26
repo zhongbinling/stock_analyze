@@ -102,3 +102,33 @@ def test_margin_hist_registered():
     assert jobs.BACKFILL_DEFAULT_START["margin_hist"] == "20100331"
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "margin_hist" in html and "自2010-03-31起" in html
+
+
+def test_pull_margin_no_degradation(m_env, monkeypatch):
+    """D1-14r: 源端退化保护 — 某日源端暂缺深市行时, 不用单所合计覆盖完整三所值"""
+    c = sqlite3.connect(str(m_env["path"]))
+    c.execute("INSERT INTO margin_daily VALUES('2026-10-22',1e12,1e10,1e10,2.4e12,1.26e12,1.18e12)")
+    c.commit()
+    c.close()
+
+    def fake(start, end=""):
+        if start > "20261022":
+            return _marg_df([])
+        return _marg_df([                   # 10-22 源端只剩沪市行(退化)
+            ("SSE", "20261022", 1e12, 1e10, 1e10, 1.26e12),
+            ("SSE", "20261023", 1e12, 1e10, 1e10, 1.25e12),
+            ("SZSE", "20261023", 1e12, 1e10, 1e10, 1.15e12),
+        ])
+    import fetch_daily as FD2
+    from db import connect as _c
+    monkeypatch.setattr(FD2, "connect", lambda: sqlite3.connect(str(m_env["path"])))
+    import tushare_api
+    monkeypatch.setattr(tushare_api, "margin", fake)
+    n = FD2._pull_margin(sqlite3.connect(str(m_env["path"])), "20261020", "20261023")
+    c = sqlite3.connect(str(m_env["path"]))
+    row = c.execute("SELECT rzrqye, szse_rzrqye FROM margin_daily "
+                    "WHERE date='2026-10-22'").fetchone()
+    assert row == (2.4e12, 1.18e12)          # 完整三所值未被降级
+    row23 = c.execute("SELECT rzrqye FROM margin_daily WHERE date='2026-10-23'").fetchone()
+    assert row23[0] == pytest.approx(2.4e12)  # 新日正常写入合计
+    c.close()

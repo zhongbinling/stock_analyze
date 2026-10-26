@@ -374,27 +374,42 @@ def _pull_margin(conn, start_ymd: str, end_ymd: str) -> int:
         if df.empty:
             break
         mrows = []
+        fresh = {}
         for d, g in df.groupby("trade_date"):
             iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
             tot = g.sum(numeric_only=True)
             sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
             szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
-            mrows.append((iso, float(tot["rzye"]), float(tot["rzmre"]),
+            fresh[iso] = (iso, float(tot["rzye"]), float(tot["rzmre"]),
                           float(tot["rqye"]), float(tot["rzrqye"]),
-                          float(sse) if sse else None, float(szse) if szse else None))
-        # D1-12 F2: 守卫批次 — 日期ISO且落在分页窗口内(防错位/脏行), 单事务零污染
-        guarded_batch(
-            conn,
-            "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
-            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
-            "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
-            "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
-            mrows, label=f"margin {start_ymd}~{end_ymd}",
-            check=all_checks(
-                chk_unique(0),
-                lambda rs: None if all(
-                    _iso_re.match(r[0]) and start_ymd <= r[0].replace("-", "") <= end_ymd
-                    for r in rs) else f"日期格式/窗口越界(应 {start_ymd}~{end_ymd})"))
+                          float(sse) if sse else None, float(szse) if szse else None)
+        # D1-14r: 源端退化保护 — 重叠窗口幂等覆盖的前提是新值不差于旧值;
+        # 若源端某日暂时缺深市/北交所行(如2026-10-23), 用单所合计覆盖完整
+        # 三所值=好数据被降级。新值NULL多于库存的日期跳过不覆盖。
+        if fresh:
+            ph = ",".join("?" * len(fresh))
+            stored = {r[0]: r for r in conn.execute(
+                "SELECT date, rzye, rzmre, rqye, rzrqye, sse_rzrqye, szse_rzrqye "
+                f"FROM margin_daily WHERE date IN ({ph})", list(fresh))}
+
+            def _n_ok(row):
+                return sum(v is not None for v in row[1:])
+            mrows = [row for d, row in fresh.items()
+                     if d not in stored or _n_ok(row) >= _n_ok(stored[d])]
+        if mrows:
+            # D1-12 F2: 守卫批次 — 日期ISO且落在分页窗口内(防错位/脏行), 单事务零污染
+            guarded_batch(
+                conn,
+                "INSERT INTO margin_daily(date,rzye,rzmre,rqye,rzrqye,sse_rzrqye,szse_rzrqye) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+                "rzye=excluded.rzye,rzmre=excluded.rzmre,rqye=excluded.rqye,"
+                "rzrqye=excluded.rzrqye,sse_rzrqye=excluded.sse_rzrqye,szse_rzrqye=excluded.szse_rzrqye",
+                mrows, label=f"margin {start_ymd}~{end_ymd}",
+                check=all_checks(
+                    chk_unique(0),
+                    lambda rs: None if all(
+                        _iso_re.match(r[0]) and start_ymd <= r[0].replace("-", "") <= end_ymd
+                        for r in rs) else f"日期格式/窗口越界(应 {start_ymd}~{end_ymd})"))
         total += len(mrows)
         last_d = df["trade_date"].max()
         if last_d >= end_ymd:
