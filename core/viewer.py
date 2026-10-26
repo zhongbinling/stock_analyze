@@ -51,6 +51,42 @@ def _j(v):
     return None if (np.isnan(f) or np.isinf(f)) else round(f, 4)
 
 
+DB_PATH = Path(__file__).resolve().parent / "data" / "sentiment.db"
+
+
+def _read_aux(dates):
+    """D1-14 H4: 副图数据(估值/两融/ETF) — 对齐全量日期轴; 表缺失返回空(视图降级)"""
+    out = {"val": {}, "margin": [], "etf": {}}
+    try:
+        import sqlite3 as _sq
+        from fetch_val import VAL_INDEXES
+        from fetch_etf import ETF_INDEXES
+        con = _sq.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
+        try:
+            for code, name in VAL_INDEXES.items():
+                pe = dict(con.execute(
+                    "SELECT date, pe FROM index_val_daily WHERE code=?", (code,)).fetchall())
+                pb = dict(con.execute(
+                    "SELECT date, pb FROM index_val_daily WHERE code=?", (code,)).fetchall())
+                out["val"][code] = {"n": name,
+                                    "pe": [_j(pe.get(d)) for d in dates],
+                                    "pb": [_j(pb.get(d)) for d in dates]}
+            mg = dict(con.execute("SELECT date, rzrqye FROM margin_daily").fetchall())
+            out["margin"] = [_j(v / 1e8) if v is not None else None
+                             for v in (mg.get(d) for d in dates)]      # 元→亿
+            for code, name in ETF_INDEXES.items():
+                am = dict(con.execute(
+                    "SELECT date, amount FROM etf_daily WHERE code=?", (code,)).fetchall())
+                out["etf"][code] = {"n": name,
+                                    "amt": [_j(v / 1e5) if v is not None else None
+                                            for v in (am.get(d) for d in dates)]}  # 千元→亿
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001   # 旧库无表 → 空副图
+        pass
+    return out
+
+
 def build_payload(cfg, years=None):
     df, comp, score_df = compute(cfg)
     n = len(df)
@@ -100,6 +136,9 @@ def build_payload(cfg, years=None):
         "jl": _first_date(payload["jl"]),
         "score": _first_date(payload["score"]),
     }
+    # D1-14 H4: 估值/两融/ETF 副图(表缺失→空, 副图自动隐藏)
+    aux = _read_aux(payload["dates"])
+    payload.update(aux)
     return payload
 
 
@@ -224,6 +263,13 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" id="ckRsi"> RSI</label>
   <label><input type="checkbox" id="ckBias"> 乖离率</label>
 </div>
+<div id="auxPanelCtl" style="padding:0 20px 6px;display:flex;gap:10px;align-items:center;font-size:12px;color:#898781;flex-wrap:wrap">
+  <span>分析副图(D1-14, 开关记忆):</span>
+  <label><input type="checkbox" id="ckPE" checked> 指数PE</label>
+  <label><input type="checkbox" id="ckPB" checked> 指数PB</label>
+  <label><input type="checkbox" id="ckMargin" checked> 两融余额</label>
+  <label><input type="checkbox" id="ckEtf" checked> 宽基ETF成交额</label>
+</div>
 <footer>
   鼠标在图上移动查看当日构成 · 滚轮缩放 · 底部滑块选区间 ·
   情绪分是温度计不是买卖信号 · 生成于 __GENERATED__
@@ -257,7 +303,7 @@ const valAxis = (gi) => ({
   axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.grid } },
 });
 
-chart.setOption({
+const baseOption = {
   animation: false,
   backgroundColor: "transparent",
   // S2.2-A: 面板标题
@@ -298,6 +344,14 @@ chart.setOption({
           compBits.push(`${cNms[ck]} ${D.cs[ck][i] > 0 ? '+' : ''}${Math.round(D.cs[ck][i])}`);
       }
       if (compBits.length) h += `<br/><span style="color:#898781;font-size:11px">${compBits.join(' · ')}</span>`;
+      // D1-14 H4: 副图数值(估值/两融/ETF)
+      const v3 = D.val && D.val['000300.SH'], v5 = D.val && D.val['000016.SH'];
+      if (v3 && !nullish(v3.pe[i]))
+        h += `<br/><span style="color:#898781;font-size:11px">300PE ${v3.pe[i]} · 50PE ${nullish(v5 && v5.pe[i]) ? '--' : v5.pe[i]}${!nullish(v3.pb[i]) ? ` · 300PB ${v3.pb[i]}` : ''}</span>`;
+      if (D.margin && !nullish(D.margin[i]))
+        h += ` <span style="color:#898781;font-size:11px">· 两融 ${D.margin[i]}亿</span>`;
+      if (D.etfSum && !nullish(D.etfSum[i]))
+        h += ` <span style="color:#898781;font-size:11px">· 宽基ETF ${Math.round(D.etfSum[i])}亿</span>`;
       return h;
     },
   },
@@ -363,7 +417,127 @@ chart.setOption({
     if (ss.jl && ss.jl !== ss.zb) els.push(mk(`接力率起 ${ss.jl}`, '20%', '438px'));
     return els;
   })(),
-});
+};
+
+// ---- D1-14 H4: 分析副图(估值PE/PB·两融余额·宽基ETF) — 可折叠+开关记忆 ----
+const P_COLORS = ['#2f5cd6', '#e34448', '#1baf7a', '#eda100', '#8e44ad', '#0f9bd7', '#7f8c8d'];
+const VAL_SHOW = ['000016.SH', '000300.SH', '000905.SH', '000852.SH'];   // 50/300/500/1000
+const AUX_STORE = 'auxPanels_v1';
+function auxState() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(AUX_STORE) || 'null'); } catch (e) {}
+  if (!st) st = { pe: true, pb: true, margin: true, etf: true };
+  return st;
+}
+function saveAuxState(st) {
+  try { localStorage.setItem(AUX_STORE, JSON.stringify(st)); } catch (e) {}
+}
+// ETF 合计(tooltip用)
+D.etfSum = (() => {
+  if (!D.etf) return null;
+  const codes = Object.keys(D.etf), n = D.dates.length;
+  const sum = new Array(n).fill(null);
+  codes.forEach(c => {
+    const a = D.etf[c].amt;
+    for (let i = 0; i < n; i++)
+      if (a[i] != null) sum[i] = (sum[i] || 0) + a[i];
+  });
+  return sum;
+})();
+function valSeries(gi, k) {          // k='pe'|'pb' — 4宽基多线
+  const out = [];
+  VAL_SHOW.forEach((code, i) => {
+    const o = D.val && D.val[code];
+    if (!o) return;
+    out.push({ name: `${o.n}${k === 'pe' ? 'PE' : 'PB'}`, type: 'line',
+      xAxisIndex: gi, yAxisIndex: gi, data: o[k], showSymbol: false,
+      lineStyle: { width: 1.3, color: P_COLORS[i] }, itemStyle: { color: P_COLORS[i] } });
+  });
+  return out;
+}
+function marginSeries(gi) {
+  return [{ name: '两融余额(亿)', type: 'line', xAxisIndex: gi, yAxisIndex: gi,
+    data: D.margin, showSymbol: false, lineStyle: { width: 1.4, color: '#6250d6' },
+    itemStyle: { color: '#6250d6' }, areaStyle: { opacity: 0.08 } }];
+}
+function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看不便→色阶
+  const out = [];
+  Object.keys(D.etf || {}).forEach((c, i) => {
+    const o = D.etf[c];
+    out.push({ name: o.n, type: 'bar', stack: 'etf', xAxisIndex: gi, yAxisIndex: gi,
+      data: o.amt, barMaxWidth: 10,
+      itemStyle: { color: P_COLORS[i % P_COLORS.length], opacity: 0.85 } });
+  });
+  return out;
+}
+const PANELS = [
+  { key: 'pe',     id: 'ckPE',     name: '宽基指数PE(50/300/500/1000)', h: 84, build: gi => valSeries(gi, 'pe') },
+  { key: 'pb',     id: 'ckPB',     name: '宽基指数PB',                  h: 84, build: gi => valSeries(gi, 'pb') },
+  { key: 'margin', id: 'ckMargin', name: '两融余额(亿, 沪深北合计)',    h: 84, build: gi => marginSeries(gi) },
+  { key: 'etf',    id: 'ckEtf',    name: '宽基ETF成交额(亿·8只堆叠)',   h: 84, build: gi => etfSeries(gi) },
+];
+function auxDataEmpty(p) {
+  if (p.key === 'margin') return !D.margin || !D.margin.some(v => v != null);
+  if (p.key === 'etf') return !D.etf || !Object.keys(D.etf).length;
+  return !D.val || !VAL_SHOW.some(c => D.val[c]);
+}
+function render() {
+  const st = auxState();
+  const vis = PANELS.filter(p => st[p.key] && !auxDataEmpty(p));
+  // 动态画布高度(基础470 + 每副图112)
+  const el = document.getElementById('chart');
+  el.style.height = (470 + vis.length * 112) + 'px';
+  chart.resize();
+  const opt = Object.assign({}, baseOption, {   // 浅克隆可变数组, tooltip.formatter按引用保留
+    grid: [...baseOption.grid], xAxis: [...baseOption.xAxis],
+    yAxis: [...baseOption.yAxis], title: [...baseOption.title],
+    series: [...baseOption.series],
+    dataZoom: baseOption.dataZoom.map(z => Object.assign({}, z)),
+  });
+  let top = 466;
+  vis.forEach((p, pi) => {
+    const gi = 5 + pi;
+    opt.grid.push({ top, height: p.h, left: '3%', width: '95%', containLabel: true, right: 20 });
+    opt.xAxis.push(catAxis(gi));
+    opt.yAxis.push(valAxis(gi));
+    opt.title.push({ text: p.name, left: '3%', top: (top - 14) + 'px',
+                     textStyle: { fontSize: 10, color: C.muted } });
+    opt.series.push(...p.build(gi));
+    top += p.h + 28;
+  });
+  // 副图x轴标签显示(最末可见grid的axisLabel展示)
+  if (vis.length) {
+    const lastGi = 5 + vis.length - 1;
+    opt.xAxis = opt.xAxis.map((a, i) =>
+      i === lastGi ? { ...a, show: true } : { ...a, show: i === lastGi });
+  }
+  const allIdx = opt.grid.map((_, i) => i);
+  opt.dataZoom[0].xAxisIndex = allIdx;
+  opt.dataZoom[1].xAxisIndex = allIdx;
+  // 底部面板勾选线(原rebuildSubPanel逻辑并入)
+  for (const o of SUB_OPTS) {
+    const ck = document.getElementById(o.id);
+    if (ck && ck.checked) { const s = subSeriesFor(o.id); if (s) opt.series.push(s); }
+  }
+  // 保留当前缩放窗口
+  let zs = null;
+  try { const cur = chart.getOption();
+    if (cur && cur.dataZoom && cur.dataZoom[0] && cur.dataZoom[0].start != null)
+      zs = { s: cur.dataZoom[0].start, e: cur.dataZoom[0].end };
+  } catch (e) {}
+  chart.setOption(opt, { replaceMerge: ['grid', 'xAxis', 'yAxis', 'series', 'title', 'dataZoom'] });
+  if (zs) chart.dispatchAction({ type: 'dataZoom', start: zs.s, end: zs.e });
+}
+function initAuxCtl() {
+  const st = auxState();
+  PANELS.forEach(p => {
+    const el = document.getElementById(p.id);
+    if (el) { el.checked = !!st[p.key];
+      el.addEventListener('change', () => {
+        st[p.key] = el.checked; saveAuxState(st); render();
+      }); }
+  });
+}
 
 // ---- 右侧详情面板: 悬停联动显示当日全部构成 ----
 const fmtv = (v, plus) => {
@@ -442,7 +616,7 @@ function setZoom(days) {
   }
 }
 
-// S2.2-A: 底部面板可选(checkbox 切换 series 显隐)
+// S2.2-A: 底部面板可选(checkbox) — D1-14 H4: 显隐并入render统一重排
 const SUB_OPTS = [
   { id: 'ckZb',  name: '炸板率%',   key: 'zb',  color: '#eda100' },
   { id: 'ckJl',  name: '接力率%',   key: 'jl',  color: '#1baf7a' },
@@ -463,26 +637,13 @@ function subSeriesFor(id) {
     data: data, showSymbol: false,
     lineStyle: { width: 1.4, color: opt.color }, itemStyle: { color: opt.color } };
 }
-function rebuildSubPanel() {
-  const newSeries = [];
-  for (const opt of SUB_OPTS) {
-    const ck = document.getElementById(opt.id);
-    if (ck && ck.checked) {
-      const s = subSeriesFor(opt.id);
-      if (s) newSeries.push(s);
-    }
-  }
-  // 保留 top 5 series(固定), 替换底部 series
-  const current = chart.getOption().series;
-  const top5 = current.slice(0, 5);   // K线/量/情绪分/涨停/跌停
-  chart.setOption({ series: [...top5, ...newSeries] }, { replaceMerge: ['series'] });
-}
 for (const opt of SUB_OPTS) {
   const el = document.getElementById(opt.id);
-  if (el) el.addEventListener('change', rebuildSubPanel);
+  if (el) el.addEventListener('change', render);
 }
-// 初始: 只显示勾选的(炸板率+接力率默认勾选)
-setTimeout(rebuildSubPanel, 100);
+// D1-14 H4: 初始渲染(副图开关记忆 + 底部面板勾选)
+initAuxCtl();
+render();
 </script>
 </body>
 </html>
