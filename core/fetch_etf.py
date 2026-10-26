@@ -58,21 +58,22 @@ def _check(code):
     return all_checks(chk_same(0, code), chk_unique(1), f)
 
 
-def refresh(conn=None) -> bool:
-    """日增: 逐ETF单日小查询 → 按日分批守卫写入(T-1日数据)
+def refresh(conn=None, lookback_days: int = 7) -> bool:
+    """日增: 逐ETF近7自然日小查询 → 按日分批守卫写入(错过日自动补, 幂等upsert)
 
-    D1-14r: 按日分组写入 — 若部分ETF返回他日行(未出数时接口回落最近
-    交易日), 混批会触发守卫'日期混入他日'拒绝整批, 当日已出数的ETF
-    也一并丢失; 分组后互不影响。
+    D1-14r: 原只查当日 — 服务某晚未跑则该日永久缺(10-26实证);
+    回看窗口与两融/dc/估值同语义。混日按日分组互不拖累(见H3复查)。
     """
+    from datetime import date as _d, timedelta as _td
     conn = conn or connect()
     _ensure_table(conn)
+    start = (_d.today() - _td(days=lookback_days)).strftime("%Y%m%d")
     today = time.strftime("%Y%m%d")
     rows = []
     for code, name in ETF_INDEXES.items():
         try:
             df = T.call("fund_daily", "trade_date,close,amount,vol",
-                        ts_code=code, start_date=today, end_date=today)
+                        ts_code=code, start_date=start, end_date=today)
             rows += _rows_of(code, name, df)
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {code}: {e}")
@@ -83,7 +84,7 @@ def refresh(conn=None) -> bool:
         guarded_day_write(conn, UPSERT, batch, d, table="etf_daily",
                           date_col="date", date_idx=1)
     if by_date:
-        print(f"[etf] 宽基ETF: {len(rows)} 只 "
+        print(f"[etf] 宽基ETF: {len(rows)} 行 "
               f"({','.join(f'{d}:{len(b)}' for d, b in by_date.items())})")
     return True
 

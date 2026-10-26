@@ -46,24 +46,39 @@ def _val_ok(rs):
     return None
 
 
-def refresh(conn=None) -> bool:
-    """日增: 按trade_date一次拿全指数 → 当日一批守卫写入"""
+def refresh(conn=None, lookback_days: int = 7) -> bool:
+    """日增: 近7自然日一次查询 → 按日分批守卫写入(错过日自动补, 幂等upsert)
+
+    D1-14r: 原只查当日 — 服务某晚未跑则该日永久缺(10-26实证);
+    回看窗口与两融/dc同语义。
+    """
     conn = conn or connect()
     _ensure_table(conn)
-    today = time.strftime("%Y%m%d")
-    try:
-        df = T.call("index_dailybasic", "ts_code,pe,pb", trade_date=today)
-    except Exception as e:  # noqa: BLE001
-        print(f"[val] 日增失败(不影响主流程): {e}")
-        return False
-    rows = [(c, norm_date(today), float(r["pe"]) if r["pe"] is not None else None,
-             float(r["pb"]) if r["pb"] is not None else None, VAL_INDEXES[c])
-            for _, r in df.iterrows() if (c := r["ts_code"]) in VAL_INDEXES]
-    if not rows:
-        return True                      # 未出数/非交易日
-    guarded_day_write(conn, UPSERT, rows, norm_date(today), table="index_val_daily",
-                      date_col="date", date_idx=1)
-    print(f"[val] 指数估值: {len(rows)} 指数 {today}")
+    from datetime import date as _d, timedelta as _td
+    today = _d.today()
+    by_date = {}
+    for i in range(lookback_days + 1):     # 接口限制: 区间查询须带trade_date/ts_code → 逐日
+        d_ymd = (today - _td(days=i)).strftime("%Y%m%d")
+        try:
+            df = T.call("index_dailybasic", "ts_code,pe,pb", trade_date=d_ymd)
+        except Exception as e:  # noqa: BLE001
+            print(f"[val] 日增失败({d_ymd}, 不影响主流程): {e}")
+            return False
+        for _, r in df.iterrows():
+            c = r["ts_code"]
+            if c not in VAL_INDEXES:
+                continue
+            d_iso = norm_date(d_ymd)
+            by_date.setdefault(d_iso, []).append(
+                (c, d_iso,
+                 float(r["pe"]) if r["pe"] is not None else None,
+                 float(r["pb"]) if r["pb"] is not None else None, VAL_INDEXES[c]))
+    for d, batch in sorted(by_date.items()):
+        guarded_day_write(conn, UPSERT, batch, d, table="index_val_daily",
+                          date_col="date", date_idx=1)
+    if by_date:
+        print(f"[val] 指数估值: {sum(len(b) for b in by_date.values())} 行 "
+              f"({','.join(by_date)})")
     return True
 
 

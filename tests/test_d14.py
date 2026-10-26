@@ -62,11 +62,14 @@ def test_run_rejects_bad_pe(val_env, monkeypatch):
 
 def test_refresh_daily_batch(val_env, monkeypatch):
     """日增: 按trade_date一次拿全指数, 白名单过滤, 当日一批"""
-    daily = pd.DataFrame([
-        ("000300.SH", 13.9, 1.36), ("000016.SH", 11.7, 1.24),
-        ("399005.SZ", 26.6, 2.58),                      # 不在白名单 → 滤除
-    ], columns=["ts_code", "pe", "pb"])
-    monkeypatch.setattr(FV.T, "call", lambda api, fields="", **kw: daily)
+    def fake(api, fields="", **kw):                      # 逐日回看(接口须带trade_date)
+        d = kw.get("trade_date", "")
+        return pd.DataFrame([
+            ("000300.SH", 13.9, 1.36), ("000016.SH", 11.7, 1.24),
+            ("399005.SZ", 26.6, 2.58),                    # 不在白名单 → 滤除
+        ], columns=["ts_code", "pe", "pb"]) if d == "20261023" else pd.DataFrame(
+            columns=["ts_code", "pe", "pb"])
+    monkeypatch.setattr(FV.T, "call", fake)
     assert FV.refresh(conn=sqlite3.connect(str(val_env["path"]))) is True
     c = sqlite3.connect(str(val_env["path"]))
     n, codes = c.execute("SELECT COUNT(*), COUNT(DISTINCT code) FROM index_val_daily").fetchone()
@@ -89,3 +92,25 @@ def test_index_val_registered():
     # 更新链挂载(fetch_daily主链)
     src = Path(CORE / "fetch_daily.py").read_text(encoding="utf-8")
     assert "fetch_val.refresh()" in src
+
+
+def test_refresh_lookback_heals_missed_days(val_env, monkeypatch):
+    """D1-14r: 日增回看7天 — 错过日(服务某晚未跑)自动补, 不再永久缺"""
+    import datetime as _dt
+    FV = val_env["FV"]
+    def fake(api, fields="", **kw):                      # 逐日: 错过日+今日有数据
+        d = kw.get("trade_date", "")
+        if d in ("20261023", "20261027"):
+            return pd.DataFrame([("000300.SH", 13.9 if d == "20261023" else 14.0,
+                                  1.36 if d == "20261023" else 1.37)],
+                                columns=["ts_code", "pe", "pb"])
+        return pd.DataFrame(columns=["ts_code", "pe", "pb"])
+    monkeypatch.setattr(FV.T, "call", fake)
+    assert FV.refresh(conn=sqlite3.connect(str(val_env["path"]))) is True
+    c = sqlite3.connect(str(val_env["path"]))
+    n23 = c.execute("SELECT COUNT(*) FROM index_val_daily "
+                    "WHERE date='2026-10-23'").fetchone()[0]
+    n27 = c.execute("SELECT COUNT(*) FROM index_val_daily "
+                    "WHERE date='2026-10-27'").fetchone()[0]
+    assert n23 == 1 and n27 == 1                   # 错过日+今日都落库
+    c.close()

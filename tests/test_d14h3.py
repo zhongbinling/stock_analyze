@@ -114,3 +114,18 @@ def test_refresh_mixed_dates_written_separately(etf_env, monkeypatch):
     n23 = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date='2026-10-23'").fetchone()[0]
     assert n26 == 7 and n23 == 1                     # 两日各自落库, 谁也没拖累谁
     c.close()
+
+
+def test_refresh_lookback_heals_missed_days(etf_env, monkeypatch):
+    """D1-14r: 日增回看7天 — 错过日自动补"""
+    def fake(api, fields="", **kw):
+        return pd.DataFrame({"trade_date": ["20261023", "20261027"],
+                             "close": [4.1, 4.2], "amount": [1000.0, 1100.0],
+                             "vol": [20.0, 21.0]})
+    monkeypatch.setattr(FE.T, "call", fake)
+    assert FE.refresh(conn=sqlite3.connect(str(etf_env["path"]))) is True
+    c = sqlite3.connect(str(etf_env["path"]))
+    for d in ("2026-10-23", "2026-10-27"):
+        n = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date=?", (d,)).fetchone()[0]
+        assert n == 8                              # 8只全落
+    c.close()
