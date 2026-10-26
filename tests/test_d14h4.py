@@ -81,3 +81,27 @@ def test_html_js_syntax():
     r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", main],
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, f"JS 语法错误: {r.stderr[:600]}"
+
+
+def test_read_aux_partial_db(tmp_path, monkeypatch):
+    """D1-14r: 三源独立容错 — 只有margin表的旧库, 两融副图照常出, 估值/ETF空"""
+    p = tmp_path / "s.db"
+    c = sqlite3.connect(str(p))
+    c.execute("CREATE TABLE margin_daily(date TEXT PRIMARY KEY, rzrqye REAL)")
+    c.execute("INSERT INTO margin_daily VALUES('2026-10-23', 1.8e12)")
+    c.commit()
+    c.close()
+    import viewer as VW
+    monkeypatch.setattr(VW, "DB_PATH", p)
+    r = VW._read_aux(["2026-10-23"])
+    assert r["margin"] == [18000.0]           # 两融在
+    assert r["val"] == {} and r["etf"] == {}  # 缺表的源各自降级不拖累
+
+
+def test_zb_jl_not_duplicated_in_base_series():
+    """D1-14r: 炸板/接力只由SUB_OPTS动态提供一次(不进base series重复叠加)"""
+    import viewer as VW
+    h = VW.HTML
+    assert "data: D.zb, showSymbol" not in h      # base series 无静态炸板/接力线
+    assert "data: D.jl, showSymbol" not in h
+    assert "data = D.zb" in h and "data = D.jl" in h   # SUB_OPTS 动态提供恰一处

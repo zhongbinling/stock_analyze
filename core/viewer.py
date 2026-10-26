@@ -55,14 +55,20 @@ DB_PATH = Path(__file__).resolve().parent / "data" / "sentiment.db"
 
 
 def _read_aux(dates):
-    """D1-14 H4: 副图数据(估值/两融/ETF) — 对齐全量日期轴; 表缺失返回空(视图降级)"""
+    """D1-14 H4: 副图数据(估值/两融/ETF) — 对齐全量日期轴。
+
+    三源各自独立容错(旧库可能只有部分表): 任一源缺失仅隐藏对应副图,
+    不拖累其余两源。
+    """
     out = {"val": {}, "margin": [], "etf": {}}
+    import sqlite3 as _sq
     try:
-        import sqlite3 as _sq
-        from fetch_val import VAL_INDEXES
-        from fetch_etf import ETF_INDEXES
         con = _sq.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
+    except Exception:  # noqa: BLE001
+        return out
+    try:
         try:
+            from fetch_val import VAL_INDEXES
             for code, name in VAL_INDEXES.items():
                 pe = dict(con.execute(
                     "SELECT date, pe FROM index_val_daily WHERE code=?", (code,)).fetchall())
@@ -71,19 +77,26 @@ def _read_aux(dates):
                 out["val"][code] = {"n": name,
                                     "pe": [_j(pe.get(d)) for d in dates],
                                     "pb": [_j(pb.get(d)) for d in dates]}
+        except Exception:  # noqa: BLE001
+            out["val"] = {}
+        try:
             mg = dict(con.execute("SELECT date, rzrqye FROM margin_daily").fetchall())
             out["margin"] = [_j(v / 1e8) if v is not None else None
                              for v in (mg.get(d) for d in dates)]      # 元→亿
+        except Exception:  # noqa: BLE001
+            out["margin"] = []
+        try:
+            from fetch_etf import ETF_INDEXES
             for code, name in ETF_INDEXES.items():
                 am = dict(con.execute(
                     "SELECT date, amount FROM etf_daily WHERE code=?", (code,)).fetchall())
                 out["etf"][code] = {"n": name,
                                     "amt": [_j(v / 1e5) if v is not None else None
                                             for v in (am.get(d) for d in dates)]}  # 千元→亿
-        finally:
-            con.close()
-    except Exception:  # noqa: BLE001   # 旧库无表 → 空副图
-        pass
+        except Exception:  # noqa: BLE001
+            out["etf"] = {}
+    finally:
+        con.close()
     return out
 
 
@@ -398,12 +411,8 @@ const baseOption = {
       data: D.zt, barMaxWidth: 8, itemStyle: { color: C.red } },
     { name: "跌停家数", type: "bar", xAxisIndex: 3, yAxisIndex: 3,
       data: D.dt, barMaxWidth: 8, itemStyle: { color: C.aqua } },
-    { name: "炸板率%", type: "line", xAxisIndex: 4, yAxisIndex: 4,
-      data: D.zb, showSymbol: false, lineStyle: { width: 1.6, color: C.yellow },
-      itemStyle: { color: C.yellow } },
-    { name: "接力率%", type: "line", xAxisIndex: 4, yAxisIndex: 4,
-      data: D.jl, showSymbol: false, lineStyle: { width: 1.6, color: C.aqua },
-      itemStyle: { color: C.aqua } },
+    // D1-14r: 炸板率/接力率不进base series — 由底部面板勾选(SUB_OPTS默认勾选)
+    // 统一提供, 避免render()再拼时重复添加(旧rebuildSubPanel的top5语义)
   ],
   // S2.2-B: 附图数据起始日标注
   graphic: (() => {
