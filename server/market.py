@@ -207,6 +207,9 @@ _ASSET_DATE_TABLES = [
     # D1-14 H1: 指数估值(50/300/500/1000/上证/创业板/科创50, 2014-06起)
     ("index_val", "指数估值PE/PB", "index_val_daily", None, "tushare", 7,
      "宽基7指数·中证全指不在源清单"),
+    # D1-14 H3: 宽基ETF(国家队口径8只, 2005-02起)
+    ("etf", "宽基ETF成交", "etf_daily", None, "tushare", 7,
+     "8只·50/三只300/500/1000/科创50/创业板"),
 ]
 # D1-10 S1: raw_daily.db 跨库表(ATTACH只读挂载后并入datasets); 日期列=trade_date
 RAW_TABLES = [
@@ -304,7 +307,8 @@ def _norm_date(s) -> str:
 # 的日期视为未覆盖。起因: 2026-10-19/20 更新链未跑成, sector_daily 仅47/523板块有行,
 # 日期存在但内容残缺, 原DISTINCT-date口径的体检/完成度均无法发现。
 _MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10),
-                  "index_val_daily": (0.6, 0.3)}   # D1-14: 7指数/日, <5行=半截
+                  "index_val_daily": (0.6, 0.3),   # D1-14: 7指数/日, <5行=半截
+                  "etf_daily": (0.6, 0.3)}          # D1-14: 8只ETF/日, <5行=半截
 # D1-11h: 体检排除的遗留数据集 — sw_daily 官方源停更段无数据可补,
 # 温度链已用 sw_index_comp(D1-9), 参与体检只会产生永续假缺口。
 _SCAN_SKIP = {"sw_daily"}
