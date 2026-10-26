@@ -97,3 +97,20 @@ def test_etf_registered():
     assert "fetch_etf.refresh()" in src                 # 更新链挂载
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "etf_daily" in html and "自2005-02起" in html
+
+
+def test_refresh_mixed_dates_written_separately(etf_env, monkeypatch):
+    """D1-14r: 混日批次(部分ETF回落他日行)按日分组写入, 互不拖累"""
+    def fake(api, fields="", **kw):
+        if kw.get("ts_code") == "159915.SZ":       # 未出数→接口回落昨日
+            return pd.DataFrame({"trade_date": ["20261023"], "close": [2.0],
+                                 "amount": [10.0], "vol": [1.0]})
+        return pd.DataFrame({"trade_date": ["20261026"], "close": [4.1],
+                             "amount": [1000.0], "vol": [20.0]})
+    monkeypatch.setattr(FE.T, "call", fake)
+    assert FE.refresh(conn=sqlite3.connect(str(etf_env["path"]))) is True
+    c = sqlite3.connect(str(etf_env["path"]))
+    n26 = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date='2026-10-26'").fetchone()[0]
+    n23 = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date='2026-10-23'").fetchone()[0]
+    assert n26 == 7 and n23 == 1                     # 两日各自落库, 谁也没拖累谁
+    c.close()

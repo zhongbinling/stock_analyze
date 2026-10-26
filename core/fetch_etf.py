@@ -59,7 +59,12 @@ def _check(code):
 
 
 def refresh(conn=None) -> bool:
-    """日增: 逐ETF单日小查询 → 当批守卫写入(T-1日数据)"""
+    """日增: 逐ETF单日小查询 → 按日分批守卫写入(T-1日数据)
+
+    D1-14r: 按日分组写入 — 若部分ETF返回他日行(未出数时接口回落最近
+    交易日), 混批会触发守卫'日期混入他日'拒绝整批, 当日已出数的ETF
+    也一并丢失; 分组后互不影响。
+    """
     conn = conn or connect()
     _ensure_table(conn)
     today = time.strftime("%Y%m%d")
@@ -71,12 +76,15 @@ def refresh(conn=None) -> bool:
             rows += _rows_of(code, name, df)
         except Exception as e:  # noqa: BLE001
             print(f"  ✗ {code}: {e}")
-    if not rows:
-        return True                      # 未出数/非交易日
-    d = rows[0][1]
-    guarded_day_write(conn, UPSERT, rows, d, table="etf_daily",
-                      date_col="date", date_idx=1)
-    print(f"[etf] 宽基ETF: {len(rows)} 只 {d}")
+    by_date = {}
+    for r in rows:
+        by_date.setdefault(r[1], []).append(r)
+    for d, batch in sorted(by_date.items()):
+        guarded_day_write(conn, UPSERT, batch, d, table="etf_daily",
+                          date_col="date", date_idx=1)
+    if by_date:
+        print(f"[etf] 宽基ETF: {len(rows)} 只 "
+              f"({','.join(f'{d}:{len(b)}' for d, b in by_date.items())})")
     return True
 
 
@@ -105,7 +113,11 @@ def run(start="20050223") -> bool:
                 last = str(df["trade_date"].max())
                 if len(df) < _PAGE_CAP or last >= end:
                     break
-                cur = _shift_ymd(f"{last[:4]}-{last[4:6]}-{last[6:]}", 1)
+                new_cur = _shift_ymd(f"{last[:4]}-{last[4:6]}-{last[6:]}", 1)
+                if new_cur <= cur:       # D1-14r: 接口异常回落(页尾未推进) → 防死循环
+                    print(f"  ⚠ {code}: 分页未推进({last}), 停止该ETF")
+                    break
+                cur = new_cur
             if all_rows:
                 guarded_batch(conn, UPSERT, all_rows, label=f"etf {code}",
                               check=_check(code))
