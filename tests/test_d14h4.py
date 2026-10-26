@@ -105,3 +105,17 @@ def test_zb_jl_not_duplicated_in_base_series():
     assert "data: D.zb, showSymbol" not in h      # base series 无静态炸板/接力线
     assert "data: D.jl, showSymbol" not in h
     assert "data = D.zb" in h and "data = D.jl" in h   # SUB_OPTS 动态提供恰一处
+
+
+def test_no_duplicate_render_definition():
+    """D1-14r2: 副图渲染曾与详情面板的render(i)同名 — 函数提升使后者覆盖,
+    页面从不执行副图setOption(实测canvas不创建、无任何报错)。"""
+    import viewer as VW
+    h = VW.HTML
+    assert h.count("function render(") == 1          # 仅详情面板的render(i)
+    assert h.count("function renderAux(") == 1        # 副图渲染唯一
+    assert "renderAux();" in h and "change', renderAux);" in h
+    # 副图调用点不再引用裸render
+    import re
+    assert not re.search(r"addEventListener\('change', render\)", h)
+    assert "initAuxCtl();\nrenderAux();" in h

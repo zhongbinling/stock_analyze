@@ -490,7 +490,7 @@ function auxDataEmpty(p) {
   if (p.key === 'etf') return !D.etf || !Object.keys(D.etf).length;
   return !D.val || !VAL_SHOW.some(c => D.val[c]);
 }
-function render() {
+function renderAux() {
   const st = auxState();
   const vis = PANELS.filter(p => st[p.key] && !auxDataEmpty(p));
   // 动态画布高度(基础470 + 每副图112)
@@ -543,7 +543,7 @@ function initAuxCtl() {
     const el = document.getElementById(p.id);
     if (el) { el.checked = !!st[p.key];
       el.addEventListener('change', () => {
-        st[p.key] = el.checked; saveAuxState(st); render();
+        st[p.key] = el.checked; saveAuxState(st); renderAux();
       }); }
   });
 }
@@ -648,11 +648,11 @@ function subSeriesFor(id) {
 }
 for (const opt of SUB_OPTS) {
   const el = document.getElementById(opt.id);
-  if (el) el.addEventListener('change', render);
+  if (el) el.addEventListener('change', renderAux);
 }
 // D1-14 H4: 初始渲染(副图开关记忆 + 底部面板勾选)
 initAuxCtl();
-render();
+renderAux();
 </script>
 </body>
 </html>
