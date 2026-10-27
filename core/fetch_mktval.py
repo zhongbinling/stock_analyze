@@ -121,11 +121,13 @@ def _members_on(conn, code, ymd_str):
 
 
 def _f(v):
-    """None/NaN → None(pandas iterrows 会把 None 变 nan, 绕过 is None 判空)"""
+    """None/NaN/inf → None(pandas iterrows 把 None 变 nan 绕过判空;
+    inf 不拦会污染Σ致当日守卫永久拒绝, 重跑无法自愈)"""
+    import math
     if v is None:
         return None
     v = float(v)
-    return None if v != v else v
+    return v if math.isfinite(v) else None
 
 
 def _fetch_one_day(conn, d_iso, verbose=True, min_n=30):

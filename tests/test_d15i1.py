@@ -111,3 +111,14 @@ def test_mkt_val_registered():
     assert "fetch_mktval.refresh()" in src
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "mkt_val" in html and "自2010-01起" in html
+
+
+def test_f_normalizes_nan_and_inf():
+    """D1-15r: _f 拦 NaN 与 inf(inf 不拦会污染Σ致当日守卫永久拒绝)"""
+    import math
+    assert MV._f(None) is None
+    assert MV._f(float("nan")) is None
+    assert MV._f(float("inf")) is None
+    assert MV._f(float("-inf")) is None
+    assert MV._f(15.84) == 15.84
+    assert MV._f("12.5") == 12.5
