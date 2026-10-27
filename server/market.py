@@ -251,15 +251,31 @@ def _trading_days_since(days: int) -> list:
         con.close()
 
 
+def _today() -> str:
+    """本地今日 ISO(独立函数便于测试注入)"""
+    from datetime import date
+    return date.today().isoformat()
+
+
+# D1-19 P1: 源端发布延迟白名单(单位=交易日lag, 从窗口末端数) — 实测 tushare
+# margin D 日数据要到 D+2 早间更新链才可得(10-27 缺于 10-28 01:50 属常态),
+# 计入真缺口只会每晚必现假告警; 仅豁免末端 lag, 更早缺日仍算真缺口。
+_DELAY_LAG = {"margin": 1}
+
+
 def scan_gaps(window_days: int = 7) -> dict:
     """D1-10 U1: 近窗口交易日 vs 各资产表覆盖 → {code: {name, missing: [...]}}
 
     D1-11h: 覆盖口径含最低行数 — sector_daily 一天行数不足(半截覆盖,
     如2026-10-19 仅47/523板块)同样判为缺口, 体检可报、修复链可修。
+    D1-19 P1: 缺失三级分类 — missing=真缺口(语义收窄, 修复只针对它),
+    pending=当日未出数(今晚更新自愈), delay=源端延迟白名单末端日。
     """
     base = _trading_days_since(window_days)
     if not base:
         return {"window_days": window_days, "trading_days": 0, "assets": []}
+    today = _today()
+    pos = {d: i for i, d in enumerate(base)}
     base_set = set(base)
     con = _conn()
     assets = []
@@ -285,9 +301,19 @@ def scan_gaps(window_days: int = 7) -> dict:
                 missing = [d for d in base if d not in have]
             except sqlite3.Error:
                 continue                    # 表未建(全新环境)
+            # D1-19 P1: 三级分类(真缺口/当日未出数/源端延迟)
+            lag_ok = _DELAY_LAG.get(code, 0)
+            real, pend, dly = [], [], []
+            for d in missing:
+                if d >= today:
+                    pend.append(d)
+                elif lag_ok and len(base) - 1 - pos[d] <= lag_ok:
+                    dly.append(d)
+                else:
+                    real.append(d)
             assets.append({"code": code, "name": name,
                            "db": "raw_daily.db" if is_raw else "sentiment.db",
-                           "missing": missing})
+                           "missing": real, "pending": pend, "delay": dly})
         return {"window_days": window_days, "trading_days": len(base),
                 "latest": base[-1], "assets": assets}
     finally:
@@ -454,7 +480,9 @@ def datasets() -> list:
                         "last": _norm_date(last) if last else None,
                         "completeness": None, "missing_n": 0, "missing_recent": [],
                         "health": "ok" if rows else "warn",
-                        "note": f"完成度基准·token{'已配置' if has_token else '未配置'}"})
+                        # D1-19 P3: 覆盖终点入说明(「最新更新」列原显示日历终点, 语义错位)
+                        "note": f"完成度基准·覆盖至{_norm_date(last) if last else '--'}"
+                                f"·token{'已配置' if has_token else '未配置'}"})
         except sqlite3.Error:
             pass
         # 申万映射 L1/L2(表存在才显示); L3 无map表(P5起SW3温度直接用sw_components+sw_daily)
@@ -473,11 +501,16 @@ def datasets() -> list:
                 rows = con.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                 sws = con.execute(f"SELECT COUNT(DISTINCT {lvl}_name) FROM {t}").fetchone()[0]
                 bks = con.execute(f"SELECT COUNT(DISTINCT bk_code) FROM {t}").fetchone()[0]
+                # D1-19 P3: 未映射BK计数(有未映射才提示, 全命中不添噪)
+                unmapped = con.execute(
+                    f"SELECT COUNT(*) FROM {t} WHERE {lvl}_name IS NULL "
+                    f"OR {lvl}_name=''").fetchone()[0]
                 out.append({"code": lvl, "name": label, "source": "tushare投票",
                             "rows": rows, "codes": bks, "first": None, "last": None,
                             "completeness": None, "missing_n": 0, "missing_recent": [],
                             "health": "ok" if rows else "warn",
-                            "note": f"{sws} 个{_lvl_cn[lvl]} · 覆盖 {bks} 个东财BK"})
+                            "note": f"{sws} 个{_lvl_cn[lvl]} · 覆盖 {bks} 个东财BK"
+                                    + (f" · 未映射{unmapped}" if unmapped else "")})
             except sqlite3.Error:
                 pass
         # P5: SW3 实况(指数日线 L3 层)
@@ -490,7 +523,9 @@ def datasets() -> list:
                 out.append({"code": "sw3", "name": "申万三级·指数日线", "source": "tushare sw_daily",
                             "rows": r[0], "codes": r[1], "first": r[2], "last": r[3],
                             "completeness": None, "missing_n": 0, "missing_recent": [],
-                            "health": "ok", "note": f"{r[1]} 个三级指数(P5 SW温度底座)"})
+                            # D1-19 P3: 止于标注 — 官方源停更段不再追补(BF行同口径)
+                            "health": "ok",
+                            "note": f"{r[1]} 个三级指数 · 止于{r[3]}(官方源停更)"})
         except sqlite3.Error:
             pass
         return out

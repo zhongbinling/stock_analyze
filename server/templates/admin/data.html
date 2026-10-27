@@ -160,7 +160,9 @@ async function loadDatasets() {
     // D1-11 E1: 统一数据资产表 — 可补全项(带按钮/上次补全)在前, 链路维护项在后
     const lastCell = ds => { const L = lastByDs[ds];
       return !L ? '<span class="hint">—</span>'
-        : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} +${(L.days || []).length}日</span>`
+        // D1-19 P4: "+N日"语义误导(全史幂等重写链路也计) → 改"写N日";
+        // 段2再分"新增N/扫M"双数
+        : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} 写${(L.days || []).length}日</span>`
         : L.status === 'running' ? '<span class="hint">… 运行中</span>'
         : `<span class="bad" title="${esc(L.error)}">✗ ${esc((L.error || '失败').slice(0, 12))}</span>`; };
     const pctCell = t => t == null || t.completeness == null ? '<span class="hint">--</span>'
@@ -175,7 +177,7 @@ async function loadDatasets() {
       if (r.asset) used.add(r.asset);
       const btn = `<button class="btn small" data-bf="${r.ds}" ${busy ? 'disabled' : ''}`
         + ` title="补全全部缺失日(${r.base || '全历史'}, 已有日跳过·幂等)">补全</button>`;
-      rows.push(`<tr><td>${esc(r.label)}</td><td class="hint">${esc(t ? t.db : 'sentiment.db')}</td>
+      rows.push(`<tr><td title="${esc(t && t.note || '')}">${esc(r.label)}</td><td class="hint">${esc(t ? t.db : 'sentiment.db')}</td>
         <td class="hint">${t && t.first ? esc(t.first) : '--'}</td>
         <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
         <td>${lastCell(r.ds)}</td><td>${btn}</td></tr>`);
@@ -187,14 +189,17 @@ async function loadDatasets() {
           ? `<button class="btn small" data-reg="${t.code}" ${busy ? 'disabled' : ''}>刷新</button>`
           : `<button class="btn small" data-regrun="1" ${busy ? 'disabled' : ''}
               title="走更新链重建">刷新</button>`;
+        // D1-19 P3: 刷新时间=该资产定向刷新器(REG_DS)最新补全记录;
+        // 无刷新器(映射一次性构建)诚实显示'—'; 说明列渲染服务端note
         regRows.push(`<tr><td>${esc(t.name)}</td><td>${t.rows ?? '--'} 行</td>
-          <td class="hint">${esc(t.last || '--')}</td><td>${act}</td></tr>`);
+          <td class="hint">${REG_DS[t.code] ? lastCell(REG_DS[t.code]) : '—'}</td>
+          <td class="hint">${esc(t.note || '--')}</td><td>${act}</td></tr>`);
         continue;
       }
       // D1-11r: 链路数据集也要可操作 — 行内[修复]走更新链(抓取+评分+温度)
       const fix = `<button class="btn small" data-fixrun="1" ${busy ? 'disabled' : ''}`
         + ` title="按体检窗口走更新链(抓取+评分+温度)修复缺失日">修复</button>`;
-      rows.push(`<tr><td>${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
+      rows.push(`<tr><td title="${esc(t.note || '')}">${esc(t.name)}</td><td class="hint">${esc(t.db || '--')}</td>
         <td class="hint">${t.first ? esc(t.first) : '--'}</td>
         <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
         <td class="hint">—</td><td>${fix}</td></tr>`);
@@ -205,7 +210,7 @@ async function loadDatasets() {
     document.querySelectorAll('#dsTable [data-fixrun]').forEach(b =>
       b.onclick = () => runRepair(parseInt($('chkWin').value)));
     $('regTable').innerHTML = regRows.length
-      ? '<tr><th>基础与映射</th><th>行数</th><th>最新更新</th><th></th></tr>' + regRows.join('') : '';
+      ? '<tr><th>基础与映射</th><th>行数</th><th>刷新时间</th><th>说明</th><th></th></tr>' + regRows.join('') : '';
     $('regTable').style.display = regRows.length ? '' : 'none';
     document.querySelectorAll('#regTable [data-reg]').forEach(b =>
       b.onclick = () => bfRun(REG_DS[b.dataset.reg], b));
@@ -390,40 +395,53 @@ $('btnCheck').onclick = async () => {
   try {
     const win = parseInt($('chkWin').value);
     const r = await api('/admin/api/scan', {method: 'POST', body: JSON.stringify({window: win})});
-    const miss = r.assets.filter(a => a.missing.length > 0);
-    const total = miss.reduce((s, a) => s + a.missing.length, 0);
-    if (!miss.length) {
+    // D1-19 P1: 服务端已三级分类 — missing=真缺口 / pending=当日未出数 /
+    // delay=源端延迟(margin T+1); 仅真缺口计入告警与可修复
+    const rows = r.assets.filter(a => (a.missing || []).length
+      || (a.pending || []).length || (a.delay || []).length);
+    const cnt = (k) => rows.reduce((s, a) => s + (a[k] || []).length, 0);
+    const tbl = (k) => rows.filter(a => (a[k] || []).length).length;
+    const realN = cnt('missing');
+    if (!rows.length) {
       $('chkSummary').innerHTML = `<span class="ok">✓ 近窗口 ${r.trading_days} 个交易日全部完整(最新 ${esc(r.latest)})</span>`;
       $('chkTable').innerHTML = '';
     } else {
       $('chkSummary').innerHTML =
-        `<span class="bad">${miss.length} 表缺共 ${total} 日(近${r.window_days}天)</span>
-         <button class="btn primary small" id="btnFixAllGap" style="margin-left:8px"
-           title="定向补全逐项入队(补全在前)+链路表合并一次更新链收尾, 完成后自动复检">修复全部缺口</button>
-         <button class="btn small" id="btnFixAll" style="margin-left:6px"
-           title="只跑一次更新链(抓取+评分+温度)">一键修复(更新链)</button>`;
-      $('chkTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th><th>修复方式</th><th></th></tr>' +
-        miss.map(a => {
+        (realN ? `<span class="bad">真缺口 ${realN} 日(${tbl('missing')} 表)</span>`
+               : `<span class="ok">真缺口 0 日</span>`)
+        + (cnt('pending') ? `<span class="hint"> · ${tbl('pending')} 表待出数(今晚自愈)</span>` : '')
+        + (cnt('delay') ? `<span class="hint"> · ${tbl('delay')} 表源端延迟(自愈)</span>` : '')
+        + `<span class="hint">(近${r.window_days}天)</span>`
+        + `<button class="btn primary small" id="btnFixAllGap" style="margin-left:8px" ${realN ? '' : 'disabled'}
+            title="仅修真缺口: 定向补全逐项入队+链路表合并一次更新链收尾, 完成后自动复检; 待出数/源端延迟今晚自愈">修复全部缺口</button>
+          <button class="btn small" id="btnFixAll" style="margin-left:6px"
+            title="只跑一次更新链(抓取+评分+温度)">一键修复(更新链)</button>`;
+      $('chkTable').innerHTML = '<tr><th>数据集</th><th>库</th><th>缺失交易日</th><th>处理</th><th></th></tr>' +
+        rows.map(a => {
           const ds = SCAN_DS[a.code];
+          const cell = [];
+          if ((a.missing || []).length)
+            cell.push(`<span class="bad" style="font-size:.85em">${a.missing.join(', ')}</span>`);
+          if ((a.delay || []).length)
+            cell.push(`<span class="hint" style="font-size:.85em" title="源端发布延迟(如两融T+1), 当晚更新链自动补">${a.delay.join(', ')}(延迟)</span>`);
+          if ((a.pending || []).length)
+            cell.push(`<span class="hint" style="font-size:.85em" title="当日数据未发布, 今晚更新自动写入">${a.pending.join(', ')}(待出数)</span>`);
+          const fixable = (a.missing || []).length > 0;
           return `<tr><td>${esc(a.name)}</td><td class="hint">${esc(a.db)}</td>
-            <td class="bad" style="font-size:.85em">${a.missing.join(', ')}</td>
-            <td class="hint">${ds ? '定向补全' : '更新链'}</td>
-            <td><button class="btn small" data-fix="${esc(a.code)}">修复</button></td></tr>`;
+            <td>${cell.join('<br>')}</td>
+            <td class="hint">${fixable ? (ds ? '定向补全' : '更新链') : '今晚自愈'}</td>
+            <td>${fixable ? `<button class="btn small" data-fix="${esc(a.code)}">修复</button>` : ''}</td></tr>`;
         }).join('');
     }
     $('chkPanel').style.display = '';
     const fa = $('btnFixAll');
     if (fa) fa.onclick = () => runRepair(win);
-        const fg = $('btnFixAllGap');
+    const fg = $('btnFixAllGap');
     if (fg) fg.onclick = async () => {          // D1-13①: 按体检结果逐项修复, 队列串行
       if (bfRunning) { $('chkMsg').textContent = '队列忙, 稍后再试'; return; }
-      // D1-13r2: 短路 — 今日(未收盘/未出数)不算缺口, 由收尾更新链补;
-      // 定向补全带窗口start(最早缺口-7天), 不再全史幂等扫描空跑
-      // (本地日: toISOString是UTC, 凌晨0~8点会取到昨日→误把昨日缺口过滤掉)
-      const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
-        .toISOString().slice(0, 10);
-      const realMiss = miss.map(a => ({...a, missing: a.missing.filter(d => d < today)}))
-        .filter(a => a.missing.length);
+      // D1-19 P1: 服务端分类为单一真源(客户端不再本地过滤今日 — 曾致UTC日
+      // 误滤与修复动作/展示两套口径); 定向补全带窗口start(最早真缺口-7天)
+      const realMiss = rows.filter(a => (a.missing || []).length);
       const targets = [...new Set(realMiss.map(a => SCAN_DS[a.code]).filter(Boolean))];
       const startOf = (ds) => {
         const days = realMiss.filter(a => SCAN_DS[a.code] === ds)
@@ -443,7 +461,7 @@ $('btnCheck').onclick = async () => {
         pendingRecheck = true;
         $('chkMsg').textContent = targets.length
           ? `已入队: ${targets.length} 项定向补全(窗口化) + 更新链(收尾统一重算), 队列清空后自动复检`
-          : '缺口仅为今日(未出数) — 已入队更新链, 队列清空后自动复检';
+          : '无真缺口 — 已入队更新链, 队列清空后自动复检';
         $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
         poll(true);
       } catch (e) { $('chkMsg').textContent = '入队失败: ' + e.message; }

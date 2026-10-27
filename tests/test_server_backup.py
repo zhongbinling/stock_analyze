@@ -204,11 +204,15 @@ def test_data_html_unified_assets_and_checkup():
     # D1-13: 修复全部缺口(闭环复检) / 最早列 / 补全语义悬停 / 非时序分组 / 补全记录卡
     assert 'id="btnFixAllGap"' in html and "pendingRecheck" in html
     assert "norecalc: true" in html             # D1-13r: 批处理补全跳过逐项重算
-    # D1-13r2: 空跑短路 — 今日不算缺口 + 定向补全窗口化start
-    assert "realMiss" in html and "d < today" in html and "startOf" in html
-    assert "getTimezoneOffset" in html          # D1-13r2r: 本地日(UTC日会把凌晨0~8点的昨日缺口误滤)
+    # D1-19 P1: 分类移服务端(单一真源) — 客户端不得回退本地过滤今日
+    assert "realMiss" in html and "startOf" in html
+    assert "d < today" not in html and "getTimezoneOffset" not in html
+    assert "待出数" in html and "源端延迟" in html and "真缺口" in html
     assert "<th>最早</th>" in html and "已有日跳过" in html and "自2005起" in html
     assert 'id="regTable"' in html and "NON_TS" in html and "基础与映射" in html
+    # D1-19 P3: 基础与映射表 — 刷新时间(补全记录同源)+说明列; P4: 写N日语义
+    assert "<th>刷新时间</th>" in html and "<th>说明</th>" in html
+    assert "写${(L.days" in html and "+${(L.days" not in html
     assert "<h2>补全记录</h2>" in html and "<h2>数据补全</h2>" not in html
     # D1-11r: 双击竞态防护(入队成功立即置busy) + 按钮原标签恢复 + 刷新补全记录
     assert html.count("bfRunning = true;") >= 2      # bfRun + 修复全部缺口
