@@ -631,13 +631,15 @@ function render(i) {
   if (fmtP1(mv.pe300)) envBits.push(`300 <b>${fmtP1(mv.pe300)}</b>/${fmtP2(mv.pb300) || '--'}`);
   if (fmtP1(mv.pe500)) envBits.push(`500 <b>${fmtP1(mv.pe500)}</b>`);
   if (fmtP1(mv.pe1000)) envBits.push(`1000 <b>${fmtP1(mv.pe1000)}</b>`);
-  if (envBits.length)
-    h += `<div class="kv" style="margin-top:8px">PE(TTM整体法) ${envBits.join(' · ')}<br>`;
-  if (D.margin && !nullish(D.margin[i]))
-    h += `两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`;
-  if (D.etfSum && !nullish(D.etfSum[i]))
-    h += ` · 宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`;
-  if (envBits.length || (D.margin && !nullish(D.margin[i]))) h += `</div>`;
+  const hasMargin = D.margin && !nullish(D.margin[i]);
+  const hasEtf = D.etfSum && !nullish(D.etfSum[i]);
+  if (envBits.length || hasMargin || hasEtf) {   // D1-15r: 开合对称(估值缺失仅两融时div曾未开先闭)
+    h += `<div class="kv" style="margin-top:8px">`;
+    if (envBits.length) h += `PE(TTM整体法) ${envBits.join(' · ')}<br>`;
+    if (hasMargin) h += `两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`;
+    if (hasEtf) h += ` · 宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`;
+    h += `</div>`;
+  }
   if (nullish(s)) h += `<p class="hint">该日评分窗口数据不足(池数据2025-10起)。</p>`;
   document.getElementById("panel").innerHTML = h;
 }

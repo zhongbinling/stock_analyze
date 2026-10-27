@@ -164,3 +164,7 @@ def test_html_env_panel_wired():
     assert "市场环境" in h or "PE(TTM整体法)" in h      # 区块标题/标识
     assert "envBits" in h and "两融余额" in h
     assert h.count("D.mval") >= 2                        # 悬停框+面板两处消费
+    # D1-15r: div开合对称(估值缺失仅两融/ETF时不得未开先闭)
+    import re as _re
+    blk = h[h.find("hasMargin"):h.find("hasMargin") + 500]
+    assert "if (envBits.length || hasMargin || hasEtf)" in h
