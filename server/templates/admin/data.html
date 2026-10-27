@@ -419,7 +419,9 @@ $('btnCheck').onclick = async () => {
       if (bfRunning) { $('chkMsg').textContent = '队列忙, 稍后再试'; return; }
       // D1-13r2: 短路 — 今日(未收盘/未出数)不算缺口, 由收尾更新链补;
       // 定向补全带窗口start(最早缺口-7天), 不再全史幂等扫描空跑
-      const today = new Date().toISOString().slice(0, 10);
+      // (本地日: toISOString是UTC, 凌晨0~8点会取到昨日→误把昨日缺口过滤掉)
+      const today = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
+        .toISOString().slice(0, 10);
       const realMiss = miss.map(a => ({...a, missing: a.missing.filter(d => d < today)}))
         .filter(a => a.missing.length);
       const targets = [...new Set(realMiss.map(a => SCAN_DS[a.code]).filter(Boolean))];
