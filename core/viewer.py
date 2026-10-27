@@ -104,27 +104,42 @@ def _read_aux(dates):
             for i, c in enumerate(cols):
                 m = {r[0]: r[i + 1] for r in rows}
                 out["mval"][c] = [_j(m.get(d)) for d in dates]
-            # D1-15 I4: 水位分位(当前值在≤当日历史中的排名占比; 全史/近5年),
-            # bisect有序插入避免O(n²)逐日全窗比较; ≥60样本才输出
+            # D1-15 I4: 水位分位(当前值在≤当日历史中的排名占比; 全史/近5年两口径)
+            # bisect有序插入避免O(n²); 近5年为逐日滑动窗口(悬停历史日时
+            # 看到的是'该日往前5年'的水位, 而非固定截止日); ≥60样本才输出
             import bisect as _bi
             import datetime as _dtx
-            try:
-                _cutoff5 = (_dtx.date.fromisoformat(dates[-1])
-                            - _dtx.timedelta(days=1826)).isoformat()
-            except (ValueError, IndexError):
-                _cutoff5 = None
+            from collections import deque as _dq
             for key in ("alla_pe", "alla_pb", "pe300"):
                 arr = out["mval"][key]
-                s_all, s_5y = [], []              # 有序历史
+                s_all, s_5y = [], []              # 有序历史(全史/滑动5年)
+                q_5y = _dq()                      # (日期, 值) 按插入序, 供滑出
                 p_all, p_5y = [], []
                 for d, v in zip(dates, arr):
                     if v is None:
                         p_all.append(None)
                         p_5y.append(None)
                         continue
+                    # 滑出5年窗外的旧值
+                    try:
+                        d_obj = _dtx.date.fromisoformat(d)
+                    except ValueError:
+                        d_obj = None
+                    if d_obj is not None:
+                        while q_5y:
+                            fd, fv = q_5y[0]
+                            try:
+                                lim = _dtx.date.fromisoformat(fd)
+                            except ValueError:
+                                lim = None
+                            if lim is not None and (d_obj - lim).days > 1826:
+                                q_5y.popleft()
+                                s_5y.remove(fv)      # 值唯一性由估值连续性保证近似
+                            else:
+                                break
                     _bi.insort(s_all, v)
-                    if _cutoff5 and d >= _cutoff5:
-                        _bi.insort(s_5y, v)
+                    _bi.insort(s_5y, v)
+                    q_5y.append((d, v))
                     p_all.append(round(_bi.bisect_right(s_all, v) / len(s_all), 3)
                                  if len(s_all) >= 60 else None)
                     p_5y.append(round(_bi.bisect_right(s_5y, v) / len(s_5y), 3)

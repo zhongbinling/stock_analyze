@@ -194,6 +194,10 @@ def test_mval_percentile_series(aux_db):
     assert r["mval"]["alla_pe_pct5"][-1] == 1.0    # 近5年窗口同样
     # PB反向: 值递减 → 最后一日应为最低分位
     assert r["mval"]["alla_pb_pct"][-1] < 0.1
+    # D1-15r: 5年窗为逐日滑动 — 历史中间日也有近5年水位(曾为固定截止日,
+    # 2021-10前全None)
+    mid = r["mval"]["alla_pe_pct5"][59]           # 第60日: 60样本已满
+    assert mid is not None and mid == 1.0
     assert r["mval"]["pe300_pct"][-1] == 1.0      # pe300恒定10.0 → 所有历史≤当日 → 100%
 
 
