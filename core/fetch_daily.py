@@ -676,6 +676,9 @@ BACKFILLS = {
     "etf_daily": ("宽基ETF日线回补(2005-02起)",
                   [("etf_daily", None, "date")],
                   lambda start: __import__("fetch_etf").run(start), "20050223"),
+    "mkt_val": ("全A/宽基估值回补(2010起, 自算整体法)",
+                [("mkt_val_daily", None, "date")],
+                lambda start: __import__("fetch_mktval").run(start), "20100101"),
     "sw_breadth": ("板块涨跌家数·SW层级(2005起)", [("sw_breadth", None, "date")],
                    lambda start: backfill_sw_breadth(start), "20050101"),
     "sw_pool": ("涨停结构·SW层级(2005起, 含全市场段)", [("sw_pool", None, "date"),
@@ -800,6 +803,11 @@ def main():
         fetch_etf.refresh()
     except Exception as e:  # noqa: BLE001
         print(f"[etf] 挂载异常(跳过): {type(e).__name__}: {e}")
+    try:                                  # D1-15 I1: 全A/宽基估值聚合日增
+        import fetch_mktval
+        fetch_mktval.refresh()
+    except Exception as e:  # noqa: BLE001
+        print(f"[mktval] 挂载异常(跳过): {type(e).__name__}: {e}")
     fetch_tushare_mood_today()
     fetch_sw_daily()
     if args.ts_backfill:

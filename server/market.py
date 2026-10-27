@@ -210,6 +210,9 @@ _ASSET_DATE_TABLES = [
     # D1-14 H3: 宽基ETF(国家队口径8只, 2005-02起)
     ("etf", "宽基ETF成交", "etf_daily", None, "tushare", 7,
      "8只·50/三只300/500/1000/科创50/创业板"),
+    # D1-15 I1: 全A/宽基估值(daily_basic自算整体法, 2010起)
+    ("mkt_val", "全A/宽基估值PE/PB", "mkt_val_daily", None, "tushare计算", 7,
+     "全A整体法+四宽基成分加权·与官方互校"),
 ]
 # D1-10 S1: raw_daily.db 跨库表(ATTACH只读挂载后并入datasets); 日期列=trade_date
 RAW_TABLES = [
