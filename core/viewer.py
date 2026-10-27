@@ -667,31 +667,38 @@ function render(i) {
   const mv = D.mval || {};
   const fmtP1 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(1);
   const fmtP2 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(2);
-  const envBits = [];
-  if (fmtP1(mv.alla_pe)) envBits.push(`全A <b>${fmtP1(mv.alla_pe)}</b>/${fmtP2(mv.alla_pb) || '--'}`);
-  if (fmtP1(mv.pe50)) envBits.push(`50 <b>${fmtP1(mv.pe50)}</b>`);
-  if (fmtP1(mv.pe300)) envBits.push(`300 <b>${fmtP1(mv.pe300)}</b>/${fmtP2(mv.pb300) || '--'}`);
-  if (fmtP1(mv.pe500)) envBits.push(`500 <b>${fmtP1(mv.pe500)}</b>`);
-  if (fmtP1(mv.pe1000)) envBits.push(`1000 <b>${fmtP1(mv.pe1000)}</b>`);
+  const envBits = [mv.alla_pe, mv.pe50, mv.pe300, mv.pe500, mv.pe1000]
+    .filter(a => !nullish(a && a[i]));   // D1-16: 表格化后仅存在性判定
   const hasMargin = D.margin && !nullish(D.margin[i]);
   const hasEtf = D.etfSum && !nullish(D.etfSum[i]);
   if (envBits.length || hasMargin || hasEtf) {   // D1-15r: 开合对称(估值缺失仅两融时div曾未开先闭)
-    h += `<div class="kv" style="margin-top:8px">`;
-    if (envBits.length) h += `PE(TTM整体法) ${envBits.join(' · ')}<br>`;
-    // D1-15 I4: 水位行(当前值在≤当日历史中的分位; ≥80%高估红/≤20%低估蓝)
-    const pctC = (p) => nullish(p) ? null :
-      `<b style="color:${p >= 0.8 ? C.red : p <= 0.2 ? C.blue : C.muted}">${Math.round(p * 100)}%</b>`;
-    const lv = [];
-    const pa = mv.alla_pe_pct && mv.alla_pe_pct[i], p5 = mv.alla_pe_pct5 && mv.alla_pe_pct5[i];
-    if (pa != null || p5 != null)
-      lv.push(`全A PE ${[pctC(pa), pctC(p5)].filter(Boolean).length ? `${pctC(pa) || '--'}(全史) · ${pctC(p5) || '--'}(近5年)` : '--'}`);
-    const ba = mv.alla_pb_pct && mv.alla_pb_pct[i], b5 = mv.alla_pb_pct5 && mv.alla_pb_pct5[i];
-    if (ba != null || b5 != null)
-      lv.push(`PB ${pctC(ba) || '--'}(全史) · ${pctC(b5) || '--'}(近5年)`);
-    if (lv.length) h += `水位 ${lv.join(' · ')}<br>`;
-    if (hasMargin) h += `两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`;
-    if (hasEtf) h += ` · 宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`;
-    h += `</div>`;
+    // D1-16: 市场环境结构化表格 — 每行一个指标, 分位带进度条(时间占比口径)
+    const pctColor = (p) => nullish(p) ? C.muted : (p >= 0.8 ? C.red : p <= 0.2 ? C.blue : C.muted);
+    const pctBar = (p) => nullish(p) ? '<div class="track"></div>' :
+      `<div class="track"><div class="fill" style="left:0;width:${Math.max(p * 100, 2)}%;background:${pctColor(p)}"></div></div>`;
+    const pctTxt = (p) => nullish(p) ? '--' :
+      `<b style="color:${pctColor(p)}">${Math.round(p * 100)}%</b>`;
+    const envRow = (nm, val, pa, p5) => {
+      if (nullish(val) && nullish(pa) && nullish(p5)) return '';
+      return `<tr><td>${nm}</td><td><b>${val ?? '--'}</b></td>
+        <td class="bar-cell">${pctBar(pa)}</td><td>${pctTxt(pa)}</td>
+        <td class="bar-cell">${pctBar(p5)}</td><td>${pctTxt(p5)}</td></tr>`;
+    };
+    let envRows = '';
+    const v1 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(1);
+    const v2 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(2);
+    envRows += envRow('全A PE', v1(mv.alla_pe), mv.alla_pe_pct && mv.alla_pe_pct[i], mv.alla_pe_pct5 && mv.alla_pe_pct5[i]);
+    envRows += envRow('全A PB', v2(mv.alla_pb), mv.alla_pb_pct && mv.alla_pb_pct[i], mv.alla_pb_pct5 && mv.alla_pb_pct5[i]);
+    envRows += envRow('300 PE', v1(mv.pe300), mv.pe300_pct && mv.pe300_pct[i], mv.pe300_pct5 && mv.pe300_pct5[i]);
+    if (envRows)
+      h += `<table style="margin-top:8px"><tr><th>指标</th><th>值</th>
+        <th class="bar-cell" colspan="2">水位·全史</th>
+        <th class="bar-cell" colspan="2">水位·近5年</th></tr>${envRows}</table>`;
+    const footBits = [];
+    if (hasMargin) footBits.push(`两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`);
+    if (hasEtf) footBits.push(`宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`);
+    if (footBits.length)
+      h += `<div class="kv" style="margin-top:4px">${footBits.join(' · ')}</div>`;
   }
   if (nullish(s)) h += `<p class="hint">该日评分窗口数据不足(池数据2025-10起)。</p>`;
   document.getElementById("panel").innerHTML = h;

@@ -165,9 +165,10 @@ def test_html_env_panel_wired():
     assert "envBits" in h and "两融余额" in h
     assert h.count("D.mval") >= 2                        # 悬停框+面板两处消费
     # D1-15r: div开合对称(估值缺失仅两融/ETF时不得未开先闭)
-    import re as _re
-    blk = h[h.find("hasMargin"):h.find("hasMargin") + 500]
     assert "if (envBits.length || hasMargin || hasEtf)" in h
+    # D1-16: 面板表格化 + 分位进度条
+    assert "pctBar" in h and "水位·全史" in h and "水位·近5年" in h
+    assert "envRow" in h
 
 
 def test_mval_percentile_series(aux_db):
@@ -207,4 +208,4 @@ def test_html_level_line_wired():
     h = VW.HTML
     assert "水位" in h and "alla_pe_pct" in h and "alla_pb_pct" in h
     assert "p >= 0.8" in h and "p <= 0.2" in h     # 高估红/低估蓝阈值
-    assert "(全史)" in h and "(近5年)" in h
+    assert "水位·全史" in h and "水位·近5年" in h  # D1-16: 表格列头
