@@ -371,11 +371,13 @@ const baseOption = {
       // D1-15 I2: 估值全套(自算整体法) + 两融/ETF
       const mv = D.mval || {};
       const fmtPE = (k) => nullish(mv[k] && mv[k][i]) ? null : mv[k][i].toFixed(1);
+      const fmtPB = (k) => nullish(mv[k] && mv[k][i]) ? null : mv[k][i].toFixed(2);
       const peBits = [];
       if (!nullish(mv.alla_pe && mv.alla_pe[i]))
-        peBits.push(`全A ${fmtPE('alla_pe')}/${(mv.alla_pb[i] || 0).toFixed(2)}`);
+        peBits.push(`全A ${fmtPE('alla_pe')}${fmtPB('alla_pb') ? '/' + fmtPB('alla_pb') : ''}`);
       if (mv.pe50 && !nullish(mv.pe50[i])) peBits.push(`50 ${fmtPE('pe50')}`);
-      if (mv.pe300 && !nullish(mv.pe300[i])) peBits.push(`300 ${fmtPE('pe300')}/${(mv.pb300[i] || 0).toFixed(2)}`);
+      if (mv.pe300 && !nullish(mv.pe300[i]))
+        peBits.push(`300 ${fmtPE('pe300')}${fmtPB('pb300') ? '/' + fmtPB('pb300') : ''}`);
       if (mv.pe500 && !nullish(mv.pe500[i])) peBits.push(`500 ${fmtPE('pe500')}`);
       if (mv.pe1000 && !nullish(mv.pe1000[i])) peBits.push(`1000 ${fmtPE('pe1000')}`);
       if (peBits.length)
