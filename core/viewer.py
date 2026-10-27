@@ -335,6 +335,8 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" id="ckPB" checked> 指数PB</label>
   <label><input type="checkbox" id="ckMargin" checked> 两融余额</label>
   <label><input type="checkbox" id="ckEtf" checked> 宽基ETF成交额</label>
+  <label><input type="checkbox" id="ckPEPct" checked> 全A PE分位</label>
+  <label><input type="checkbox" id="ckPBPct" checked> 全A PB分位</label>
 </div>
 <footer>
   鼠标在图上移动查看当日构成 · 滚轮缩放 · 底部滑块选区间 ·
@@ -498,8 +500,10 @@ const AUX_STORE = 'auxPanels_v1';
 function auxState() {
   let st = null;
   try { st = JSON.parse(localStorage.getItem(AUX_STORE) || 'null'); } catch (e) {}
-  if (!st) st = { pe: true, pb: true, margin: true, etf: true };
-  return st;
+  // D1-16②: 新面板默认开 — 以默认键补齐存量记忆缺的key(用户已存偏好,
+  // 含显式关掉新面板的 false, 不被覆盖)
+  return Object.assign({ pe: true, pb: true, margin: true, etf: true,
+                         pePct: true, pbPct: true }, st || {});
 }
 function saveAuxState(st) {
   try { localStorage.setItem(AUX_STORE, JSON.stringify(st)); } catch (e) {}
@@ -542,15 +546,46 @@ function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看
   });
   return out;
 }
+// D1-16②: 全A估值分位双线(全史蓝/近5年红) — 比值×100, 80/20参考线
+const PCT_ALL = '#2f5cd6', PCT_5Y = '#e34448';
+const pctAxis = (gi) => ({ type: 'value', gridIndex: gi, min: 0, max: 100,
+  axisLabel: { color: C.muted, formatter: '{value}%' },
+  splitLine: { lineStyle: { color: C.grid } } });
+function pctSeries(gi, key, label) {
+  const mv = D.mval || {};
+  const pct = (arr) => (arr || []).map(v => v == null ? null : Math.round(v * 1000) / 10);
+  return [
+    { name: label + '·全史%', type: 'line', xAxisIndex: gi, yAxisIndex: gi,
+      data: pct(mv[key + '_pct']), showSymbol: false,
+      lineStyle: { width: 1.3, color: PCT_ALL }, itemStyle: { color: PCT_ALL },
+      markLine: { silent: true, symbol: 'none',
+        label: { show: true, position: 'insideEndTop', fontSize: 9, color: PCT_5Y },
+        lineStyle: { type: 'dashed', width: 1, color: PCT_5Y },
+        data: [{ yAxis: 80 }] } },                    // 高估警戒线
+    { name: label + '·近5年%', type: 'line', xAxisIndex: gi, yAxisIndex: gi,
+      data: pct(mv[key + '_pct5']), showSymbol: false,
+      lineStyle: { width: 1.3, color: PCT_5Y }, itemStyle: { color: PCT_5Y },
+      markLine: { silent: true, symbol: 'none',
+        label: { show: true, position: 'insideEndBottom', fontSize: 9, color: PCT_ALL },
+        lineStyle: { type: 'dashed', width: 1, color: PCT_ALL },
+        data: [{ yAxis: 20 }] } },                    // 低估机会线
+  ];
+}
 const PANELS = [
   { key: 'pe',     id: 'ckPE',     name: '宽基指数PE(50/300/500/1000)', h: 84, build: gi => valSeries(gi, 'pe') },
   { key: 'pb',     id: 'ckPB',     name: '宽基指数PB',                  h: 84, build: gi => valSeries(gi, 'pb') },
   { key: 'margin', id: 'ckMargin', name: '两融余额(亿, 沪深北合计)',    h: 84, build: gi => marginSeries(gi) },
   { key: 'etf',    id: 'ckEtf',    name: '宽基ETF成交额(亿·8只堆叠)',   h: 84, build: gi => etfSeries(gi) },
+  { key: 'pePct',  id: 'ckPEPct',  name: '全A PE 分位%(全史·近5年)',    h: 84,
+    build: gi => pctSeries(gi, 'alla_pe', 'PE'), yaxis: pctAxis },
+  { key: 'pbPct',  id: 'ckPBPct',  name: '全A PB 分位%(全史·近5年)',    h: 84,
+    build: gi => pctSeries(gi, 'alla_pb', 'PB'), yaxis: pctAxis },
 ];
 function auxDataEmpty(p) {
   if (p.key === 'margin') return !D.margin || !D.margin.some(v => v != null);
   if (p.key === 'etf') return !D.etf || !Object.keys(D.etf).length;
+  if (p.key === 'pePct') return !D.mval || !(D.mval.alla_pe_pct || []).some(v => v != null);
+  if (p.key === 'pbPct') return !D.mval || !(D.mval.alla_pb_pct || []).some(v => v != null);
   return !D.val || !VAL_SHOW.some(c => D.val[c]);
 }
 function renderAux() {
@@ -571,7 +606,7 @@ function renderAux() {
     const gi = 5 + pi;
     opt.grid.push({ top, height: p.h, left: '3%', width: '95%', containLabel: true, right: 20 });
     opt.xAxis.push(catAxis(gi));
-    opt.yAxis.push(valAxis(gi));
+    opt.yAxis.push(p.yaxis ? p.yaxis(gi) : valAxis(gi));   // D1-16②: 分位轴定域覆盖
     opt.title.push({ text: p.name, left: '3%', top: (top - 14) + 'px',
                      textStyle: { fontSize: 10, color: C.muted } });
     opt.series.push(...p.build(gi));
