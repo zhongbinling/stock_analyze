@@ -53,7 +53,7 @@ def test_read_aux_tolerates_missing_tables(tmp_path, monkeypatch):
     import viewer as VW
     monkeypatch.setattr(VW, "DB_PATH", tmp_path / "none.db")
     r = VW._read_aux(["2026-10-23"])
-    assert r == {"val": {}, "margin": [], "etf": {}}
+    assert r["val"] == {} and r["margin"] == [] and r["etf"] == {} and r["mval"] == {}
 
 
 def test_html_aux_panels_wired():
@@ -64,7 +64,7 @@ def test_html_aux_panels_wired():
     assert 'id="ckMargin"' in h and 'id="ckEtf"' in h
     assert "PANELS" in h and "auxPanels_v1" in h and "localStorage" in h
     assert "valSeries" in h and "marginSeries" in h and "etfSeries" in h
-    assert "D.etfSum" in h and "300PE" in h
+    assert "D.etfSum" in h and "peBits" in h
 
 
 def test_html_js_syntax():
@@ -119,3 +119,39 @@ def test_no_duplicate_render_definition():
     import re
     assert not re.search(r"addEventListener\('change', render\)", h)
     assert "initAuxCtl();\nrenderAux();" in h
+
+
+def test_read_aux_mval_aligned(aux_db):
+    """D1-15 I2: 自算估值源(mval)对齐日期轴, 十序列"""
+    c = sqlite3.connect(str(aux_db["path"]))
+    c.execute("""CREATE TABLE mkt_val_daily(date TEXT PRIMARY KEY, alla_pe REAL,
+      alla_pb REAL, pe50 REAL, pb50 REAL, pe300 REAL, pb300 REAL, pe500 REAL,
+      pb500 REAL, pe1000 REAL, pb1000 REAL)""")
+    c.execute("INSERT INTO mkt_val_daily(date,alla_pe,alla_pb,pe300) "
+              "VALUES('2026-10-23',15.8,1.65,13.9)")
+    c.commit()
+    c.close()
+    VW = aux_db["VW"]
+    r = VW._read_aux(["2026-10-22", "2026-10-23"])
+    assert r["mval"]["alla_pe"] == [None, 15.8]
+    assert r["mval"]["pe300"] == [None, 13.9]
+    assert r["mval"]["pb1000"] == [None, None]      # 未给值→None
+    assert len(r["mval"]) == 10
+    # 其余三源不受影响
+    assert r["val"]["000300.SH"]["pe"] == [13.8, 13.9]
+
+
+def test_read_aux_mval_missing_no_drag(aux_db):
+    """D1-15r: mval表缺失 → 空dict不拖累其余源(第四源独立容错)"""
+    VW = aux_db["VW"]
+    r = VW._read_aux(["2026-10-23"])
+    assert r["mval"] == {}
+    assert r["val"]["000300.SH"]["pe"] == [13.9]
+
+
+def test_html_mval_tooltip_wired():
+    """D1-15 I2: 悬停框全套估值行接线"""
+    import viewer as VW
+    h = VW.HTML
+    assert "D.mval" in h and "alla_pe" in h and "pe1000" in h
+    assert "PE ${peBits.join" in h

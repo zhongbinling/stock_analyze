@@ -55,12 +55,12 @@ DB_PATH = Path(__file__).resolve().parent / "data" / "sentiment.db"
 
 
 def _read_aux(dates):
-    """D1-14 H4: 副图数据(估值/两融/ETF) — 对齐全量日期轴。
+    """D1-14 H4/D1-15 I2: 副图与悬停数据(估值官方/两融/ETF/自算估值) — 对齐全量日期轴。
 
-    三源各自独立容错(旧库可能只有部分表): 任一源缺失仅隐藏对应副图,
-    不拖累其余两源。
+    四源各自独立容错(旧库可能只有部分表): 任一源缺失仅降级对应功能,
+    不拖累其余源。
     """
-    out = {"val": {}, "margin": [], "etf": {}}
+    out = {"val": {}, "margin": [], "etf": {}, "mval": {}}
     import sqlite3 as _sq
     try:
         con = _sq.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True)
@@ -95,6 +95,17 @@ def _read_aux(dates):
                                             for v in (am.get(d) for d in dates)]}  # 千元→亿
         except Exception:  # noqa: BLE001
             out["etf"] = {}
+        # D1-15 I2: 自算全A/宽基估值(整体法)
+        try:
+            cols = ("alla_pe", "alla_pb", "pe50", "pb50", "pe300", "pb300",
+                    "pe500", "pb500", "pe1000", "pb1000")
+            rows = con.execute(
+                "SELECT date," + ",".join(cols) + " FROM mkt_val_daily").fetchall()
+            for i, c in enumerate(cols):
+                m = {r[0]: r[i + 1] for r in rows}
+                out["mval"][c] = [_j(m.get(d)) for d in dates]
+        except Exception:  # noqa: BLE001
+            out["mval"] = {}
     finally:
         con.close()
     return out
@@ -357,10 +368,18 @@ const baseOption = {
           compBits.push(`${cNms[ck]} ${D.cs[ck][i] > 0 ? '+' : ''}${Math.round(D.cs[ck][i])}`);
       }
       if (compBits.length) h += `<br/><span style="color:#898781;font-size:11px">${compBits.join(' · ')}</span>`;
-      // D1-14 H4: 副图数值(估值/两融/ETF)
-      const v3 = D.val && D.val['000300.SH'], v5 = D.val && D.val['000016.SH'];
-      if (v3 && !nullish(v3.pe[i]))
-        h += `<br/><span style="color:#898781;font-size:11px">300PE ${v3.pe[i]} · 50PE ${nullish(v5 && v5.pe[i]) ? '--' : v5.pe[i]}${!nullish(v3.pb[i]) ? ` · 300PB ${v3.pb[i]}` : ''}</span>`;
+      // D1-15 I2: 估值全套(自算整体法) + 两融/ETF
+      const mv = D.mval || {};
+      const fmtPE = (k) => nullish(mv[k] && mv[k][i]) ? null : mv[k][i].toFixed(1);
+      const peBits = [];
+      if (!nullish(mv.alla_pe && mv.alla_pe[i]))
+        peBits.push(`全A ${fmtPE('alla_pe')}/${(mv.alla_pb[i] || 0).toFixed(2)}`);
+      if (mv.pe50 && !nullish(mv.pe50[i])) peBits.push(`50 ${fmtPE('pe50')}`);
+      if (mv.pe300 && !nullish(mv.pe300[i])) peBits.push(`300 ${fmtPE('pe300')}/${(mv.pb300[i] || 0).toFixed(2)}`);
+      if (mv.pe500 && !nullish(mv.pe500[i])) peBits.push(`500 ${fmtPE('pe500')}`);
+      if (mv.pe1000 && !nullish(mv.pe1000[i])) peBits.push(`1000 ${fmtPE('pe1000')}`);
+      if (peBits.length)
+        h += `<br/><span style="color:#898781;font-size:11px">PE ${peBits.join(' · ')}</span>`;
       if (D.margin && !nullish(D.margin[i]))
         h += ` <span style="color:#898781;font-size:11px">· 两融 ${D.margin[i]}亿</span>`;
       if (D.etfSum && !nullish(D.etfSum[i]))
