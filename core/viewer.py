@@ -104,6 +104,33 @@ def _read_aux(dates):
             for i, c in enumerate(cols):
                 m = {r[0]: r[i + 1] for r in rows}
                 out["mval"][c] = [_j(m.get(d)) for d in dates]
+            # D1-15 I4: 水位分位(当前值在≤当日历史中的排名占比; 全史/近5年),
+            # bisect有序插入避免O(n²)逐日全窗比较; ≥60样本才输出
+            import bisect as _bi
+            import datetime as _dtx
+            try:
+                _cutoff5 = (_dtx.date.fromisoformat(dates[-1])
+                            - _dtx.timedelta(days=1826)).isoformat()
+            except (ValueError, IndexError):
+                _cutoff5 = None
+            for key in ("alla_pe", "alla_pb", "pe300"):
+                arr = out["mval"][key]
+                s_all, s_5y = [], []              # 有序历史
+                p_all, p_5y = [], []
+                for d, v in zip(dates, arr):
+                    if v is None:
+                        p_all.append(None)
+                        p_5y.append(None)
+                        continue
+                    _bi.insort(s_all, v)
+                    if _cutoff5 and d >= _cutoff5:
+                        _bi.insort(s_5y, v)
+                    p_all.append(round(_bi.bisect_right(s_all, v) / len(s_all), 3)
+                                 if len(s_all) >= 60 else None)
+                    p_5y.append(round(_bi.bisect_right(s_5y, v) / len(s_5y), 3)
+                                if len(s_5y) >= 60 else None)
+                out["mval"][key + "_pct"] = p_all
+                out["mval"][key + "_pct5"] = p_5y
         except Exception:  # noqa: BLE001
             out["mval"] = {}
     finally:
@@ -636,6 +663,17 @@ function render(i) {
   if (envBits.length || hasMargin || hasEtf) {   // D1-15r: 开合对称(估值缺失仅两融时div曾未开先闭)
     h += `<div class="kv" style="margin-top:8px">`;
     if (envBits.length) h += `PE(TTM整体法) ${envBits.join(' · ')}<br>`;
+    // D1-15 I4: 水位行(当前值在≤当日历史中的分位; ≥80%高估红/≤20%低估蓝)
+    const pctC = (p) => nullish(p) ? null :
+      `<b style="color:${p >= 0.8 ? C.red : p <= 0.2 ? C.blue : C.muted}">${Math.round(p * 100)}%</b>`;
+    const lv = [];
+    const pa = mv.alla_pe_pct && mv.alla_pe_pct[i], p5 = mv.alla_pe_pct5 && mv.alla_pe_pct5[i];
+    if (pa != null || p5 != null)
+      lv.push(`全A PE ${[pctC(pa), pctC(p5)].filter(Boolean).length ? `${pctC(pa) || '--'}(全史) · ${pctC(p5) || '--'}(近5年)` : '--'}`);
+    const ba = mv.alla_pb_pct && mv.alla_pb_pct[i], b5 = mv.alla_pb_pct5 && mv.alla_pb_pct5[i];
+    if (ba != null || b5 != null)
+      lv.push(`PB ${pctC(ba) || '--'}(全史) · ${pctC(b5) || '--'}(近5年)`);
+    if (lv.length) h += `水位 ${lv.join(' · ')}<br>`;
     if (hasMargin) h += `两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`;
     if (hasEtf) h += ` · 宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`;
     h += `</div>`;

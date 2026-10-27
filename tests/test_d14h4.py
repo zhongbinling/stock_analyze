@@ -136,7 +136,7 @@ def test_read_aux_mval_aligned(aux_db):
     assert r["mval"]["alla_pe"] == [None, 15.8]
     assert r["mval"]["pe300"] == [None, 13.9]
     assert r["mval"]["pb1000"] == [None, None]      # 未给值→None
-    assert len(r["mval"]) == 10
+    assert len(r["mval"]) == 16      # 10估值序列 + I4的6条水位序列
     # 其余三源不受影响
     assert r["val"]["000300.SH"]["pe"] == [13.8, 13.9]
 
@@ -168,3 +168,39 @@ def test_html_env_panel_wired():
     import re as _re
     blk = h[h.find("hasMargin"):h.find("hasMargin") + 500]
     assert "if (envBits.length || hasMargin || hasEtf)" in h
+
+
+def test_mval_percentile_series(aux_db):
+    """D1-15 I4: 水位分位 — 全史/近5年两口径, 含当日, 60样本门槛, bisect高效"""
+    c = sqlite3.connect(str(aux_db["path"]))
+    c.execute("""CREATE TABLE mkt_val_daily(date TEXT PRIMARY KEY, alla_pe REAL,
+      alla_pb REAL, pe50 REAL, pb50 REAL, pe300 REAL, pb300 REAL, pe500 REAL,
+      pb500 REAL, pe1000 REAL, pb1000 REAL)""")
+    # 60日alla_pe 1..60 → 每日分位=当日值排名/累计数 → 最后一日=100%
+    import datetime as dt
+    d0 = dt.date(2025, 8, 1)
+    for k in range(1, 61):
+        d = (d0 + dt.timedelta(days=k)).isoformat()
+        c.execute("INSERT INTO mkt_val_daily(date,alla_pe,alla_pb,pe300) VALUES(?,?,?,?)",
+                  (d, float(k), float(100 - k), 10.0))
+    c.commit()
+    c.close()
+    VW = aux_db["VW"]
+    dates = [(d0 + dt.timedelta(days=k)).isoformat() for k in range(1, 61)]
+    r = VW._read_aux(dates)
+    pct = r["mval"]["alla_pe_pct"]
+    assert pct[0] is None                          # 样本1 < 60
+    assert pct[-1] == 1.0                          # 值60在60个历史中最高 → 100%
+    assert r["mval"]["alla_pe_pct5"][-1] == 1.0    # 近5年窗口同样
+    # PB反向: 值递减 → 最后一日应为最低分位
+    assert r["mval"]["alla_pb_pct"][-1] < 0.1
+    assert r["mval"]["pe300_pct"][-1] == 1.0      # pe300恒定10.0 → 所有历史≤当日 → 100%
+
+
+def test_html_level_line_wired():
+    """D1-15 I4: 面板水位行接线与色彩阈值"""
+    import viewer as VW
+    h = VW.HTML
+    assert "水位" in h and "alla_pe_pct" in h and "alla_pb_pct" in h
+    assert "p >= 0.8" in h and "p <= 0.2" in h     # 高估红/低估蓝阈值
+    assert "(全史)" in h and "(近5年)" in h
