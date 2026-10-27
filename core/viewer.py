@@ -621,6 +621,23 @@ function render(i) {
           <td style="color:${nullish(r.c) ? C.muted : (r.c >= 0 ? C.red : C.blue)}">${fmtv(r.c, true)}</td></tr>`;
   });
   h += `</table>`;
+  // D1-15 I3: 市场环境区块 — 镜像悬停框数据(估值/两融/ETF), 缺失段自动隐藏
+  const mv = D.mval || {};
+  const fmtP1 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(1);
+  const fmtP2 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(2);
+  const envBits = [];
+  if (fmtP1(mv.alla_pe)) envBits.push(`全A <b>${fmtP1(mv.alla_pe)}</b>/${fmtP2(mv.alla_pb) || '--'}`);
+  if (fmtP1(mv.pe50)) envBits.push(`50 <b>${fmtP1(mv.pe50)}</b>`);
+  if (fmtP1(mv.pe300)) envBits.push(`300 <b>${fmtP1(mv.pe300)}</b>/${fmtP2(mv.pb300) || '--'}`);
+  if (fmtP1(mv.pe500)) envBits.push(`500 <b>${fmtP1(mv.pe500)}</b>`);
+  if (fmtP1(mv.pe1000)) envBits.push(`1000 <b>${fmtP1(mv.pe1000)}</b>`);
+  if (envBits.length)
+    h += `<div class="kv" style="margin-top:8px">PE(TTM整体法) ${envBits.join(' · ')}<br>`;
+  if (D.margin && !nullish(D.margin[i]))
+    h += `两融余额 <b>${D.margin[i].toFixed(0)}</b> 亿`;
+  if (D.etfSum && !nullish(D.etfSum[i]))
+    h += ` · 宽基ETF <b>${D.etfSum[i].toFixed(0)}</b> 亿`;
+  if (envBits.length || (D.margin && !nullish(D.margin[i]))) h += `</div>`;
   if (nullish(s)) h += `<p class="hint">该日评分窗口数据不足(池数据2025-10起)。</p>`;
   document.getElementById("panel").innerHTML = h;
 }

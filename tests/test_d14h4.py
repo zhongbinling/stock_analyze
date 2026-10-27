@@ -155,3 +155,12 @@ def test_html_mval_tooltip_wired():
     h = VW.HTML
     assert "D.mval" in h and "alla_pe" in h and "pe1000" in h
     assert "PE ${peBits.join" in h
+
+
+def test_html_env_panel_wired():
+    """D1-15 I3: 右侧详情面板「市场环境」区块接线(估值/两融/ETF镜像)"""
+    import viewer as VW
+    h = VW.HTML
+    assert "市场环境" in h or "PE(TTM整体法)" in h      # 区块标题/标识
+    assert "envBits" in h and "两融余额" in h
+    assert h.count("D.mval") >= 2                        # 悬停框+面板两处消费
