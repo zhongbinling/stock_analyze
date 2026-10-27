@@ -414,21 +414,34 @@ $('btnCheck').onclick = async () => {
     $('chkPanel').style.display = '';
     const fa = $('btnFixAll');
     if (fa) fa.onclick = () => runRepair(win);
-    const fg = $('btnFixAllGap');
+        const fg = $('btnFixAllGap');
     if (fg) fg.onclick = async () => {          // D1-13①: 按体检结果逐项修复, 队列串行
       if (bfRunning) { $('chkMsg').textContent = '队列忙, 稍后再试'; return; }
-      const targets = [...new Set(miss.map(a => SCAN_DS[a.code]).filter(Boolean))];
+      // D1-13r2: 短路 — 今日(未收盘/未出数)不算缺口, 由收尾更新链补;
+      // 定向补全带窗口start(最早缺口-7天), 不再全史幂等扫描空跑
+      const today = new Date().toISOString().slice(0, 10);
+      const realMiss = miss.map(a => ({...a, missing: a.missing.filter(d => d < today)}))
+        .filter(a => a.missing.length);
+      const targets = [...new Set(realMiss.map(a => SCAN_DS[a.code]).filter(Boolean))];
+      const startOf = (ds) => {
+        const days = realMiss.filter(a => SCAN_DS[a.code] === ds)
+          .flatMap(a => a.missing).sort()[0];
+        if (!days) return '';
+        return new Date(Date.parse(days) - 7 * 864e5).toISOString().slice(0, 10).replace(/-/g, '');
+      };
       fg.disabled = true; fg.textContent = '⏳ 入队中…';
       try {
         // D1-13r: 定向补全逐项入队但跳过逐项重算(norecalc) — N项补全只由
         // 收尾更新链统一重算一次, 否则backfill_recalc开关会触发N次评分重算
         for (const ds of targets)
           await api('/admin/api/backfill/run', {method: 'POST',
-            body: JSON.stringify({dataset: ds, norecalc: true})});
+            body: JSON.stringify({dataset: ds, norecalc: true, start: startOf(ds)})});
         await api('/admin/api/repair', {method: 'POST', body: JSON.stringify({window: win})});
         bfRunning = true;                       // 立即生效防双击重复入队(同bfRun)
         pendingRecheck = true;
-        $('chkMsg').textContent = `已入队: ${targets.length} 项定向补全 + 更新链(收尾统一重算), 队列清空后自动复检`;
+        $('chkMsg').textContent = targets.length
+          ? `已入队: ${targets.length} 项定向补全(窗口化) + 更新链(收尾统一重算), 队列清空后自动复检`
+          : '缺口仅为今日(未出数) — 已入队更新链, 队列清空后自动复检';
         $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
         poll(true);
       } catch (e) { $('chkMsg').textContent = '入队失败: ' + e.message; }

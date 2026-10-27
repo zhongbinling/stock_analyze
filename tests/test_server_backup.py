@@ -204,6 +204,8 @@ def test_data_html_unified_assets_and_checkup():
     # D1-13: 修复全部缺口(闭环复检) / 最早列 / 补全语义悬停 / 非时序分组 / 补全记录卡
     assert 'id="btnFixAllGap"' in html and "pendingRecheck" in html
     assert "norecalc: true" in html             # D1-13r: 批处理补全跳过逐项重算
+    # D1-13r2: 空跑短路 — 今日不算缺口 + 定向补全窗口化start
+    assert "realMiss" in html and "d < today" in html and "startOf" in html
     assert "<th>最早</th>" in html and "已有日跳过" in html and "自2005起" in html
     assert 'id="regTable"' in html and "NON_TS" in html and "基础与映射" in html
     assert "<h2>补全记录</h2>" in html and "<h2>数据补全</h2>" not in html
