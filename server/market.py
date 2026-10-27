@@ -276,7 +276,6 @@ def scan_gaps(window_days: int = 7) -> dict:
         return {"window_days": window_days, "trading_days": 0, "assets": []}
     today = _today()
     pos = {d: i for i, d in enumerate(base)}
-    base_set = set(base)
     con = _conn()
     assets = []
     try:

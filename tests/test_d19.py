@@ -100,3 +100,13 @@ def test_datasets_notes_enriched(m19):
     assert "未映射1" in ds["sw1"]["note"]             # BK0002 sw1_name=NULL
     assert "未映射" not in ds["sw2"]["note"]          # 全命中不添噪
     assert "止于2026-10-19" in ds["sw3"]["note"] and "官方源停更" in ds["sw3"]["note"]
+
+
+def test_data_page_renders_new_semantics(server_app):
+    """D1-19r: /admin/data 真渲染(此前仅直读文件, Jinja错误漏网);
+    新语义标记随页面送达"""
+    r = server_app["client"].get("/admin/data")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    for marker in ("刷新时间", "待出数", "源端延迟", "真缺口", "写${(L.days"):
+        assert marker in body, f"页面缺新语义标记: {marker}"
