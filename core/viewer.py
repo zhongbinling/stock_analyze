@@ -665,8 +665,6 @@ function render(i) {
   h += `</table>`;
   // D1-15 I3: 市场环境区块 — 镜像悬停框数据(估值/两融/ETF), 缺失段自动隐藏
   const mv = D.mval || {};
-  const fmtP1 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(1);
-  const fmtP2 = (a) => nullish(a && a[i]) ? null : a[i].toFixed(2);
   const envBits = [mv.alla_pe, mv.pe50, mv.pe300, mv.pe500, mv.pe1000]
     .filter(a => !nullish(a && a[i]));   // D1-16: 表格化后仅存在性判定
   const hasMargin = D.margin && !nullish(D.margin[i]);
