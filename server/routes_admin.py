@@ -192,9 +192,9 @@ def api_rt_settings():
     d = request.get_json(force=True, silent=True) or {}
     if "enabled" not in d:
         return jsonify({"msg": "缺少 enabled"}), 400
-    with_liv = "开" if d["enabled"] else "关"
     jobs.set_setting("rt_enabled", "1" if d["enabled"] else "0")
-    return jsonify({"ok": True, "msg": f"实时采集已{with_liv}(交易时段生效)"})
+    return jsonify({"ok": True,
+                    "msg": f"实时采集已{'开' if d['enabled'] else '关'}(交易时段生效)"})
 
 
 @bp_admin.get("/generate")

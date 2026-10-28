@@ -113,16 +113,6 @@ async function api(url) {
   return j;
 }
 
-async function load() {
-  try {
-    const data = viewDate ? await api('/admin/api/rt/day?date=' + viewDate)
-                          : await api('/admin/api/rt/latest');
-    $('bannerReplay').style.display = viewDate ? '' : 'none';
-    if (!viewDate && data.enabled != null) $('rtEnabled').checked = !!data.enabled;
-    render(data);
-  } catch (e) { $('rtSummary').textContent = e.message; }
-}
-
 async function loadDays() {
   try {
     const d = await api('/admin/api/rt/days');
@@ -149,11 +139,29 @@ $('rtEnabled').onchange = async () => {
 window.addEventListener('resize', () =>
   Object.values(charts).forEach(c => c && c.resize()));
 
-load(); loadDays();
-let timer = setInterval(load, 30000);
-document.addEventListener('visibilitychange', () => {           // 页面可见时加速
-  clearInterval(timer);
-  timer = setInterval(load, document.hidden ? 60000 : 30000);
-});
+// 主题切换(theme.js只改data-theme不重载) → dispose重建, 否则暗色下轴/字不可读
+new MutationObserver(() => {
+  Object.values(charts).forEach(c => c && c.dispose());
+  charts.main = charts.score = charts.etf = null;
+  load();
+}).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+
+loadDays();
+// 刷新节奏自适应: 盘中live 10s / 平时30s / 页面隐藏60s — 每次load后按
+// 返回的 live 态重排下一轮(回看模式固定30s)
+let timer = null, lastLive = false;
+const schedule = (ms) => { clearTimeout(timer); timer = setTimeout(load, ms); };
+async function load() {
+  try {
+    const data = viewDate ? await api('/admin/api/rt/day?date=' + viewDate)
+                          : await api('/admin/api/rt/latest');
+    $('bannerReplay').style.display = viewDate ? '' : 'none';
+    if (!viewDate && data.enabled != null) $('rtEnabled').checked = !!data.enabled;
+    render(data);
+    lastLive = !!data.live;
+  } catch (e) { $('rtSummary').textContent = e.message; }
+  schedule(document.hidden ? 60000 : (!viewDate && lastLive ? 10000 : 30000));
+}
+load();
 </script>
 {% endblock %}

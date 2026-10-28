@@ -134,6 +134,9 @@ def test_realtime_page_renders(server_app):
     for marker in ("实时行情", "chartMain", "chartScore", "chartEtf",
                    "echarts.min.js", "rtEnabled", "回看模式"):
         assert marker in body, f"页面缺标记: {marker}"
+    # R3r: 主题切换图表重建(theme.js只改data-theme不重载) + live自适应刷新
+    assert "MutationObserver" in body and "data-theme" in body
+    assert "lastLive ? 10000 : 30000" in body and "60000" in body
 
 
 def test_realtime_html_js_syntax():
