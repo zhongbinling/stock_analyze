@@ -197,6 +197,64 @@ def api_rt_settings():
                     "msg": f"实时采集已{'开' if d['enabled'] else '关'}(交易时段生效)"})
 
 
+# ── D1-18 M1/M2: 宏观舆情事件库页与API ──
+
+@bp_admin.get("/macro")
+@require_level(7)
+def macro_page():
+    from server import macro
+    return render_template("admin/macro.html", levels=macro.LEVELS)
+
+
+@bp_admin.get("/api/macro/events")
+@require_level(7)
+def api_macro_events():
+    from server import macro
+    evs = macro.list_events(
+        level=request.args.get("level", "").strip() or None,
+        d_from=request.args.get("from", "").strip() or None,
+        d_to=request.args.get("to", "").strip() or None,
+        type_=request.args.get("type", "").strip() or None,
+        q=request.args.get("q", "").strip() or None)
+    return jsonify({"events": evs, "stats": macro.stats()})
+
+
+@bp_admin.post("/api/macro/events")
+@require_level(7)
+def api_macro_add():
+    from server import macro
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        eid = macro.add_event(d)
+    except ValueError as e:
+        return jsonify({"msg": str(e)}), 400
+    return jsonify({"ok": True, "id": eid, "msg": "已新增"})
+
+
+@bp_admin.delete("/api/macro/events/<int:eid>")
+@require_level(7)
+def api_macro_del(eid):
+    from server import macro
+    if not macro.delete_event(eid):
+        return jsonify({"msg": f"id {eid} 不存在"}), 404
+    return jsonify({"ok": True, "msg": "已删除"})
+
+
+@bp_admin.post("/api/macro/import")
+@require_level(7)
+def api_macro_import():
+    """D1-18 补充需求③: 外部工具/第三方数据批量导入通道"""
+    from server import macro
+    d = request.get_json(force=True, silent=True) or {}
+    events = d.get("events")
+    if events is None:
+        return jsonify({"msg": "缺少 events 数组"}), 400
+    r = macro.import_events(events)
+    return jsonify({**r, "ok": not r["errors"] or r["inserted"] > 0,
+                    "msg": f"新增 {r['inserted']} · 跳过重复 {r['skipped']}"
+                           + (f" · 错误 {len(r['errors'])} 条" if r["errors"] else "")})
+
+
 @bp_admin.get("/generate")
 @require_level(7)
 def generate_page():
@@ -321,13 +379,14 @@ _BACKUP_TYPES = ("manual", "daily", "weekly")
 # D1-11 C1: 数据块口径(展示层) 与 类型徽章
 BACKUP_BLOCKS = {"sentiment": "基础+评分", "raw_daily": "基础",
                  "realtime": "实时行情",        # D1-17 R3: 归基础块
+                 "macro": "宏观事件",           # D1-18 M1: 归基础块
                  "app": "账号", "secret": "配置", "token": "配置",
                  "cfg_core": "配置", "cfg_server": "配置"}
 TYPE_LABELS = {"daily": "日备", "weekly": "周备", "manual": "手动",
                "pre-calc": "计算前", "pre-backfill": "回填前",
                "pre-restore": "恢复前", "pre": "保护"}
 # D1-11 C3: 备份范围块白名单(API只收块名, 不收任意资产名)
-BLOCK_ASSETS = {"base": ("sentiment", "raw_daily", "realtime"),
+BLOCK_ASSETS = {"base": ("sentiment", "raw_daily", "realtime", "macro"),
                 "account": ("app", "secret", "token", "cfg_core", "cfg_server")}
 
 

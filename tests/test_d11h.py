@@ -96,6 +96,11 @@ def test_scan_gaps_flags_thin_coverage(tmp_path, monkeypatch):
     cfgcore.mkdir()
     shutil.copy(CORE / "config.yaml", cfgcore / "config.yaml")
     monkeypatch.setattr(M, "CORE", cfgcore)
+    # 2026-10-29起近9自然日窗口已不含10-19 → 固定交易日基线与今日,
+    # 与真实日期解耦(同 test_d110 模式)
+    monkeypatch.setattr(M, "_trading_days_since",
+                        lambda w: ["2026-10-16", "2026-10-19", "2026-10-20"])
+    monkeypatch.setattr(M, "_today", lambda: "2026-10-21")
     r = M.scan_gaps(9)
     by = {a["code"]: a["missing"] for a in r["assets"]}
     assert by["sector_daily"] == ["2026-10-19", "2026-10-20"]   # 半截30行+无行都算缺

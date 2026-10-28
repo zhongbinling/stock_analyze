@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}宏观策略 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>宏观舆情事件库 <span class="hint" id="mStats">加载中…</span></h2>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
+    {% for lv, (name, desc) in levels.items() | reverse %}
+    <span class="hint" style="padding:2px 8px;border:1px solid var(--line,#ddd);border-radius:6px">
+      <b>{{ name }}</b> {{ desc }} · <span id="cnt{{ lv }}">--</span>条
+    </span>
+    {% endfor %}
+  </div>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
+    <select class="input" id="fLevel" style="width:110px">
+      <option value="">全部等级</option>
+      {% for lv, (name, desc) in levels.items() | reverse %}
+      <option value="{{ lv }}">{{ name }}</option>
+      {% endfor %}
+    </select>
+    <span>日期 <input class="input" type="date" id="fFrom" style="width:140px"> ~
+      <input class="input" type="date" id="fTo" style="width:140px"></span>
+    <input class="input" id="fType" placeholder="类型(政策/货币/产业…)" style="width:150px">
+    <input class="input" id="fQ" placeholder="关键词(标题/内容)" style="width:170px">
+    <button class="btn primary" id="btnSearch">检索</button>
+    <button class="btn" id="btnReset">重置</button>
+  </div>
+  <table class="table" id="mTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card">
+  <h2>手工新增</h2>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
+    <input class="input" type="date" id="nDate" style="width:140px">
+    <select class="input" id="nLevel" style="width:110px">
+      {% for lv, (name, desc) in levels.items() | reverse %}
+      <option value="{{ lv }}" {% if lv == 3 %}selected{% endif %}>{{ name }}</option>
+      {% endfor %}
+    </select>
+    <input class="input" id="nTitle" placeholder="标题(必填)" style="width:280px">
+    <input class="input" id="nType" placeholder="类型" style="width:110px">
+    <input class="input" id="nSource" placeholder="来源" style="width:110px">
+  </div>
+  <div class="row-flex" style="margin-top:6px">
+    <textarea class="input" id="nContent" placeholder="内容摘要" style="width:100%;height:52px"></textarea>
+  </div>
+  <div class="row-flex" style="margin-top:6px">
+    <button class="btn primary" id="btnAdd">新增事件</button>
+    <span class="hint" id="addMsg"></span>
+  </div>
+</section>
+
+<section class="card">
+  <h2>批量导入(外部工具/第三方数据通道)</h2>
+  <p class="hint">JSON数组, 字段: date(YYYY-MM-DD)/title/level(1-5)/type/source/content;
+    按(标题+日期)自动去重, 非法条目跳过并报告。示例:
+    <code>[{"date":"2026-10-29","title":"例","level":3,"type":"政策"}]</code></p>
+  <textarea class="input" id="impText" style="width:100%;height:90px;font-family:monospace"></textarea>
+  <div class="row-flex" style="margin-top:6px">
+    <button class="btn primary" id="btnImport">导入</button>
+    <span class="hint" id="impMsg"></span>
+  </div>
+</section>
+
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const LV_CLS = {5: 'bad', 4: 'bad', 3: '', 2: 'hint', 1: 'hint'};
+const LV_NAME = {5: 'L5·股灾级', 4: 'L4·重大级', 3: 'L3·重要级', 2: 'L2·关注级', 1: 'L1·普通级'};
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})}));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+
+async function load() {
+  const p = new URLSearchParams();
+  if ($('fLevel').value) p.set('level', $('fLevel').value);
+  if ($('fFrom').value) p.set('from', $('fFrom').value);
+  if ($('fTo').value) p.set('to', $('fTo').value);
+  if ($('fType').value.trim()) p.set('type', $('fType').value.trim());
+  if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  try {
+    const d = await api('/admin/api/macro/events?' + p.toString());
+    $('mStats').textContent = `共 ${d.stats.total} 条 · 本次 ${d.events.length} 条`;
+    for (const lv of [5, 4, 3, 2, 1])
+      $('cnt' + lv).textContent = d.stats.by_level[lv] || 0;
+    $('mTable').innerHTML = '<tr><th>日期</th><th>等级</th><th>标题</th><th>类型</th><th>来源</th><th>内容</th><th></th></tr>'
+      + (d.events.length ? d.events.map(e => `<tr>
+        <td class="hint">${esc(e.date)}</td>
+        <td class="${LV_CLS[e.level] || ''}">${esc(LV_NAME[e.level] || e.level)}</td>
+        <td><b>${esc(e.title)}</b></td>
+        <td class="hint">${esc(e.type || '--')}</td>
+        <td class="hint">${esc(e.source || '--')}</td>
+        <td class="hint" style="max-width:420px">${esc(e.content || '')}</td>
+        <td><button class="btn small" data-del="${e.id}">删除</button></td></tr>`).join('')
+        : '<tr><td colspan="7" class="hint">无匹配事件</td></tr>');
+    document.querySelectorAll('#mTable [data-del]').forEach(b =>
+      b.onclick = async () => {
+        if (!confirm('删除该事件?')) return;
+        try { await api('/admin/api/macro/events/' + b.dataset.del, {method: 'DELETE'}); load(); }
+        catch (e) { alert(e.message); }
+      });
+  } catch (e) { $('mStats').textContent = e.message; }
+}
+
+$('btnSearch').onclick = load;
+$('btnReset').onclick = () => {
+  ['fLevel', 'fFrom', 'fTo'].forEach(i => $(i).value = '');
+  ['fType', 'fQ'].forEach(i => $(i).value = '');
+  load();
+};
+$('btnAdd').onclick = async () => {
+  $('addMsg').textContent = '';
+  try {
+    const r = await api('/admin/api/macro/events', {method: 'POST', body: JSON.stringify({
+      date: $('nDate').value, title: $('nTitle').value, level: parseInt($('nLevel').value),
+      type: $('nType').value, source: $('nSource').value, content: $('nContent').value})});
+    $('addMsg').textContent = r.msg;
+    $('nTitle').value = ''; $('nContent').value = '';
+    load();
+  } catch (e) { $('addMsg').textContent = e.message; }
+};
+$('btnImport').onclick = async () => {
+  $('impMsg').textContent = '';
+  let events;
+  try { events = JSON.parse($('impText').value); }
+  catch (e) { $('impMsg').textContent = 'JSON 解析失败: ' + e.message; return; }
+  try {
+    const r = await api('/admin/api/macro/import', {method: 'POST',
+      body: JSON.stringify({events})});
+    $('impMsg').textContent = r.msg;
+    load();
+  } catch (e) { $('impMsg').textContent = e.message; }
+};
+
+load();
+</script>
+{% endblock %}

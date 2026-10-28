@@ -39,6 +39,8 @@ ASSETS = {
     "raw_daily": ("sqlite", BASE / "data" / "raw_daily.db"),
     # D1-17 R3: 实时行情独立库(缺失优雅跳过 — 首次采集前不存在)
     "realtime": ("sqlite", BASE / "data" / "realtime.db"),
+    # D1-18 M1: 宏观舆情独立库(缺失优雅跳过 — 首次访问自动建库播种)
+    "macro": ("sqlite", BASE / "data" / "macro.db"),
     "app": ("sqlite", ROOT / "data" / "app.db"),
     "secret": ("file", ROOT / "data" / "secret.key"),
     "token": ("file", BASE / "data" / "tushare_token.txt"),
