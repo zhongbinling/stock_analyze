@@ -66,7 +66,7 @@ const CSRF = document.querySelector('meta[name="csrf-token"]').content;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const LV_CLS = {5: 'bad', 4: 'bad', 3: '', 2: 'hint', 1: 'hint'};
-const LV_NAME = {5: 'L5·股灾级', 4: 'L4·重大级', 3: 'L3·重要级', 2: 'L2·关注级', 1: 'L1·普通级'};
+const LV_NAME = {{ lv_json }};   // 服务端单点注入(macro.LEVELS), 防口径漂移
 
 async function api(url, opts = {}) {
   const r = await fetch(url, Object.assign({}, opts, {

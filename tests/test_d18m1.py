@@ -117,9 +117,12 @@ def test_macro_html_js_syntax():
     html = (REPO / "server" / "templates" / "admin" / "macro.html").read_text(encoding="utf-8")
     m = re.search(r"<script>([\s\S]*?)</script>", html)
     assert m, "缺 script 块"
-    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", m.group(1)],
+    # Jinja表达式({{ lv_json }})替换为占位再解析 — 模板内嵌属预期
+    js = re.sub(r"\{\{.*?\}\}", "null", m.group(1))
+    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", js],
                        capture_output=True, text=True, timeout=60)
-    assert r.returncode == 0, f"JS 语法错误: {r.stderr[:400]}"
+    assert r.returncode == 0, f"JS 语法错误: {(r.stderr or '')[:400]}"
+    assert "{{ lv_json }}" in html        # M1r: 等级名单点注入
 
 
 def test_macro_registered_in_backup():

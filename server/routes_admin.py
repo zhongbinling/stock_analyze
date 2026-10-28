@@ -203,7 +203,11 @@ def api_rt_settings():
 @require_level(7)
 def macro_page():
     from server import macro
-    return render_template("admin/macro.html", levels=macro.LEVELS)
+    # M1r: 等级名单点维护 — 前端标签经 tojson 注入, 不在JS里二次硬编码
+    return render_template("admin/macro.html", levels=macro.LEVELS,
+                           lv_json=json.dumps(
+                               {str(lv): name for lv, (name, _d) in macro.LEVELS.items()},
+                               ensure_ascii=False))
 
 
 @bp_admin.get("/api/macro/events")
