@@ -37,7 +37,9 @@ def parse_qt(text: str) -> dict:
 
 
 def parse_sina(text: str) -> dict:
-    """新浪 hq: var hq_str_sh000001="名称,今开,昨收,现价,最高,最低,...,日期,时间,00";"""
+    """新浪 hq: var hq_str_sh000001="名称,今开,昨收,现价,最高,最低,...,日期,时间,00";
+    注: 尾部日期/时间字段为**个股**口径, 指数报文错位(实测date取到时刻) —
+    新浪未选型, 本函数仅作可用性/延迟探测的价格字段校验。"""
     m = re.search(r'hq_str_(\w+)="([^"]*)"', text)
     if not m:
         return {}
