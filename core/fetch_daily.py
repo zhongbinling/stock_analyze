@@ -750,14 +750,16 @@ def run_backfill(dataset, start=None) -> dict:
                 delta = n - pre[(t, c, dcol)].get(d, 0)
                 if delta > 0:
                     per_day[d] = per_day.get(d, 0) + delta
-        # D1-19 P4b: 扫描日数 = [start, 数据末日]内交易日(回补实际走过的窗口,
-        # 与"新增日"分离 — 幂等空跑不再被误读为补了全史)
+        # D1-19 P4b: 扫描日数 = [start, min(数据末日, 今天)]内交易日(回补实际
+        # 走过的窗口, 与"新增日"分离 — 幂等空跑不再被误读为补了全史;
+        # today上限: calendar类target数据末日是2027(未来日历日不计入扫描)
         scanned = 0
         if horizon:
             try:
+                cap = min(horizon, time.strftime("%Y-%m-%d"))
                 tds = trading_dates(conn, load_cfg()["index"]["primary"],
                                     start=iso_start)
-                scanned = sum(1 for d in tds if d <= horizon)
+                scanned = sum(1 for d in tds if d <= cap)
             except Exception:  # noqa: BLE001
                 scanned = 0
     finally:

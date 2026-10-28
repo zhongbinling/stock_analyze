@@ -184,6 +184,22 @@ def test_scanned_counts_trading_days(bf2, monkeypatch):
     assert r["scanned"] == 2                   # 09-24/09-25(末日=数据末日, 尾部无数据日不计)
 
 
+def test_scanned_capped_at_today(bf2, monkeypatch):
+    """P4r: calendar类target数据末日在未来(2027) — 未来日历日不计入扫描"""
+    def writer(start):
+        conn = bf2.connect()
+        for d in ("2026-09-24", "2026-09-25", "2026-09-28", "2027-01-01"):
+            conn.execute("INSERT INTO calendar VALUES(?,1)", (d.replace("-", ""),))
+        conn.commit()
+        conn.close()
+    monkeypatch.setitem(bf2.BACKFILLS, "_c",
+                        ("测试", [("calendar", None, "cal_date")],
+                         writer, "20260901"))
+    r = bf2.run_backfill("_c", "20260901")
+    assert len(r["days"]) == 4                               # 新增照计(含未来日历行)
+    assert r["scanned"] == 3                # horizon=2027被today截断, 未来日不计(旧口径=4)
+
+
 # ── P4 落库与展示 ──
 
 def test_task_backfill_stores_scanned(server_app, monkeypatch):

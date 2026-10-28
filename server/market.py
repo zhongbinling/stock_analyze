@@ -369,7 +369,9 @@ def _covered_dates_etf(con, qtable, dcol, cond) -> set:
     水位锚)。阈值 = ceil(60%·分母) 且 ≥1 — 8只全上市时与旧口径一致(≥5行),
     早期1~4只时代按当时规模判; 后续真半截日(如8只时代仅4只有行)仍被抓。
     不用"各code库内首日"做上市锚: 当日缺行的code若全表无行, 分母会随
-    损坏同步缩水(循环依赖), 运行最大值无此问题。"""
+    损坏同步缩水(循环依赖), 运行最大值无此问题。
+    已知局限: 若未来某ETF真退市(成员永久减少), 水位不回落会持续判瘦 —
+    国家队8只口径不适用, 出现时再议(可改分段水位)。"""
     import math
     stats = con.execute(
         f"SELECT {dcol}, COUNT(*) FROM {qtable}{cond} GROUP BY {dcol}").fetchall()

@@ -37,7 +37,9 @@ pip install -r requirements.txt        # 根级全量依赖(Web服务+评分引�
 # 服务管理(三平台一致): scripts\service.bat start|stop|status|restart  (sh版同理)
 
 # 或直接运行(依赖已装时): python -m server  → http://127.0.0.1:8501
-#   数据库迁移(首次或升级后): python -m flask --app "server:create_app()" db upgrade
+#   数据库迁移(首次或升级后, 先迁移再重启服务): SA_NO_JOBS=1 python -m flask --app "server:create_app()" db upgrade
+#     (Windows CMD: set SA_NO_JOBS=1 && python -m flask ... — 先迁移再重启:
+#      新ORM列在旧库上会让启动时的任务恢复查询直接报缺列)
 #   首次使用先建超管: python -m server.bootstrap --username admin (交互输入密码)
 
 # 评分引擎命令行(core/)
