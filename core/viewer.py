@@ -153,6 +153,26 @@ def _read_aux(dates):
     return out
 
 
+# D1-18 M3: 宏观事件读取 — macro.db(独立库) → 情绪图标注序列
+def _read_events() -> list:
+    """全量事件(按日期升序), 日期吸附最近交易日由前端做。
+    macro.db 缺失/未建 → 空列表(标注面板自动隐藏), 不拖累视图生成。"""
+    import sqlite3
+    p = BASE / "data" / "macro.db"
+    if not p.exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT date, level, title, type, source, content FROM macro_events "
+            "ORDER BY date, id").fetchall()
+        con.close()
+    except sqlite3.Error:
+        return []
+    return [{"date": r[0], "level": r[1], "title": r[2], "type": r[3],
+             "source": r[4], "content": r[5]} for r in rows]
+
+
 def build_payload(cfg, years=None):
     df, comp, score_df = compute(cfg)
     n = len(df)
@@ -205,6 +225,8 @@ def build_payload(cfg, years=None):
     # D1-14 H4: 估值/两融/ETF 副图(表缺失→空, 副图自动隐藏)
     aux = _read_aux(payload["dates"])
     payload.update(aux)
+    # D1-18 M3: 事件标注(macro.db 独立库, 缺失→空)
+    payload["events"] = _read_events()
     return payload
 
 
@@ -337,6 +359,12 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" id="ckEtf" checked> 宽基ETF成交额</label>
   <label><input type="checkbox" id="ckPEPct" checked> 全A PE分位</label>
   <label><input type="checkbox" id="ckPBPct" checked> 全A PB分位</label>
+  <span style="margin-left:10px">事件标注:</span>
+  <label><input type="checkbox" class="ckEvt" value="5" checked> L5</label>
+  <label><input type="checkbox" class="ckEvt" value="4" checked> L4</label>
+  <label><input type="checkbox" class="ckEvt" value="3" checked> L3</label>
+  <label><input type="checkbox" class="ckEvt" value="2"> L2</label>
+  <label><input type="checkbox" class="ckEvt" value="1"> L1</label>
 </div>
 <footer>
   鼠标在图上移动查看当日构成 · 滚轮缩放 · 底部滑块选区间 ·
@@ -439,6 +467,13 @@ const baseOption = {
       if (pbA) lvBits.push(`PB ${pbA}` + (pb5 ? `/${pb5}` : ''));
       if (lvBits.length)
         h += `<br/><span style="color:#898781;font-size:11px">全A水位·全史/近5年 ${lvBits.join(' · ')}</span>`;
+      // D1-18 M3: 事件标注详情(轴悬停覆盖标记日时)
+      for (const p of ps.filter(x => x.seriesId === 'evIdx' || x.seriesId === 'evScore')) {
+        const e = p.data && p.data.evt;
+        if (!e) continue;
+        h += `<br/><span style="color:${EV_COLORS[e.level] || '#555'}">◆ L${e.level}${e.type ? '·' + escE(e.type) : ''} ${escE(e.title)}</span>`;
+        if (e.content) h += `<br/><span style="color:#898781;font-size:11px">${escE(e.content).slice(0, 90)}</span>`;
+      }
       return h;
     },
   },
@@ -501,6 +536,17 @@ const baseOption = {
     return els;
   })(),
 };
+
+// D1-18 M3: 事件标记双grid(上证收盘/情绪分), 无事件零series
+if (D.evIdx.length) {
+  baseOption.series.push(
+    {id: 'evIdx', name: '事件', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+     data: evSeriesData('idx'), symbol: 'diamond', z: 5,
+     symbolSize: (v) => 6 + (v[2] || 1) * 1.6, label: {show: false}},
+    {id: 'evScore', name: '事件', type: 'scatter', xAxisIndex: 2, yAxisIndex: 2,
+     data: evSeriesData('score'), symbol: 'diamond', z: 5,
+     symbolSize: (v) => 6 + (v[2] || 1) * 1.6, label: {show: false}});
+}
 
 // ---- D1-14 H4: 分析副图(估值PE/PB·两融余额·宽基ETF) — 可折叠+开关记忆 ----
 const P_COLORS = ['#2f5cd6', '#e34448', '#1baf7a', '#eda100', '#8e44ad', '#0f9bd7', '#7f8c8d'];
@@ -743,6 +789,22 @@ function render(i) {
       h += `<div class="kv" style="margin-top:4px">${footBits.join(' · ')}</div>`;
   }
   if (nullish(s)) h += `<p class="hint">该日评分窗口数据不足(池数据2025-10起)。</p>`;
+  // D1-18 M3: 当前时间区事件(可见缩放窗内·勾选等级, 日期倒序, 至多12条)
+  if (D.evIdx && D.evIdx.length) {
+    let z = null;
+    try { const cur = chart.getOption();
+      if (cur && cur.dataZoom && cur.dataZoom[0] && cur.dataZoom[0].start != null) z = cur.dataZoom[0];
+    } catch (e) {}
+    const lo = z ? Math.max(0, Math.floor(z.start / 100 * D.n)) : 0;
+    const hi = z ? Math.min(D.n - 1, Math.ceil(z.end / 100 * D.n)) : D.n - 1;
+    const vis = D.evIdx.filter(o => o.i >= lo && o.i <= hi && D.evOn[o.e.level])
+      .slice(-12).reverse();
+    if (vis.length)
+      h += `<table style="margin-top:8px"><tr><th>时间区事件</th><th>等级</th><th>标题</th></tr>`
+        + vis.map(o => `<tr><td class="hint">${o.e.date.slice(5)}</td>
+            <td><b style="color:${EV_COLORS[o.e.level] || '#555'}">L${o.e.level}</b></td>
+            <td>${escE(o.e.title)}</td></tr>`).join('') + `</table>`;
+  }
   document.getElementById("panel").innerHTML = h;
 }
 
@@ -768,6 +830,38 @@ function setZoom(days) {
 }
 
 // S2.2-A: 底部面板可选(checkbox) — D1-14 H4: 显隐并入render统一重排
+// ---- D1-18 M3: 宏观事件标注(上证+情绪分双grid菱形, 默认L3-L5) ----
+const EV_COLORS = {5: '#d03b3b', 4: '#e67e22', 3: '#eda100', 2: '#8e44ad', 1: '#898781'};
+const escE = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+D.evOn = {5: true, 4: true, 3: true, 2: false, 1: false};
+D.evIdx = (() => {            // 事件日期→交易日索引(吸附最近≥该日, 二分)
+  const out = [];
+  if (!D.events || !D.events.length) return out;
+  for (const e of D.events) {
+    let lo = 0, hi = D.dates.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (D.dates[mid] < e.date) lo = mid + 1; else hi = mid; }
+    if (lo < D.dates.length) out.push({i: lo, e});
+  }
+  return out;
+})();
+function evSeriesData(kind) {   // kind: 'idx'(上证收盘)|'score'(情绪分)
+  const out = [];
+  for (const o of D.evIdx) {
+    if (!D.evOn[o.e.level]) continue;
+    const y = kind === 'idx' ? (D.k[o.i] && D.k[o.i][1]) : D.score[o.i];
+    if (y == null) continue;
+    out.push({value: [D.dates[o.i], y, o.e.level],
+              itemStyle: {color: EV_COLORS[o.e.level]}, evt: o.e});
+  }
+  return out;
+}
+function setEvents() {
+  if (!D.evIdx.length) return;
+  chart.setOption({series: [
+    {id: 'evIdx', data: evSeriesData('idx')},
+    {id: 'evScore', data: evSeriesData('score')}]});
+}
+
 const SUB_OPTS = [
   { id: 'ckZb',  name: '炸板率%',   key: 'zb',  color: '#eda100' },
   { id: 'ckJl',  name: '接力率%',   key: 'jl',  color: '#1baf7a' },
@@ -793,6 +887,13 @@ for (const opt of SUB_OPTS) {
   if (el) el.addEventListener('change', renderAux);
 }
 // D1-14 H4: 初始渲染(副图开关记忆 + 底部面板勾选)
+// D1-18 M3: 事件等级勾选 → 双grid数据过滤 + 面板时间区列表刷新
+document.querySelectorAll('.ckEvt').forEach(el =>
+  el.addEventListener('change', () => {
+    D.evOn[el.value] = el.checked;
+    setEvents();
+    render(curIdx);
+  }));
 initAuxCtl();
 renderAux();
 </script>
