@@ -42,3 +42,11 @@ def test_pct_values_scaled_percent():
     """比值×100 取1位小数(0.687→68.7), null 透传"""
     h = VW.HTML
     assert "Math.round(v * 1000) / 10" in h
+
+
+def test_hover_shows_water_level():
+    """D1-16②r: 全A水位入悬停框 — 悬停分位副图(任意grid联动)即可读数"""
+    h = VW.HTML
+    assert "全A水位·全史/近5年" in h
+    assert "fp(mv.alla_pe_pct)" in h and "fp(mv.alla_pb_pct5)" in h
+    assert "(a[i] * 100).toFixed(1) + '%'" in h        # 与副图同源同精度口径

@@ -430,6 +430,15 @@ const baseOption = {
         h += ` <span style="color:#898781;font-size:11px">· 两融 ${D.margin[i]}亿</span>`;
       if (D.etfSum && !nullish(D.etfSum[i]))
         h += ` <span style="color:#898781;font-size:11px">· 宽基ETF ${Math.round(D.etfSum[i])}亿</span>`;
+      // D1-16②r: 全A水位入悬停框 — 分位副图联动读数(悬停任意grid即出)
+      const fp = (a) => !a || nullish(a[i]) ? null : (a[i] * 100).toFixed(1) + '%';
+      const peA = fp(mv.alla_pe_pct), pe5 = fp(mv.alla_pe_pct5);
+      const pbA = fp(mv.alla_pb_pct), pb5 = fp(mv.alla_pb_pct5);
+      const lvBits = [];
+      if (peA) lvBits.push(`PE ${peA}` + (pe5 ? `/${pe5}` : ''));
+      if (pbA) lvBits.push(`PB ${pbA}` + (pb5 ? `/${pb5}` : ''));
+      if (lvBits.length)
+        h += `<br/><span style="color:#898781;font-size:11px">全A水位·全史/近5年 ${lvBits.join(' · ')}</span>`;
       return h;
     },
   },
