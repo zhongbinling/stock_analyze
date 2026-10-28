@@ -94,6 +94,8 @@ def create_app() -> Flask:
     if not app.config.get("TESTING") and not _os.environ.get("SA_NO_JOBS"):
         from server import jobs as _jobs
         _jobs.ensure_started(app)
+        from server import rt as _rt           # D1-17 R3: 实时采集守护线程
+        _rt.ensure_started(app)
 
     @app.errorhandler(403)
     def forbidden(e):

@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}实时行情 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>实时行情 <span class="hint" id="rtState">加载中…</span>
+    <span style="float:right;font-size:12px" class="hint">
+      <label class="chk"><input type="checkbox" id="rtEnabled" checked> 采集开关(交易时段)</label>
+      回看 <input class="input" id="rtDate" type="date" style="width:140px">
+      <button class="btn small" id="btnDay">查看</button>
+      <button class="btn small" id="btnToday">回到当日</button>
+      <span id="rtDaysList" class="hint"></span>
+    </span>
+  </h2>
+  <p class="hint" id="rtSummary">--</p>
+  <div id="bannerReplay" class="hint" style="display:none;padding:4px 8px;border:1px dashed var(--line,#bbb);border-radius:6px;margin-bottom:6px">
+    回看模式 — 显示存档分时数据, 非实时
+  </div>
+  <div id="chartMain" style="height:340px"></div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <div id="chartScore" style="height:240px;flex:2;min-width:340px"></div>
+    <div id="chartEtf" style="height:240px;flex:1;min-width:280px"></div>
+  </div>
+  <p class="hint">分时=采样点(盘中15s/档) · 实时情绪与收盘评分同口径(R2算法) · ETF=8只国家队当日累计成交额 vs 昨日总量 · 盘后与节假日自动停采, 历史日可回看</p>
+</section>
+
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const charts = {main: null, score: null, etf: null};
+let viewDate = null;                       // null=当日实时
+const theme = () => (document.documentElement.dataset.theme === 'dark' ? 'dark' : null);
+
+function chartOpt(el) {
+  return {animation: false, backgroundColor: 'transparent',
+          textStyle: {fontFamily: 'inherit'}};
+}
+function axisCommon() {
+  const c = theme() === 'dark' ? '#8a8f98' : '#898781';
+  return {axisLabel: {color: c}, splitLine: {lineStyle: {color: theme() === 'dark' ? '#2a2d33' : '#eee'}}};
+}
+function render(data) {
+  const S = data.samples || [];
+  const ts = S.map(x => x.t);
+  const last = S[S.length - 1] || {};
+  const meta = data.meta || {};
+  // ── 图1: 上证分时(价格+昨收参考+累计量副轴) ──
+  charts.main = charts.main || echarts.init($('chartMain'), theme());
+  charts.main.setOption({
+    ...chartOpt(), grid: {left: 56, right: 56, top: 30, bottom: 46},
+    legend: {data: ['上证', '累计成交额(亿)'], textStyle: {fontSize: 11}},
+    tooltip: {trigger: 'axis'},
+    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    yAxis: [{type: 'value', scale: true, name: '指数', ...axisCommon()},
+            {type: 'value', scale: true, name: '亿元', splitLine: {show: false}, axisLabel: {color: '#898781'}}],
+    series: [
+      {name: '上证', type: 'line', data: S.map(x => x.close), showSymbol: false,
+       lineStyle: {width: 1.6, color: '#2f5cd6'}, itemStyle: {color: '#2f5cd6'},
+       markLine: meta.prev_close ? {silent: true, symbol: 'none',
+         label: {formatter: '昨收 {c}', fontSize: 10},
+         lineStyle: {type: 'dashed', color: '#e34448'},
+         data: [{yAxis: meta.prev_close}]} : undefined},
+      {name: '累计成交额(亿)', type: 'line', yAxisIndex: 1, data: S.map(x => x.cumamt),
+       showSymbol: false, lineStyle: {width: 1, color: '#eda100', opacity: 0.7},
+       itemStyle: {color: '#eda100'}}],
+  }, true);
+  // ── 图2: 实时情绪(采样score) ──
+  charts.score = charts.score || echarts.init($('chartScore'), theme());
+  charts.score.setOption({
+    ...chartOpt(), grid: {left: 40, right: 14, top: 26, bottom: 40},
+    title: {text: '实时情绪分(与收盘同口径)', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
+    tooltip: {trigger: 'axis'},
+    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    yAxis: {type: 'value', min: -105, max: 105, ...axisCommon()},
+    series: [{name: '实时情绪', type: 'line', data: S.map(x => x.score), showSymbol: false,
+      lineStyle: {width: 1.8, color: '#6250d6'}, itemStyle: {color: '#6250d6'},
+      areaStyle: {opacity: 0.06},
+      markLine: {silent: true, symbol: 'none', label: {show: false},
+        lineStyle: {type: 'dashed', color: '#bbb'}, data: [{yAxis: 0}]}}],
+  }, true);
+  // ── 图3: ETF 当日累计 vs 昨日总量 ──
+  charts.etf = charts.etf || echarts.init($('chartEtf'), theme());
+  const etfNow = last.etf, etfPrev = meta.prev_etf_yi;
+  charts.etf.setOption({
+    ...chartOpt(), grid: {left: 44, right: 14, top: 26, bottom: 40},
+    title: {text: '宽基ETF累计成交(亿) vs 昨日', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
+    tooltip: {trigger: 'axis'},
+    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    yAxis: {type: 'value', scale: true, ...axisCommon()},
+    series: [{name: '当日累计', type: 'line', data: S.map(x => x.etf), showSymbol: false,
+      lineStyle: {width: 1.8, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'},
+      areaStyle: {opacity: 0.08},
+      markLine: etfPrev ? {silent: true, symbol: 'none',
+        label: {formatter: '昨日 {c}亿', fontSize: 10},
+        lineStyle: {type: 'dashed', color: '#e34448'},
+        data: [{yAxis: etfPrev}]} : undefined}],
+  }, true);
+  // ── 状态行 ──
+  const pct = etfNow && etfPrev ? ` · ETF达成昨日 ${Math.round(etfNow / etfPrev * 100)}%` : '';
+  $('rtSummary').innerHTML =
+    `${viewDate ? '存档' : (data.live ? '● 盘中实时' : '○ 盘后/休市')} `
+    + `${esc(data.date || '--')} 更新 ${esc(data.updated_at || '--')} · 采样 ${S.length} 点`
+    + (last.close ? ` · 上证 ${last.close}` : '')
+    + (last.score != null ? ` · 情绪 <b>${last.score > 0 ? '+' : ''}${last.score}</b> [${esc(last.stage || '')}] 涨停${last.zt ?? '--'}` : '')
+    + `${esc(pct)}`;
+}
+
+async function api(url) {
+  const r = await fetch(url);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+
+async function load() {
+  try {
+    const data = viewDate ? await api('/admin/api/rt/day?date=' + viewDate)
+                          : await api('/admin/api/rt/latest');
+    $('bannerReplay').style.display = viewDate ? '' : 'none';
+    if (!viewDate && data.enabled != null) $('rtEnabled').checked = !!data.enabled;
+    render(data);
+  } catch (e) { $('rtSummary').textContent = e.message; }
+}
+
+async function loadDays() {
+  try {
+    const d = await api('/admin/api/rt/days');
+    $('rtDaysList').textContent = d.days.length ? `可回看 ${d.days.length} 日` : '暂无存档';
+  } catch (e) {}
+}
+
+$('btnDay').onclick = () => {
+  const v = $('rtDate').value;
+  if (!v) { alert('请选择日期'); return; }
+  viewDate = v; load();
+};
+$('btnToday').onclick = () => { viewDate = null; load(); };
+$('rtEnabled').onchange = async () => {
+  try {
+    const r = await fetch('/admin/api/rt/settings', {method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
+      body: JSON.stringify({enabled: $('rtEnabled').checked})});
+    const j = await r.json();
+    $('rtState').textContent = j.msg || '';
+  } catch (e) { $('rtState').textContent = e.message; }
+};
+
+window.addEventListener('resize', () =>
+  Object.values(charts).forEach(c => c && c.resize()));
+
+load(); loadDays();
+let timer = setInterval(load, 30000);
+document.addEventListener('visibilitychange', () => {           // 页面可见时加速
+  clearInterval(timer);
+  timer = setInterval(load, document.hidden ? 60000 : 30000);
+});
+</script>
+{% endblock %}

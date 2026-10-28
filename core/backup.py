@@ -37,6 +37,8 @@ ASSETS = {
     "sentiment": ("sqlite", BASE / "data" / "sentiment.db"),
     # P4: raw个股库(~2.5GB) — 资产级策略: 仅周备/手动 + zlib压缩 + keep=4(见RAW_POLICY)
     "raw_daily": ("sqlite", BASE / "data" / "raw_daily.db"),
+    # D1-17 R3: 实时行情独立库(缺失优雅跳过 — 首次采集前不存在)
+    "realtime": ("sqlite", BASE / "data" / "realtime.db"),
     "app": ("sqlite", ROOT / "data" / "app.db"),
     "secret": ("file", ROOT / "data" / "secret.key"),
     "token": ("file", BASE / "data" / "tushare_token.txt"),

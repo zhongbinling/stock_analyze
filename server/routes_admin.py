@@ -150,6 +150,53 @@ def data_page():
     return render_template("admin/data.html")
 
 
+# ── D1-17 R3+R4: 实时行情页与API ──
+
+@bp_admin.get("/realtime")
+@require_level(7)
+def realtime_page():
+    return render_template("admin/realtime.html")
+
+
+@bp_admin.get("/api/rt/latest")
+@require_level(7)
+def api_rt_latest():
+    from server import rt
+    return jsonify(rt.latest())
+
+
+@bp_admin.get("/api/rt/day")
+@require_level(7)
+def api_rt_day():
+    from server import rt
+    d = request.args.get("date", "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+        return jsonify({"msg": "date 应为 YYYY-MM-DD"}), 400
+    payload = rt.day(d)
+    if payload is None:
+        return jsonify({"msg": f"{d} 无存档(当日未采集或非交易日)"}), 404
+    return jsonify(payload)
+
+
+@bp_admin.get("/api/rt/days")
+@require_level(7)
+def api_rt_days():
+    from server import rt
+    return jsonify({"days": rt.days()})
+
+
+@bp_admin.post("/api/rt/settings")
+@require_level(7)
+def api_rt_settings():
+    from server import jobs, rt
+    d = request.get_json(force=True, silent=True) or {}
+    if "enabled" not in d:
+        return jsonify({"msg": "缺少 enabled"}), 400
+    with_liv = "开" if d["enabled"] else "关"
+    jobs.set_setting("rt_enabled", "1" if d["enabled"] else "0")
+    return jsonify({"ok": True, "msg": f"实时采集已{with_liv}(交易时段生效)"})
+
+
 @bp_admin.get("/generate")
 @require_level(7)
 def generate_page():
@@ -272,14 +319,15 @@ def api_job_log(jid):
 _BACKUP_TYPES = ("manual", "daily", "weekly")
 
 # D1-11 C1: 数据块口径(展示层) 与 类型徽章
-BACKUP_BLOCKS = {"sentiment": "基础+评分", "raw_daily": "基础", "app": "账号",
-                 "secret": "配置", "token": "配置", "cfg_core": "配置",
-                 "cfg_server": "配置"}
+BACKUP_BLOCKS = {"sentiment": "基础+评分", "raw_daily": "基础",
+                 "realtime": "实时行情",        # D1-17 R3: 归基础块
+                 "app": "账号", "secret": "配置", "token": "配置",
+                 "cfg_core": "配置", "cfg_server": "配置"}
 TYPE_LABELS = {"daily": "日备", "weekly": "周备", "manual": "手动",
                "pre-calc": "计算前", "pre-backfill": "回填前",
                "pre-restore": "恢复前", "pre": "保护"}
 # D1-11 C3: 备份范围块白名单(API只收块名, 不收任意资产名)
-BLOCK_ASSETS = {"base": ("sentiment", "raw_daily"),
+BLOCK_ASSETS = {"base": ("sentiment", "raw_daily", "realtime"),
                 "account": ("app", "secret", "token", "cfg_core", "cfg_server")}
 
 
