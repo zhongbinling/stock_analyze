@@ -13,10 +13,9 @@ import pandas as pd  # noqa: E402
 from db import connect  # noqa: E402
 
 
-def build_frame(conn=None, primary="000001", secondary="399106") -> pd.DataFrame:
-    """合并指数日线与情绪原始数据, 计算派生指标, 按日期升序"""
-    import numpy as np
-
+def fetch_frame(conn=None, primary="000001", secondary="399106") -> pd.DataFrame:
+    """取数合并(指数日线×2 + mood_raw), 按日期升序 — D1-17 R2 拆出,
+    供实时快照在拼行后再走 derive"""
     if conn is None:
         conn = connect()
     idx = pd.read_sql(
@@ -27,9 +26,14 @@ def build_frame(conn=None, primary="000001", secondary="399106") -> pd.DataFrame
         conn, parse_dates=["date"])
     mood = pd.read_sql("SELECT * FROM mood_raw", conn, parse_dates=["date"])
 
-    df = (idx.merge(sec, on="date", how="left")
-            .merge(mood, on="date", how="left")
-            .sort_values("date").reset_index(drop=True))
+    return (idx.merge(sec, on="date", how="left")
+               .merge(mood, on="date", how="left")
+               .sort_values("date").reset_index(drop=True))
+
+
+def derive(df: pd.DataFrame) -> pd.DataFrame:
+    """派生量价指标(与通达信V2.1口径一致) — 输入按日期升序宽表(D1-17 R2拆出)"""
+    import numpy as np
 
     # ---- 派生量价指标(与通达信V2.1口径一致) ----
     prev_close = df["close"].shift(1)
@@ -59,6 +63,11 @@ def build_frame(conn=None, primary="000001", secondary="399106") -> pd.DataFrame
     df["rsi"] = up / dn * 100
     df["rsi_lin"] = df["rsi"]
     return df
+
+
+def build_frame(conn=None, primary="000001", secondary="399106") -> pd.DataFrame:
+    """合并指数日线与情绪原始数据, 计算派生指标, 按日期升序"""
+    return derive(fetch_frame(conn, primary, secondary))
 
 
 # 分量元信息: (数据列, 中文名, 方向sign, 计算模式, 分组)

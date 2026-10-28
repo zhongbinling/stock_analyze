@@ -23,8 +23,8 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # ---------------------------------------------------------------- 解析(纯函数, 可单测)
 
 def parse_qt(text: str) -> dict:
-    """腾讯 qt.gtimg: v_sh000001="1~上证指数~000001~现价~昨收~今开~量(手)~...~时间~...
-    字段索引: 1名称 2代码 3现价 4昨收 5今开 6成交量(手) 37成交额(万) 30时间"""
+    """腾讯 qt.gtimg: v_sh000001="1~上证指数~000001~现价~昨收~今开~量(手)~...~最高~最低~..."
+    字段索引: 1名称 2代码 3现价 4昨收 5今开 6成交量(手) 30时间 33最高 34最低 37成交额(万)"""
     m = re.search(r'v_(\w+)="([^"]*)"', text)
     if not m:
         return {}
@@ -33,7 +33,8 @@ def parse_qt(text: str) -> dict:
         return {}
     g = lambda i: f[i] if i < len(f) else ""      # noqa: E731
     return {"code": m.group(1), "name": g(1), "price": g(3), "prev_close": g(4),
-            "open": g(5), "vol_hand": g(6), "amount_wan": g(37), "ts": g(30)}
+            "open": g(5), "vol_hand": g(6), "ts": g(30), "high": g(33),
+            "low": g(34), "amount_wan": g(37)}
 
 
 def parse_sina(text: str) -> dict:
