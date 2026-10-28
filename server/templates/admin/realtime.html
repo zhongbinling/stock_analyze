@@ -73,7 +73,8 @@ function render(data) {
     tooltip: {trigger: 'axis'},
     xAxis: {type: 'category', data: ts, ...axisCommon()},
     yAxis: {type: 'value', min: -105, max: 105, ...axisCommon()},
-    series: [{name: '实时情绪', type: 'line', data: S.map(x => x.score), showSymbol: false,
+    series: [{name: '实时情绪', type: 'line', data: S.map(x => x.score),
+      showSymbol: true, symbolSize: 3,   // R5: 盘后补采仅收盘点, 无符号不可见
       lineStyle: {width: 1.8, color: '#6250d6'}, itemStyle: {color: '#6250d6'},
       areaStyle: {opacity: 0.06},
       markLine: {silent: true, symbol: 'none', label: {show: false},

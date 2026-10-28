@@ -78,12 +78,8 @@ def tick(now: datetime = None) -> str:
             rt = rt_score.compute_rt(conn, snap)
         finally:
             conn.close()
-        sample = {"t": now.strftime("%H:%M:%S"),
-                  "close": snap.get("close"), "cumvol": snap.get("volume1"),
-                  "cumamt": round((snap.get("amount1") or 0) / 1e8, 1),
-                  "score": rt["score"], "v1": rt["v1"], "stage": rt["stage"],
-                  "zt": snap.get("zt_count"), "jl": snap.get("jl_rate"),
-                  "etf": _fetch_etf_amount_yi()}
+        sample = _sample_from(now.strftime("%H:%M:%S"), snap, rt,
+                              _fetch_etf_amount_yi())
         with _lock:
             if _state["date"] != today:         # 跨日滚动
                 _state.update(date=today, samples=[])
@@ -94,6 +90,115 @@ def tick(now: datetime = None) -> str:
     except Exception as e:                      # noqa: BLE001
         print(f"[rt] tick失败(轮询继续): {e}")
         return "err"
+
+
+def _sample_from(t: str, snap: dict, rt: dict, etf) -> dict:
+    """tick/盘后补采共用的样本构造"""
+    return {"t": t, "close": snap.get("close"), "cumvol": snap.get("volume1"),
+            "cumamt": round((snap.get("amount1") or 0) / 1e8, 1),
+            "score": rt["score"], "v1": rt["v1"], "stage": rt["stage"],
+            "zt": snap.get("zt_count"), "jl": snap.get("jl_rate"), "etf": etf}
+
+
+def _hydrate_locked() -> None:
+    """R5a: 空态时从 rt_day 恢复当日内存态(重启后已采数据可见/续采)"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if _state["date"] == today and _state["samples"]:
+        return
+    d = day(today)
+    if d and d["samples"]:
+        _state.update(date=d["date"], samples=d["samples"],
+                      updated_at=d["updated_at"])
+
+
+def _minute_samples(amt1f: float, amt2f: float) -> list:
+    """R5b: ifzq 双指数分钟线 → 分时样本(价格/累计量; 累计额按双指数
+    总量比的线性估算 — 分钟线无分时额字段, 形状近似够用, 终值点为真值)"""
+    from probe_rt import _curl
+    import json as _json
+    out = []
+    series = {}
+    for code in ("sh000001", "sz399106"):
+        _, body = _curl(f"https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+                        f"?code={code}", timeout=10)
+        try:
+            arr = _json.loads(body)["data"][code]["data"]["data"]
+        except (ValueError, KeyError, TypeError):
+            return []
+        series[code] = {x.split()[0]: x.split() for x in arr}
+    v1f = None
+    base = series["sh000001"]
+    last_v = {}
+    for hhmm in sorted(base):
+        p1, v1 = base[hhmm][1], float(base[hhmm][2])
+        last_v = {"v1": v1}
+        v2 = float(series["sz399106"].get(hhmm, ["", "", last_v.get("v2", 0)])[2]
+                   or 0)
+        last_v["v2"] = v2
+        if v1f is None:
+            v1f = v1              # 首点即基准(开市分钟)
+        out.append({"t": f"{hhmm[:2]}:{hhmm[2:]}",
+                    "close": float(p1), "cumvol": v1,
+                    "score": None, "v1": None, "stage": None,
+                    "zt": None, "jl": None, "etf": None,
+                    "cumamt": None})
+    # 额度线性估算: 用双指数末点总量与终值额标定
+    if out and (amt1f or amt2f) and last_v:
+        tot_f = (last_v.get("v1") or 0) + (last_v.get("v2") or 0)
+        if tot_f > 0:
+            amt_f = ((amt1f or 0) + (amt2f or 0)) / 1e8
+            v2 = 0.0
+            for smp, hhmm in zip(out, sorted(base)):
+                v1 = smp["cumvol"]
+                v2 = float(series["sz399106"].get(hhmm, ["", "", v2])[2] or v2)
+                smp["cumamt"] = round(amt_f * (v1 + v2) / tot_f, 1)
+    return out
+
+
+_day_cache = {}
+
+
+def backfill_today(now: datetime = None) -> str | None:
+    """R5b 盘后补采: 交易日收盘后当日无存档 → 分钟线重建+终值融合, 一次。
+    返回 ok=已补 / have=已有 / None=条件不满足(未收盘/周末/快照日乖离)"""
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    if now.weekday() >= 5 or now.hour * 60 + now.minute <= 15 * 60 + 5:
+        return None
+    if _day_cache.get(today) or day(today):
+        _day_cache[today] = True
+        return "have"
+    snap = rt = etf = None
+    try:
+        import rt_score
+        from db import connect
+        conn = connect()
+        try:
+            snap = rt_score.fetch_snapshot(conn)
+            if snap.get("date") != today:
+                return None              # 盘前/节假日: qt返回上日, 不造幻影日
+            rt = rt_score.compute_rt(conn, snap)
+        finally:
+            conn.close()
+        etf = _fetch_etf_amount_yi()
+    except Exception as e:                # noqa: BLE001
+        print(f"[rt] 盘后补采终值失败: {e}")
+        return None
+    samples = _minute_samples(snap.get("amount1") or 0, snap.get("amount2") or 0)
+    final = _sample_from("15:00:00", snap, rt, etf)
+    if samples:
+        # 分时样本末点融合终值(score/etf等分时线没有的字段)
+        samples[-1].update({k: v for k, v in final.items()
+                            if v is not None and samples[-1].get(k) is None})
+    else:
+        samples = [final]
+    with _lock:
+        _state.update(date=today, samples=samples,
+                      updated_at=now.strftime("%Y-%m-%d %H:%M:%S"))
+        _persist_locked()
+    _day_cache[today] = True
+    print(f"[rt] 盘后补采 {today}: {len(samples)} 点(分时重建+收盘终值)")
+    return "ok"
 
 
 def _persist_locked(path=None) -> None:
@@ -140,6 +245,7 @@ def _meta() -> dict:
 def latest() -> dict:
     """页面数据: 当日样本 + live态 + 对比基准 + 采集开关态"""
     with _lock:
+        _hydrate_locked()                 # R5a: 重启后恢复当日已采数据
         state = {"date": _state["date"], "samples": list(_state["samples"]),
                  "updated_at": _state["updated_at"]}
     state["live"] = bool(state["samples"]) and is_market_time()
@@ -189,7 +295,8 @@ def _loop() -> None:
             else:
                 enabled = True
             if enabled:
-                tick()
+                if tick() == "idle":
+                    backfill_today()      # R5b: 盘后一次(内部自检幂等)
             time.sleep(INTERVAL_S)
         except Exception:                       # noqa: BLE001
             time.sleep(INTERVAL_S)
