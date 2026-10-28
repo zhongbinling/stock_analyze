@@ -160,9 +160,9 @@ async function loadDatasets() {
     // D1-11 E1: 统一数据资产表 — 可补全项(带按钮/上次补全)在前, 链路维护项在后
     const lastCell = ds => { const L = lastByDs[ds];
       return !L ? '<span class="hint">—</span>'
-        // D1-19 P4: "+N日"语义误导(全史幂等重写链路也计) → 改"写N日";
-        // 段2再分"新增N/扫M"双数
-        : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} 写${(L.days || []).length}日</span>`
+        // D1-19 P4: "新增N日/扫M日"双数 — 扫描(幂等走过)与真新增分离,
+        // 全史幂等链路不再显示"+2114日"式误导
+        : L.status === 'done' ? `<span class="ok">✓ ${esc(L.at)} 新增${(L.days || []).length}日${L.scanned != null ? `/扫${L.scanned}日` : ''}</span>`
         : L.status === 'running' ? '<span class="hint">… 运行中</span>'
         : `<span class="bad" title="${esc(L.error)}">✗ ${esc((L.error || '失败').slice(0, 12))}</span>`; };
     const pctCell = t => t == null || t.completeness == null ? '<span class="hint">--</span>'

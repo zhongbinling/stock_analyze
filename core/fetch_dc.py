@@ -28,14 +28,22 @@ def _enabled_codes(conn) -> set:
         "SELECT code FROM sectors WHERE kind='industry' AND enabled=1")}
 
 
-def _thin_dates(conn, dates, need) -> list:
-    """OHLC或涨跌家数覆盖不足90%的交易日 = 需回补日(半截/缺失同判)"""
+def _thin_dates(conn, dates, need, ud_window=45):
+    """需回补日 = OHLC覆盖<90%, 或**近 ud_window 个交易日内**涨跌家数<90%。
+
+    D1-19 P5: dc_index(涨跌)源仅存近期~35日, 全程要求涨跌会把2018年以来
+    每个交易日永久判瘦 → 每次补全空走全史(~2114日/60s+百万行幂等upsert);
+    涨跌要求只作用于近端窗口(45>35留余量), OHLC判定全程不变(仍防半截日,
+    如2026-10-19仅47/523板块有行)。"""
+    recent = set(dates[-ud_window:]) if ud_window else set(dates)
     out = []
     for d in dates:
         n_ohlc, n_ud = conn.execute(
             "SELECT SUM(close IS NOT NULL), SUM(up_count IS NOT NULL) "
             "FROM sector_daily WHERE date=?", (d,)).fetchone()
-        if (n_ohlc or 0) < need * 0.9 or (n_ud or 0) < need * 0.9:
+        if (n_ohlc or 0) < need * 0.9:
+            out.append(d)
+        elif d in recent and (n_ud or 0) < need * 0.9:
             out.append(d)
     return out
 

@@ -150,6 +150,7 @@ class DataBackfillLog(db.Model):
     date_from = db.Column(db.String(10))
     date_to = db.Column(db.String(10))
     rows_written = db.Column(db.Integer, default=0)
+    scanned_n = db.Column(db.Integer)                     # D1-19 P4: 扫描交易日数(新增/扫分离)
     status = db.Column(db.String(8), default="running", nullable=False)  # running|done|fail
     trigger = db.Column(db.String(8), default="manual")
     days_json = db.Column(db.Text)                         # [{date,rows}…] 逐日写入明细

@@ -108,5 +108,5 @@ def test_data_page_renders_new_semantics(server_app):
     r = server_app["client"].get("/admin/data")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
-    for marker in ("刷新时间", "待出数", "源端延迟", "真缺口", "写${(L.days"):
+    for marker in ("刷新时间", "待出数", "源端延迟", "真缺口", "新增${(L.days"):
         assert marker in body, f"页面缺新语义标记: {marker}"

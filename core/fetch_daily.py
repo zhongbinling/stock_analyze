@@ -712,7 +712,7 @@ def run_backfill(dataset, start=None) -> dict:
     if not spec:
         return {"dataset": dataset, "label": "", "status": "fail",
                 "error": f"未知数据集: {dataset}", "days": [], "rows_written": 0,
-                "date_from": None, "date_to": None, "duration_s": 0}
+                "scanned": 0, "date_from": None, "date_to": None, "duration_s": 0}
     label, targets, fn, def_start = spec
     iso_start = norm_date(start or def_start)
     try:
@@ -722,7 +722,11 @@ def run_backfill(dataset, start=None) -> dict:
         print(f"[backfill] pre-backfill快照失败(继续): {e}")
     conn = connect()
     try:
-        pre = {t: _count_by_date(conn, t, c, dcol) for t, c, dcol in targets}
+        # D1-19 P4a: pre 按 (表,列,日期列) 元组做 key — dc_daily 两个 target
+        # 同表(sector_daily close/up_count), 按表名做 key 会后者覆盖前者,
+        # 而涨跌列2018年起全空 → 幂等 upsert 被计成"新增全史100万行"
+        pre = {(t, c, dcol): _count_by_date(conn, t, c, dcol)
+               for t, c, dcol in targets}
     finally:
         conn.close()
     err = None
@@ -736,12 +740,26 @@ def run_backfill(dataset, start=None) -> dict:
     conn = connect()
     try:
         per_day = {}
+        horizon = None
         for t, c, dcol in targets:
             post = _count_by_date(conn, t, c, dcol)
+            if post:
+                mx = max(post)
+                horizon = mx if horizon is None or mx > horizon else horizon
             for d, n in post.items():
-                delta = n - pre[t].get(d, 0)
+                delta = n - pre[(t, c, dcol)].get(d, 0)
                 if delta > 0:
                     per_day[d] = per_day.get(d, 0) + delta
+        # D1-19 P4b: 扫描日数 = [start, 数据末日]内交易日(回补实际走过的窗口,
+        # 与"新增日"分离 — 幂等空跑不再被误读为补了全史)
+        scanned = 0
+        if horizon:
+            try:
+                tds = trading_dates(conn, load_cfg()["index"]["primary"],
+                                    start=iso_start)
+                scanned = sum(1 for d in tds if d <= horizon)
+            except Exception:  # noqa: BLE001
+                scanned = 0
     finally:
         conn.close()
     days = [{"date": d, "rows": n} for d, n in sorted(per_day.items())]
@@ -750,7 +768,8 @@ def run_backfill(dataset, start=None) -> dict:
             "date_from": days[0]["date"] if days else iso_start,
             "date_to": days[-1]["date"] if days else iso_start,
             "rows_written": sum(n for n in per_day.values()),
-            "days": days, "duration_s": round(time.time() - t0, 1), "error": err}
+            "days": days, "scanned": scanned,
+            "duration_s": round(time.time() - t0, 1), "error": err}
 
 
 def main():

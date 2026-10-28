@@ -92,7 +92,10 @@ def test_etf_registered():
     assert jobs.BACKFILL_DEFAULT_START["etf_daily"] == "20050223"
     from server import market
     assert any(s[0] == "etf" for s in market._ASSET_DATE_TABLES)
-    assert market._MIN_ROW_RATIO["etf_daily"] == (0.6, 0.3)
+    # D1-19 P2: etf 覆盖改逐日分母(成员逐步上市型, 固定水位比会产生
+    # 永续假缺口), 不再注册 _MIN_ROW_RATIO
+    assert "etf_daily" not in market._MIN_ROW_RATIO
+    assert hasattr(market, "_covered_dates_etf")
     src = Path(CORE / "fetch_daily.py").read_text(encoding="utf-8")
     assert "fetch_etf.refresh()" in src                 # 更新链挂载
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")

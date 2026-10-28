@@ -572,6 +572,7 @@ def api_backfill_logs():
                     "rows_written": r.rows_written, "status": r.status,
                     "trigger": r.trigger or "", "duration": r.duration_s,
                     "error": r.error or "", "days": days,
+                    "scanned": r.scanned_n,               # D1-19 P4: 扫描日数
                     "at": r.started_at.strftime("%m-%d %H:%M:%S") if r.started_at else ""})
     # D1-4: 当前运行中的补全进度(解析回补循环既有的 [n/N] 日志输出)
     running = None

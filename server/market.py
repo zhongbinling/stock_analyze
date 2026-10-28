@@ -334,16 +334,23 @@ def _norm_date(s) -> str:
 # D1-11h: 半截覆盖判定(尺度无关) — 行数低于 max(近10健康日水位×25%, 全期峰值×10%)
 # 的日期视为未覆盖。起因: 2026-10-19/20 更新链未跑成, sector_daily 仅47/523板块有行,
 # 日期存在但内容残缺, 原DISTINCT-date口径的体检/完成度均无法发现。
+# D1-19 P2: etf_daily 改走 _covered_dates_etf 逐日分母(成员逐步上市型,
+# 固定水位阈值会产生永续假缺口), 不再在本表注册。
 _MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10),
-                  "index_val_daily": (0.6, 0.3),   # D1-14: 7指数/日, <5行=半截
-                  "etf_daily": (0.6, 0.3)}          # D1-14: 8只ETF/日, <5行=半截
+                  "index_val_daily": (0.6, 0.3)}   # D1-14: 7指数/日, <5行=半截
 # D1-11h: 体检排除的遗留数据集 — sw_daily 官方源停更段无数据可补,
 # 温度链已用 sw_index_comp(D1-9), 参与体检只会产生永续假缺口。
 _SCAN_SKIP = {"sw_daily"}
 
 
 def _covered_dates(con, qtable, dcol, cond, table) -> set:
-    """表的已覆盖日期集; 配置了行数比的表按'健康日水位'过滤(半截=未覆盖)"""
+    """表的已覆盖日期集; 配置了行数比的表按'健康日水位'过滤(半截=未覆盖)
+
+    D1-19 P2: etf_daily 为"成员逐步上市"型 — 固定阈值(≈60%×8只)把
+    2013-2018 尚未全部上市的半截日永久判缺(45个假缺口, 补全写0行死循环);
+    改为按"该日已上市只数"计分母(每只ETF以其库内首日为上市日)。"""
+    if table == "etf_daily":
+        return _covered_dates_etf(con, qtable, dcol, cond)
     rule = _MIN_ROW_RATIO.get(table)
     if not rule:
         return {r[0] for r in con.execute(f"SELECT DISTINCT {dcol} FROM {qtable}{cond}")}
@@ -355,6 +362,24 @@ def _covered_dates(con, qtable, dcol, cond, table) -> set:
     healthy = counts[min(10, len(counts)) - 1]      # 近期健康水位(第10大日行数)
     floor = max(healthy * rule[0], counts[0] * rule[1])
     return {d for d, c in stats if c >= floor}
+
+
+def _covered_dates_etf(con, qtable, dcol, cond) -> set:
+    """D1-19 P2: ETF 逐日分母 = 截至该日的运行最大日行数(成员逐步上市的
+    水位锚)。阈值 = ceil(60%·分母) 且 ≥1 — 8只全上市时与旧口径一致(≥5行),
+    早期1~4只时代按当时规模判; 后续真半截日(如8只时代仅4只有行)仍被抓。
+    不用"各code库内首日"做上市锚: 当日缺行的code若全表无行, 分母会随
+    损坏同步缩水(循环依赖), 运行最大值无此问题。"""
+    import math
+    stats = con.execute(
+        f"SELECT {dcol}, COUNT(*) FROM {qtable}{cond} GROUP BY {dcol}").fetchall()
+    out = set()
+    run_max = 0
+    for d, n in sorted(stats):
+        run_max = max(run_max, n)
+        if n >= max(1, math.ceil(run_max * 0.6)):
+            out.add(d)
+    return out
 
 
 def _expected_days(con, first, last, primary) -> list:

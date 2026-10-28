@@ -540,10 +540,12 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual",
             log.date_to = result.get("date_to")
             log.rows_written = result.get("rows_written") or 0
             log.days_json = json.dumps(result.get("days") or [], ensure_ascii=False)
+            log.scanned_n = result.get("scanned")        # D1-19 P4: 扫描日数
             log.duration_s = result.get("duration_s")
             log.error = (result.get("error") or "")[:255] or None
             append(f"[{utcnow_str()}] 补全结束: {log.status} "
-                   f"(写入 {log.rows_written} 行 / {len(result.get('days') or [])} 天)")
+                   f"(写入 {log.rows_written} 行 / 新增 {len(result.get('days') or [])} 日"
+                   f"·扫 {log.scanned_n or 0} 日)")
         log.finished_at = _now()
         db.session.commit()
         # D2-3: 有实际写入且开关开 → 自动入队评分重算(独立job, 历史清晰)
