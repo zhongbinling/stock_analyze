@@ -54,10 +54,9 @@ def rt_env(tmp_path, monkeypatch):
     cfgcore.mkdir()
     shutil.copy(CORE / "config.yaml", cfgcore / "config.yaml")
     monkeypatch.setattr(SC, "BASE", cfgcore)
-    RT._core = None
     return {"path": p, "SC": SC, "RT": RT,
             "connect": lambda: sqlite3.connect(str(p)), "dates": dates,
-            "tmp": tmp_path}
+            "tmp": tmp_path, "monkeypatch": monkeypatch}
 
 
 def _run_score(env):
@@ -65,14 +64,7 @@ def _run_score(env):
     SC = env["SC"]
     conn = env["connect"]()
     cfg = SC.load_cfg()
-    # build_frame 走 metrics.connect → 指到夹具库
-    import metrics
-    orig = metrics.connect
-    metrics.connect = env["connect"]
-    try:
-        df, comp, score_df = SC.compute(cfg, conn)
-    finally:
-        metrics.connect = orig
+    df, comp, score_df = SC.compute(cfg, conn)   # conn显式传递, 无需patch connect
     SC.save_to_db(conn, score_df, comp)
     conn.close()
     return score_df
@@ -129,7 +121,27 @@ def test_rt_frame_replaces_partial_today(rt_env):
 def test_metrics_split_compose(rt_env):
     """metrics 无损重构: fetch+derive 组合 == build_frame 原语义"""
     import metrics
-    metrics.connect = rt_env["connect"]
+    rt_env["monkeypatch"].setattr(metrics, "connect", rt_env["connect"])
     df = metrics.build_frame(primary="1.000001", secondary="0.399106")
     assert {"chg", "rsi", "bias20", "vol_total", "vr"} <= set(df.columns)
     assert len(df) == 300 and df["date"].is_monotonic_increasing
+
+
+def test_quote_from_qt():
+    """R2r: 快照日取qt时间戳(非交易日不造幻影休息日); 盘前价格0判无效;
+    high/low缺失以现价兜底"""
+    import rt_score as RT
+    a = {"price": "3681.47", "open": "3676.92", "high": "3684.49",
+         "low": "3652.37", "vol_hand": "433622829",
+         "amount_wan": "75101924", "ts": "20261028161400"}
+    b = {"vol_hand": "510000000", "amount_wan": "45000000"}
+    q = RT.quote_from_qt(a, b, "2026-10-31")
+    assert q["date"] == "2026-10-28"                    # 用ts日, 非"今天"
+    assert q["close"] == 3681.47 and q["amount1"] == 75101924e4
+    assert q["volume2"] == 510000000
+    # 盘前未出数(price=0) → 无效空
+    assert RT.quote_from_qt({**a, "price": "0.00"}, b, "d") == {}
+    # ts缺失→回落fallback日; high/low缺→现价兜底
+    q2 = RT.quote_from_qt({**a, "ts": "", "high": "", "low": ""}, b, "2026-10-31")
+    assert q2["date"] == "2026-10-31"
+    assert q2["high"] == 3681.47 and q2["low"] == 3681.47

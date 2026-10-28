@@ -62,6 +62,35 @@ def compute_rt(conn, snap: dict, cfg=None):
                       for k in comp.columns}}
 
 
+def quote_from_qt(a: dict, b: dict, fallback_date: str) -> dict:
+    """qt双指数解析段 → 量价快照字段; 无效(盘前未出数/价格0)返回{}
+
+    快照日取 qt 自带时间戳: 非交易日轮询返回的是上一交易日的数据,
+    若用"今天"当快照日会在历史里造出幻影休息日; 用 ts 日则等价于对该
+    交易日做回放, 语义自洽。high/low 缺失时以现价兜底(derive需有限值)。"""
+    def _f(v):
+        try:
+            x = float(v)
+            return x if x > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    close = _f(a.get("price"))
+    if close is None:
+        return {}
+    ts = str(a.get("ts") or "")
+    d = (f"{ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+         if len(ts) >= 8 and ts[:8].isdigit() else fallback_date)
+    return {"date": d, "close": close,
+            "open": _f(a.get("open")),
+            "high": _f(a.get("high")) or close,
+            "low": _f(a.get("low")) or close,
+            "volume1": _f(a.get("vol_hand")) or 0,
+            "amount1": (_f(a.get("amount_wan")) or 0) * 1e4,
+            "volume2": _f(b.get("vol_hand")) or 0,
+            "amount2": (_f(b.get("amount_wan")) or 0) * 1e4}
+
+
 def fetch_snapshot(conn) -> dict:
     """实时快照(R1选型源): qt双指数量价 + tushare涨停结构(与每日
     fetch_tushare_mood_today 口径逐行一致; 失败→东财四池降级)"""
@@ -72,13 +101,7 @@ def fetch_snapshot(conn) -> dict:
         segs = [parse_qt(s + ";") for s in body.split(";") if "v_" in s]
         segs = [s for s in segs if s]
         if len(segs) >= 2:
-            a, b = segs[0], segs[1]                     # sh000001, sz399106
-            snap.update({"open": float(a["open"]), "high": float(a["high"]),
-                         "low": float(a["low"]), "close": float(a["price"]),
-                         "volume1": float(a["vol_hand"]),
-                         "amount1": float(a["amount_wan"]) * 1e4,
-                         "volume2": float(b["vol_hand"]),
-                         "amount2": float(b["amount_wan"]) * 1e4})
+            snap.update(quote_from_qt(segs[0], segs[1], snap["date"]))
     snap.update(_pool_snapshot(conn))
     return snap
 
