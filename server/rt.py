@@ -111,47 +111,30 @@ def _hydrate_locked() -> None:
                       updated_at=d["updated_at"])
 
 
-def _minute_samples(amt1f: float, amt2f: float) -> list:
-    """R5b: ifzq 双指数分钟线 → 分时样本(价格/累计量; 累计额按双指数
-    总量比的线性估算 — 分钟线无分时额字段, 形状近似够用, 终值点为真值)"""
+def _minute_samples(amt1f: float) -> list:
+    """R5b: ifzq 上证分钟线 → 分时样本(价格/累计量; 累计额按量比线性
+    估算 — 分钟线无分时额字段; **口径=上证**, 与实时tick的cumamt(qt
+    amount1)一致, 两种模式同图不跳变; 末点融合终值后为真值)"""
     from probe_rt import _curl
-    import json as _json
-    out = []
-    series = {}
-    for code in ("sh000001", "sz399106"):
-        _, body = _curl(f"https://web.ifzq.gtimg.cn/appstock/app/minute/query"
-                        f"?code={code}", timeout=10)
-        try:
-            arr = _json.loads(body)["data"][code]["data"]["data"]
-        except (ValueError, KeyError, TypeError):
-            return []
-        series[code] = {x.split()[0]: x.split() for x in arr}
-    v1f = None
-    base = series["sh000001"]
-    last_v = {}
-    for hhmm in sorted(base):
-        p1, v1 = base[hhmm][1], float(base[hhmm][2])
-        last_v = {"v1": v1}
-        v2 = float(series["sz399106"].get(hhmm, ["", "", last_v.get("v2", 0)])[2]
-                   or 0)
-        last_v["v2"] = v2
-        if v1f is None:
-            v1f = v1              # 首点即基准(开市分钟)
-        out.append({"t": f"{hhmm[:2]}:{hhmm[2:]}",
-                    "close": float(p1), "cumvol": v1,
-                    "score": None, "v1": None, "stage": None,
-                    "zt": None, "jl": None, "etf": None,
-                    "cumamt": None})
-    # 额度线性估算: 用双指数末点总量与终值额标定
-    if out and (amt1f or amt2f) and last_v:
-        tot_f = (last_v.get("v1") or 0) + (last_v.get("v2") or 0)
-        if tot_f > 0:
-            amt_f = ((amt1f or 0) + (amt2f or 0)) / 1e8
-            v2 = 0.0
-            for smp, hhmm in zip(out, sorted(base)):
-                v1 = smp["cumvol"]
-                v2 = float(series["sz399106"].get(hhmm, ["", "", v2])[2] or v2)
-                smp["cumamt"] = round(amt_f * (v1 + v2) / tot_f, 1)
+    _, body = _curl("https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+                    "?code=sh000001", timeout=10)
+    try:
+        arr = json.loads(body)["data"]["sh000001"]["data"]["data"]
+    except (ValueError, KeyError, TypeError):
+        return []
+    base = {p[0]: p for p in (x.split() for x in arr) if len(p) >= 3}
+    if not base:
+        return []
+    keys = sorted(base)
+    out = [{"t": f"{h[:2]}:{h[2:]}", "close": float(base[h][1]),
+            "cumvol": float(base[h][2]), "cumamt": None, "score": None,
+            "v1": None, "stage": None, "zt": None, "jl": None, "etf": None}
+           for h in keys]
+    vol_f = out[-1]["cumvol"]
+    if amt1f and vol_f > 0:
+        amt_f = amt1f / 1e8
+        for smp in out:
+            smp["cumamt"] = round(amt_f * smp["cumvol"] / vol_f, 1)
     return out
 
 
@@ -184,7 +167,7 @@ def backfill_today(now: datetime = None) -> str | None:
     except Exception as e:                # noqa: BLE001
         print(f"[rt] 盘后补采终值失败: {e}")
         return None
-    samples = _minute_samples(snap.get("amount1") or 0, snap.get("amount2") or 0)
+    samples = _minute_samples(snap.get("amount1") or 0)
     final = _sample_from("15:00:00", snap, rt, etf)
     if samples:
         # 分时样本末点融合终值(score/etf等分时线没有的字段)

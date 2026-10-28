@@ -92,7 +92,7 @@ def test_backfill_builds_and_fuses(env):
     assert st["samples"][0]["t"] == "09:30" and st["samples"][0]["score"] is None
     last = st["samples"][-1]
     assert last["score"] == -30.3 and last["etf"] == 384.0    # 终值融合末点
-    assert last["cumamt"] > st["samples"][0]["cumamt"] or True
+    assert last["cumamt"] > st["samples"][0]["cumamt"]   # 额度单调
     assert rt.backfill_today(when) == "have"                  # 幂等不重复
 
 
@@ -107,14 +107,19 @@ def test_backfill_guards(env):
 
 
 def test_minute_samples_estimate(env):
+    """R5r: 额度=上证口径量比线性估算(与实时tick的cumamt一致), 单调到终值真值"""
     rt, mp = env["rt"], env["mp"]
-    _mock_minute(mp, ["0930 10.0 100", "0931 10.1 200", "0932 10.2 300"],
-                 ["0930 20.0 100", "0931 20.1 200", "0932 20.2 300"])
-    out = rt._minute_samples(1e10, 1e10)      # 终值合计200亿(2e10元)
+    _mock_minute(mp, ["0930 10.0 100", "0931 10.1 200", "0932 10.2 300"], [])
+    out = rt._minute_samples(7.5e11)          # 上证终值7500亿
     assert [o["t"] for o in out] == ["09:30", "09:31", "09:32"]
     amts = [o["cumamt"] for o in out]
-    assert amts[0] <= amts[1] <= amts[-1] and abs(amts[-1] - 200.0) < 0.1
+    assert amts[0] == 2500.0 and amts[1] == 5000.0 and amts[-1] == 7500.0
     assert out[-1]["close"] == 10.2 and out[0]["score"] is None
+    # 残行(字段不足)过滤 + 无效JSON → 空
+    _mock_minute(mp, ["0930 10.0 100", "bad-row"], [])
+    assert len(rt._minute_samples(1e11)) == 1
+    _mock_minute(mp, ["not json"], [])
+    assert rt._minute_samples(1e11) == []
 
 
 # ── 页面与接线门禁 ──
