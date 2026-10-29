@@ -131,15 +131,22 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
     """拉取单月(按公告日ann_date) share_float → float_raw(翻页取全);
     replace=True 先清该公告月(修订防双计)。返回入库行数/-1失败。"""
     lo, hi = f"{month}-01", f"{month}-31"
-    frames, offset = [], 0
+    # 半月窗口: tushare offset上限10万, 注册制后单月公告可超10万行(2021-10实测)
+    frames = []
     try:
-        while True:
-            df = T.call("share_float", FIELDS, start_date=lo.replace("-", ""),
-                        end_date=hi.replace("-", ""), limit=PAGE, offset=offset)
-            frames.append(df)
-            if len(df) < PAGE:
-                break
-            offset += PAGE
+        for w_lo, w_hi in ((lo, f"{month}-15"), (f"{month}-16", hi)):
+            offset = 0
+            while True:
+                df = T.call("share_float", FIELDS,
+                            start_date=w_lo.replace("-", ""),
+                            end_date=w_hi.replace("-", ""),
+                            limit=PAGE, offset=offset)
+                frames.append(df)
+                if len(df) < PAGE:
+                    break
+                offset += PAGE
+                if offset >= 100000:
+                    raise RuntimeError("offset越限(半月窗仍超10万行)")
     except Exception as e:                                 # noqa: BLE001
         print(f"[float] {month} 拉取失败: {e}")
         return -1
@@ -157,18 +164,18 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
                 continue
             k = (str(r.get("ts_code") or ""), _iso(r.get("float_date")),
                  str(r.get("share_type") or ""))
-            d = ev.setdefault(k, {"share": 0.0, "ratio": 0.0,
-                                  "ann": _iso(r.get("ann_date"))})
+            ann = _iso(r.get("ann_date"))
+            d = ev.setdefault(k, {"share": 0.0, "ratio": 0.0, "ann": ann})
             d["share"] += float(share)
             d["ratio"] += float(r["float_ratio"] or 0)
-            if d["ann"] and (not d.get("ann_min") or d["ann"] < d["ann_min"]):
-                d["ann_min"] = d["ann"]
+            if ann and (not d["ann"] or ann < d["ann"]):   # 最早公告日
+                d["ann"] = ann
     n = 0
     for (ts, fd, st), d in ev.items():
         conn.execute(
             "INSERT OR IGNORE INTO float_raw(ann_date,ts_code,float_date,"
             "float_share,float_ratio,share_type) VALUES(?,?,?,?,?,?)",
-            (d.get("ann_min") or d["ann"], ts, fd, round(d["share"], 0),
+            (d["ann"], ts, fd, round(d["share"], 0),
              round(d["ratio"], 4) or None, st))
         n += 1
     conn.commit()
