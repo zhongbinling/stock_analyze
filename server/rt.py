@@ -142,15 +142,15 @@ _day_cache = {}
 
 
 def backfill_today(now: datetime = None) -> str | None:
-    """R5b 盘后补采: 交易日收盘后当日无存档 → 分钟线重建+终值融合, 一次。
-    返回 ok=已补 / have=已有 / None=条件不满足(未收盘/周末/快照日乖离)"""
+    """R6a 盘后/盘前补采(目标日制): 目标日=快照源当前服务的交易日。
+    - 目标=今天且未收盘 → None(盘中由tick负责)
+    - 已有行 n≥100(健康) → have(按日缓存不再试)
+    - 否则重建: 当日盘后空行 / **盘前服务昨日的瘦行**(降级日自愈,
+      原守卫"快照日≠今天即放弃"浪费了预凌晨窗口)
+    返回 ok=已建/重建 / have=已有健康行 / None=条件不满足"""
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
-    if now.weekday() >= 5 or now.hour * 60 + now.minute <= 15 * 60 + 5:
-        return None
-    if _day_cache.get(today) or day(today):
-        _day_cache[today] = True
-        return "have"
+    hm = now.hour * 60 + now.minute
     snap = rt = etf = None
     try:
         import rt_score
@@ -158,29 +158,37 @@ def backfill_today(now: datetime = None) -> str | None:
         conn = connect()
         try:
             snap = rt_score.fetch_snapshot(conn)
-            if snap.get("date") != today:
-                return None              # 盘前/节假日: qt返回上日, 不造幻影日
+            target = snap.get("date")
+            if not target:
+                return None
+            if target == today and hm <= 15 * 60 + 5:
+                return None                  # 盘中当日: tick负责
             rt = rt_score.compute_rt(conn, snap)
         finally:
             conn.close()
         etf = _fetch_etf_amount_yi()
-    except Exception as e:                # noqa: BLE001
-        print(f"[rt] 盘后补采终值失败: {e}")
+    except Exception as e:                    # noqa: BLE001
+        print(f"[rt] 补采终值失败: {e}")
         return None
+    if _day_cache.get(target):
+        return "have"
+    existing = day(target)
+    if existing and len(existing["samples"]) >= 100:
+        _day_cache[target] = True
+        return "have"
     samples = _minute_samples(snap.get("amount1") or 0)
     final = _sample_from("15:00:00", snap, rt, etf)
     if samples:
-        # 分时样本末点融合终值(score/etf等分时线没有的字段)
         samples[-1].update({k: v for k, v in final.items()
                             if v is not None and samples[-1].get(k) is None})
     else:
         samples = [final]
     with _lock:
-        _state.update(date=today, samples=samples,
+        _state.update(date=target, samples=samples,
                       updated_at=now.strftime("%Y-%m-%d %H:%M:%S"))
         _persist_locked()
-    _day_cache[today] = True
-    print(f"[rt] 盘后补采 {today}: {len(samples)} 点(分时重建+收盘终值)")
+    _day_cache[target] = True
+    print(f"[rt] 补采 {target}: {len(samples)} 点(分钟重建+终值)")
     return "ok"
 
 
@@ -226,12 +234,21 @@ def _meta() -> dict:
 
 
 def latest() -> dict:
-    """页面数据: 当日样本 + live态 + 对比基准 + 采集开关态"""
+    """页面数据: 当日样本(无则回退最近存档日·fallback标注) + live态 +
+    对比基准 + 采集开关态"""
     with _lock:
         _hydrate_locked()                 # R5a: 重启后恢复当日已采数据
         state = {"date": _state["date"], "samples": list(_state["samples"]),
                  "updated_at": _state["updated_at"]}
-    state["live"] = bool(state["samples"]) and is_market_time()
+    if not state["samples"]:              # R6b: 盘前/休市回退最近交易日
+        recent = days()[0] if days() else None
+        if recent:
+            d = day(recent)
+            if d and d["samples"]:
+                state = {"date": d["date"], "samples": d["samples"],
+                         "updated_at": d["updated_at"], "fallback": True}
+    state["fallback"] = bool(state["samples"]) and state["date"] != time.strftime("%Y-%m-%d")
+    state["live"] = bool(state["samples"]) and is_market_time() and not state["fallback"]
     state["meta"] = _meta()
     try:
         if _app is not None:
@@ -293,3 +310,40 @@ def ensure_started(app=None) -> None:
     _app = app
     _thread = threading.Thread(target=_loop, name="rt-poller", daemon=True)
     _thread.start()
+
+
+def stats() -> dict:
+    """R6c 数据管理卡: 实时库状态概览"""
+    ensure_db()
+    con = sqlite3.connect(str(RT_DB))
+    try:
+        rows = con.execute("SELECT date, n FROM rt_day ORDER BY date DESC").fetchall()
+    finally:
+        con.close()
+    today = time.strftime("%Y-%m-%d")
+    return {
+        "days": len(rows),
+        "first": rows[-1][0] if rows else None,
+        "latest": rows[0][0] if rows else None,
+        "latest_n": rows[0][1] if rows else 0,
+        "today_n": next((n for d, n in rows if d == today), 0),
+        "size_kb": round(RT_DB.stat().st_size / 1024, 1) if RT_DB.exists() else 0,
+        "enabled": _enabled_cached(),
+        "poller_alive": _thread is not None and _thread.is_alive(),
+    }
+
+
+def _enabled_cached() -> bool:
+    try:
+        if _app is not None:
+            with _app.app_context():
+                from server import jobs as J
+                return J.get_setting("rt_enabled", "1") == "1"
+    except Exception:                       # noqa: BLE001
+        pass
+    return True
+
+
+def backfill_now() -> str:
+    """R6c 数据管理卡「立即补采」入口(同步执行, 秒级)"""
+    return backfill_today() or "idle"

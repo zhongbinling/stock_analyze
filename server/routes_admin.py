@@ -185,6 +185,25 @@ def api_rt_days():
     return jsonify({"days": rt.days()})
 
 
+@bp_admin.get("/api/rt/stats")
+@require_level(7)
+def api_rt_stats():
+    """D1-22 R6c: 实时库状态(数据管理卡)"""
+    from server import rt
+    return jsonify(rt.stats())
+
+
+@bp_admin.post("/api/rt/backfill")
+@require_level(7)
+def api_rt_backfill():
+    """D1-22 R6c: 立即补采(盘后重建/盘前自愈瘦行, 同步秒级)"""
+    from server import rt
+    r = rt.backfill_now()
+    return jsonify({"ok": r in ("ok", "have"), "result": r,
+                    "msg": {"ok": "已补采/重建", "have": "已有健康数据",
+                            "idle": "当前无可补采目标(盘中由实时采集负责)"}.get(r, r)})
+
+
 @bp_admin.post("/api/rt/settings")
 @require_level(7)
 def api_rt_settings():

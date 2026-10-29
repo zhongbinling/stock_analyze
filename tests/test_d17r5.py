@@ -96,14 +96,20 @@ def test_backfill_builds_and_fuses(env):
     assert rt.backfill_today(when) == "have"                  # 幂等不重复
 
 
-def test_backfill_guards(env):
+def test_backfill_target_semantics(env):
+    """D1-22目标制: 盘中当日= None; 周末服务周五 → 重建周五(瘦行自愈窗口)"""
     rt, mp = env["rt"], env["mp"]
-    _mock_final(mp, "2026-10-27")            # 快照日≠今天(qt返回上日)
-    _mock_minute(mp, ["0930 1 1"], ["0930 1 1"])
+    _mock_final(mp, "2026-10-30")            # 周六qt仍服务周五
+    _mock_minute(mp, ["0930 3650.0 100", "1500 3651.0 440000"], [])
     mp.setattr(rt, "_fetch_etf_amount_yi", lambda: 1.0)
-    assert rt.backfill_today(datetime(2026, 10, 28, 16, 0)) is None   # 乖离
-    assert rt.backfill_today(datetime(2026, 10, 28, 10, 0)) is None   # 盘中
-    assert rt.backfill_today(datetime(2026, 10, 31, 16, 0)) is None   # 周六
+    # 盘中当日(qt=今天): None
+    assert rt.backfill_today(datetime(2026, 10, 30, 10, 0)) is None
+    # 周六16:00(qt服务周五10-30): 目标=周五 → 重建
+    r = rt.backfill_today(datetime(2026, 10, 31, 16, 0))
+    assert r in ("ok", "have")
+    if r == "ok":
+        st = rt.latest()
+        assert st["date"] == "2026-10-30"
 
 
 def test_minute_samples_estimate(env):

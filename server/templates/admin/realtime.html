@@ -13,7 +13,7 @@
   </h2>
   <p class="hint" id="rtSummary">--</p>
   <div id="bannerReplay" class="hint" style="display:none;padding:4px 8px;border:1px dashed var(--line,#bbb);border-radius:6px;margin-bottom:6px">
-    回看模式 — 显示存档分时数据, 非实时
+    回看模式
   </div>
   <div id="chartMain" style="height:340px"></div>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -160,6 +160,9 @@ async function load() {
     if (!viewDate && data.enabled != null) $('rtEnabled').checked = !!data.enabled;
     render(data);
     lastLive = !!data.live;
+    if (!viewDate && data.fallback)
+      $('bannerReplay').style.display = '',
+      $('bannerReplay').textContent = `非采集时段 — 显示最近交易日 ${data.date} 存档(采集开关保持)`;
   } catch (e) { $('rtSummary').textContent = e.message; }
   schedule(document.hidden ? 60000 : (!viewDate && lastLive ? 10000 : 30000));
 }

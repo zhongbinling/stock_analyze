@@ -74,6 +74,18 @@
 </section>
 
 <section class="card">
+  <h2>实时行情库 <span class="hint" id="rtStat">加载中…</span>
+    <a class="btn small" style="float:right" href="/admin/realtime">实时页·历史回看 →</a></h2>
+  <p class="hint">独立库 realtime.db(按天一行 rt_day); 交易日盘中自动采样(15s档), 盘后/盘前自动分钟重建;
+    已纳入备份基础块(日/周/手动)</p>
+  <div class="row-flex" style="gap:10px;flex-wrap:wrap">
+    <span class="hint" id="rtStatDetail">--</span>
+    <button class="btn small" id="btnRtBackfill">立即补采/重建</button>
+    <span class="hint" id="rtBfMsg"></span>
+  </div>
+</section>
+
+<section class="card">
   <h2>数据备份 <a class="btn small" href="{{ url_for('admin.backups_page') }}">备份中心 →</a></h2>
   <div class="row-flex" style="margin-bottom:6px">
     <span class="hint" id="bkState">加载中…</span>
@@ -639,5 +651,24 @@ $('bfRecalc').onchange = async () => {
 };
 
 loadDatasets(); loadStrategy(); loadSources(); loadBackups(); loadBkSettings(); loadBackfillLogs(); poll(true);
+// D1-22 R6c: 实时库管理卡
+async function loadRtStat() {
+  try {
+    const d = await api('/admin/api/rt/stats');
+    $('rtStat').textContent = d.poller_alive ? '● 采集线程运行中' : '○ 线程未运行';
+    $('rtStatDetail').innerHTML = `已采集 <b>${d.days}</b> 天 (${d.first || '--'} ~ ${d.latest || '--'})`
+      + ` · 最新日 <b>${d.latest_n}</b> 点 · 今日 ${d.today_n} 点 · ${d.size_kb} KB`
+      + ` · 采集开关 <b>${d.enabled ? '开' : '关'}</b>`;
+  } catch (e) { $('rtStat').textContent = e.message; }
+}
+$('btnRtBackfill').onclick = async () => {
+  $('rtBfMsg').textContent = '⏳ 执行中…';
+  try {
+    const r = await api('/admin/api/rt/backfill', {method: 'POST', body: '{}'});
+    $('rtBfMsg').textContent = r.msg + ` (${r.result})`;
+    loadRtStat();
+  } catch (e) { $('rtBfMsg').textContent = e.message; }
+};
+loadRtStat();
 </script>
 {% endblock %}
