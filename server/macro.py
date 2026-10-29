@@ -13,6 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "core"
+import sys as _sys                                    # noqa: E402
+if str(CORE) not in _sys.path:
+    _sys.path.insert(0, str(CORE))
 MACRO_DB = CORE / "data" / "macro.db"
 
 LEVELS = {
@@ -258,3 +261,71 @@ def buffett(path_sentiment=None) -> dict:
                   "pct_all": round(bisect.bisect_right(rs, last["ratio"]) / len(rs) * 100, 1),
                   "pct_5y": round(bisect.bisect_right(rs5, last["ratio"]) / len(rs5) * 100, 1) if rs5 else None}
     return {"series": series, "latest": latest}
+
+
+def float_overview(hist_n: int = 36, future_n: int = 3) -> dict:
+    """D1-20 F2: 月度解禁 — float_month 历史(前收口径) + 当月两段 +
+    未来N月(最新价预判)动态重算; 无数据→空(页面隐藏)"""
+    import sqlite3 as sq
+    import time as _t
+    import fetch_float as FF
+    p = CORE / "data" / "sentiment.db"
+    if not p.exists():
+        return {"hist": [], "cur": None, "future": [], "latest_day": None}
+    con = sq.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+    try:
+        con.execute(f"ATTACH DATABASE '{(CORE / 'data' / 'raw_daily.db').as_posix()}' AS rawdb")
+        has = con.execute("SELECT name FROM sqlite_master WHERE name='float_month'").fetchone()
+        if not has:
+            return {"hist": [], "cur": None, "future": [], "latest_day": None}
+        cur_m = _t.strftime("%Y-%m")
+        rows = con.execute(
+            "SELECT month, amount_yi, n_events FROM float_month WHERE month<? "
+            "ORDER BY month DESC LIMIT ?", (cur_m, int(hist_n))).fetchall()
+        hist = [{"month": m, "amount_yi": a, "n_events": n}
+                for m, a, n in reversed(rows)]
+
+        def month_view(month):
+            lo, hi = f"{month}-01", f"{month}-31"
+            evs = con.execute(
+                "SELECT ts_code, float_date, float_share FROM float_raw "
+                "WHERE float_date>=? AND float_date<=? AND float_share>0",
+                (lo, hi)).fetchall()
+            latest_map, latest_day = FF._latest_close_map(con)
+            done = plan = 0.0
+            n_done = n_plan = 0
+            pre_days = {}
+            for ts, fd, share in evs:
+                if latest_day and fd <= latest_day:
+                    d = pre_days.setdefault(
+                        fd, FF._preclose_map(con, fd.replace("-", "")))
+                    price = d.get(ts)
+                else:
+                    price = latest_map.get(ts)
+                if not price or price <= 0:
+                    continue
+                v = share * price / 1e8
+                if latest_day and fd <= latest_day:
+                    done += v
+                    n_done += 1
+                else:
+                    plan += v
+                    n_plan += 1
+            return {"month": month, "done_yi": round(done, 1), "plan_yi": round(plan, 1),
+                    "n_done": n_done, "n_plan": n_plan}
+
+        cur = month_view(cur_m)
+        future = []
+        y, m = int(cur_m[:4]), int(cur_m[5:7])
+        for _ in range(int(future_n)):
+            m += 1
+            if m > 12:
+                y, m = y + 1, 1
+            future.append(month_view(f"{y:04d}-{m:02d}"))
+        _, latest_day = FF._latest_close_map(con)
+        return {"hist": hist, "cur": cur, "future": future,
+                "latest_day": latest_day}
+    except sq.Error:
+        return {"hist": [], "cur": None, "future": [], "latest_day": None}
+    finally:
+        con.close()

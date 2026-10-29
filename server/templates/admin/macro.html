@@ -58,6 +58,13 @@
 </section>
 
 <section class="card">
+  <h2>月度解禁总市值 <span class="hint" id="flState">加载中…</span></h2>
+  <p class="hint">解禁股数×股价 — 已发生(历史)用<b>解禁日前收</b>, 当月未发生与未来用<b>最新收盘价</b>预判(滚动更新);
+    数据来自 tushare share_float, 按公告月全量拉取、解禁月分桶聚合</p>
+  <div id="chartFloat" style="height:280px"></div>
+</section>
+
+<section class="card">
   <h2>批量导入(外部工具/第三方数据通道)</h2>
   <p class="hint">JSON数组, 字段: date(YYYY-MM-DD)/title/level(1-5)/type/source/content;
     按(标题+日期)自动去重, 非法条目跳过并报告。示例:
@@ -146,6 +153,50 @@ $('btnImport').onclick = async () => {
 };
 
 load();
+
+// ── D1-20 F2: 月度解禁柱状图 ──
+(async () => {
+  try {
+    const d = await api('/admin/api/macro/float?hist=36&future=3');
+    const H = d.hist || [], C = d.cur, F = d.future || [];
+    if (!H.length && !C) {
+      $('flState').textContent = '暂无解禁数据(回补中)';
+      $('chartFloat').style.display = 'none';
+      return;
+    }
+    const months = [...H.map(x => x.month), ...(C ? [C.month] : []),
+                    ...F.map(x => x.month)];
+    const actual = [...H.map(x => x.amount_yi), ...(C ? [C.done_yi] : [null]),
+                    ...F.map(() => null)];
+    const est = [...H.map(() => null), ...(C ? [C.plan_yi] : [null]),
+                 ...F.map(x => x.plan_yi)];
+    const curIdx = H.length;
+    const L = F.length ? F[F.length - 1] : C;
+    $('flState').innerHTML = (C ? `当月 ${esc(C.month)}: 已落地 <b>${C.done_yi}</b>亿`
+      + (C.plan_yi ? ` + 预计 <b>${C.plan_yi}</b>亿` : '') + ' · ' : '')
+      + (F.length ? `未来3月预计 ${F.map(x => x.plan_yi).join('/')}亿` : '');
+    const ch = echarts.init($('chartFloat'));
+    ch.setOption({
+      animation: false, backgroundColor: 'transparent',
+      grid: {left: 60, right: 20, top: 30, bottom: 46},
+      legend: {data: ['已发生(前收价)', '预计(最新价)'], textStyle: {fontSize: 11}},
+      tooltip: {trigger: 'axis',
+        formatter: (ps) => { const v = ps.filter(p => p.value != null)
+          .map(p => `${p.marker}${p.seriesName}: <b>${p.value}</b>亿`).join(' ');
+          return `${ps[0].axisValue}<br/>${v}`; }},
+      xAxis: {type: 'category', data: months, axisLabel: {color: '#898781',
+        formatter: (v, i) => (i === curIdx ? '▶' + v.slice(2) : v.slice(2))}},
+      yAxis: {type: 'value', name: '亿元', axisLabel: {color: '#898781'},
+              splitLine: {lineStyle: {color: '#eee'}}},
+      series: [
+        {name: '已发生(前收价)', type: 'bar', stack: 'fl', data: actual,
+         barMaxWidth: 14, itemStyle: {color: '#2f5cd6'}},
+        {name: '预计(最新价)', type: 'bar', stack: 'fl', data: est,
+         barMaxWidth: 14, itemStyle: {color: '#eda100', opacity: 0.55}}],
+    });
+    window.addEventListener('resize', () => ch.resize());
+  } catch (e) { $('flState').textContent = e.message; }
+})();
 
 // ── D1-18 M4: 巴菲特指标图 ──
 (async () => {

@@ -252,6 +252,18 @@ def api_macro_buffett():
     return jsonify(macro.buffett())
 
 
+@bp_admin.get("/api/macro/float")
+@require_level(7)
+def api_macro_float():
+    """D1-20 F2: 月度解禁(历史前收口径+当月两段+未来预判)"""
+    from server import macro
+    hist = request.args.get("hist", "36")
+    future = request.args.get("future", "3")
+    if not (hist.isdigit() and future.isdigit()):
+        return jsonify({"msg": "hist/future 应为数字"}), 400
+    return jsonify(macro.float_overview(int(hist), int(future)))
+
+
 @bp_admin.post("/api/macro/import")
 @require_level(7)
 def api_macro_import():

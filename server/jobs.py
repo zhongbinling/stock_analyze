@@ -484,7 +484,8 @@ BACKFILL_DATASETS = {"zt_est": "涨停家数·估算回补(2012-2019)",
                      "index_val": "指数估值PE/PB(2014-06起)",
                      "margin_hist": "两融余额历史(2010-03起)",
                      "etf_daily": "宽基ETF日线(2005-02起)",
-                     "mkt_val": "全A/宽基估值(2010起·自算)"}
+                     "mkt_val": "全A/宽基估值(2010起·自算)",
+                    "float_hist": "月度解禁·share_float(2006起)"}
 # 默认起始日(与 core BACKFILLS 第4元素保持同步): start 留空时使用, 避免统一默认
 # 20200102 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
 BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
@@ -499,7 +500,8 @@ BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
                           "index_val": "20140601",
                           "margin_hist": "20100331",
                           "etf_daily": "20050223",
-                          "mkt_val": "20100101"}
+                          "mkt_val": "20100101",
+                          "float_hist": "20060101"}
 
 
 def task_backfill(dataset: str, start: str, trigger: str = "manual",

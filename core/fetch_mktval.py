@@ -232,15 +232,17 @@ def run(start="20100101") -> bool:
     print(f"[mktval] {len(todo)}/{len(dates)} 交易日待聚合 (自 {iso})")
     fails = 0
     for i, d in enumerate(todo, 1):
+        # M4r: _fetch_one_day 内部吞错返回False — 连续失败计数须含False,
+        # 否则网络故障(如DNS污染)会空转数小时不中断(实测1916次✗/12.8h)
+        wrote = False
         try:
-            if not _fetch_one_day(conn, d, verbose=(i % 50 == 0)):
-                continue
+            wrote = _fetch_one_day(conn, d, verbose=(i % 50 == 0))
         except Exception as e:  # noqa: BLE001
-            fails += 1
             print(f"  ✗ {d}: {e}")
-            if fails >= 10:
-                print("  ✗✗ 连续失败中断(重跑续传)")
-                break
+        fails = 0 if wrote else fails + 1
+        if fails >= 10:
+            print("  ✗✗ 连续失败中断(重跑续传)")
+            break
         if i % 100 == 0:
             print(f"  [{i}/{len(todo)}] {time.time()-t0:.0f}s")
     n = conn.execute("SELECT COUNT(*) FROM mkt_val_daily").fetchone()[0]

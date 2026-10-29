@@ -104,8 +104,10 @@ def test_day_readback(rt_env):
 
 # ── API 与页面 ──
 
-def test_rt_api_endpoints(server_app, monkeypatch):
+def test_rt_api_endpoints(server_app, monkeypatch, tmp_path):
     from server import rt
+    # 隔离真库(R5后生产rt_day有真实数据, latest水合会读到)
+    monkeypatch.setattr(rt, "RT_DB", tmp_path / "rt.db")
     c = server_app["client"]
     # latest: 空态也 200
     r = c.get("/admin/api/rt/latest")
@@ -124,7 +126,6 @@ def test_rt_api_endpoints(server_app, monkeypatch):
     # days
     r = c.get("/admin/api/rt/days")
     assert r.status_code == 200 and "days" in r.get_json()
-    monkeypatch.setattr(rt, "RT_DB", rt.RT_DB)      # 真库路径不动测试断言
 
 
 def test_realtime_page_renders(server_app):
