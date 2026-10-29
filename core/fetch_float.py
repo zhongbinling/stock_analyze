@@ -130,10 +130,13 @@ def _iso(d) -> str:
 def _pull_month(conn, month: str, replace: bool = False) -> int:
     """拉取单月(按公告日ann_date) share_float → float_raw(翻页取全);
     replace=True 先清该公告月(修订防双计)。返回入库行数/-1失败。"""
-    lo, hi = f"{month}-01", f"{month}-31"
+    import calendar
+    last = calendar.monthrange(int(month[:4]), int(month[5:7]))[1]
+    lo, hi = f"{month}-01", f"{month}-{last:02d}"   # 真月末(-31在拆窗解析时无效)
 
     def _win(w_lo: str, w_hi: str) -> bool:
-        """单窗口翻页拉全; False=撞offset上限需拆窗"""
+        """单窗口翻页拉全; False=撞offset上限需拆窗(本窗帧丢弃防重复累计)"""
+        start = len(frames)
         offset = 0
         while True:
             df = T.call("share_float", FIELDS, start_date=w_lo.replace("-", ""),
@@ -143,6 +146,7 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
                 return True
             offset += PAGE
             if offset >= 100000:
+                del frames[start:]      # 拆窗后子窗重拉 — 首窗帧弃(否则Σ重复)
                 return False
 
     frames = []
@@ -156,7 +160,11 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
         d1 = _dt.date.fromisoformat(w_lo)
         d2 = _dt.date.fromisoformat(w_hi)
         if (d2 - d1).days <= 0:
-            raise RuntimeError(f"单日公告超10万行 {w_lo}")
+            # 极端日(如2024-02-19股权激励全员拆行)单日>10万行, offset无解:
+            # 已拉到的~9.6万行留在frames照常聚合, 仅缺尾部(小额头寸为主),
+            # 跳过不中断整月; 完整方案(float_date二次切分)见计划待定优化
+            print(f"  ⚠ {w_lo} 单日公告超10万行, 尾部跳过(部分聚合)")
+            return
         mid = d1 + (d2 - d1) / 2
         _rec(w_lo, mid.isoformat())
         _rec((mid + _dt.timedelta(days=1)).isoformat(), w_hi)
