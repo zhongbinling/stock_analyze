@@ -63,19 +63,18 @@ def test_pull_event_level_and_units(env, monkeypatch):
     """按持有人拆行→事件级Σ入库(同额持有人不误并); YYYYMMDD归一ISO;
     翻页取全(offset递进); 单位=股"""
     calls = []
+    all_rows = ([("600000.SH", "20240905", "20240909", float(i), 0.0, "分页填充")
+                 for i in range(FF.PAGE)]              # 满页: 持有人拆行(跨页Σ)
+                + [("600000.SH", "20240905", "20240909", 1e9, 0.1, "首发原股东限售"),
+                   ("600000.SH", "20240906", "20240909", 1e9, 0.1, "首发原股东限售"),
+                   ("600001.SH", "20240905", "20240909", 2e9, 0.2, "定增限售")])
 
     def fake_call(api, fields="", **kw):
+        """窗口感知: 按start/end过滤公告日(半月窗) + offset翻页"""
         calls.append(kw)
-        page = kw.get("offset", 0) // FF.PAGE
-        if page == 0:      # 满页: 同事件的持有人拆行(跨页) → Σ
-            return _float_df([("600000.SH", "20240905", "20240909", float(i), 0.0,
-                               "分页填充") for i in range(FF.PAGE)])
-        if page == 1:
-            return _float_df([  # 同额持有人两行 + 另一code
-                ("600000.SH", "20240905", "20240909", 1e9, 0.1, "首发原股东限售"),
-                ("600000.SH", "20240906", "20240909", 1e9, 0.1, "首发原股东限售"),
-                ("600001.SH", "20240905", "20240909", 2e9, 0.2, "定增限售")])
-        return _float_df([])
+        lo, hi, off = kw["start_date"], kw["end_date"], kw.get("offset", 0)
+        rows = [r for r in all_rows if lo <= r[1] <= hi]
+        return _float_df(rows[off:off + FF.PAGE])
     monkeypatch.setattr(FF.T, "call", fake_call)
     conn = FF.connect()
     n = FF._pull_month(conn, "2024-09")
@@ -86,7 +85,7 @@ def test_pull_event_level_and_units(env, monkeypatch):
     assert rows[1][:3] == ("600000.SH", "2024-09-09", "首发原股东限售")
     assert rows[1][3] == 2e9                        # 两持有人Σ, 未误并
     assert calls[0]["start_date"] == "20240901" and calls[0]["limit"] == FF.PAGE
-    assert len(calls) == 2                          # 满页→翻页(部分页即止)
+    assert len(calls) == 2                          # 整月窗: 满→翻(递归拆窗仅在撞限时)
 
 
 def test_aggregate_preclose_and_latest(env):
@@ -114,8 +113,12 @@ def test_refresh_replace_prevents_double(env, monkeypatch):
     def df_of(v):
         return _float_df([("600000.SH", "20240905", "20240909", v, 0.1, "首发")])
     box = {"v": 1e9}
-    monkeypatch.setattr(FF.T, "call",
-                        lambda api, fields="", **kw: df_of(box["v"]))
+
+    def fake(api, fields="", **kw):                     # 窗口感知(半月窗)
+        lo, hi = kw["start_date"], kw["end_date"]
+        rows = df_of(box["v"])
+        return rows[(rows["ann_date"] >= lo) & (rows["ann_date"] <= hi)]
+    monkeypatch.setattr(FF.T, "call", fake)
     conn = FF.connect()
     FF._pull_month(conn, "2024-09")
     box["v"] = 1.5e9                                  # 计划修订

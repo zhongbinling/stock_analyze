@@ -131,22 +131,38 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
     """拉取单月(按公告日ann_date) share_float → float_raw(翻页取全);
     replace=True 先清该公告月(修订防双计)。返回入库行数/-1失败。"""
     lo, hi = f"{month}-01", f"{month}-31"
-    # 半月窗口: tushare offset上限10万, 注册制后单月公告可超10万行(2021-10实测)
+
+    def _win(w_lo: str, w_hi: str) -> bool:
+        """单窗口翻页拉全; False=撞offset上限需拆窗"""
+        offset = 0
+        while True:
+            df = T.call("share_float", FIELDS, start_date=w_lo.replace("-", ""),
+                        end_date=w_hi.replace("-", ""), limit=PAGE, offset=offset)
+            frames.append(df)
+            if len(df) < PAGE:
+                return True
+            offset += PAGE
+            if offset >= 100000:
+                return False
+
     frames = []
+
+    def _rec(w_lo: str, w_hi: str) -> None:
+        """递归拆窗: tushare offset上限10万 — 注册制后单月公告可超10万行
+        (2021-10实测), 半月也不够(2023-10实测) → 撞限对半拆到单日"""
+        import datetime as _dt
+        if _win(w_lo, w_hi):
+            return
+        d1 = _dt.date.fromisoformat(w_lo)
+        d2 = _dt.date.fromisoformat(w_hi)
+        if (d2 - d1).days <= 0:
+            raise RuntimeError(f"单日公告超10万行 {w_lo}")
+        mid = d1 + (d2 - d1) / 2
+        _rec(w_lo, mid.isoformat())
+        _rec((mid + _dt.timedelta(days=1)).isoformat(), w_hi)
+
     try:
-        for w_lo, w_hi in ((lo, f"{month}-15"), (f"{month}-16", hi)):
-            offset = 0
-            while True:
-                df = T.call("share_float", FIELDS,
-                            start_date=w_lo.replace("-", ""),
-                            end_date=w_hi.replace("-", ""),
-                            limit=PAGE, offset=offset)
-                frames.append(df)
-                if len(df) < PAGE:
-                    break
-                offset += PAGE
-                if offset >= 100000:
-                    raise RuntimeError("offset越限(半月窗仍超10万行)")
+        _rec(lo, hi)
     except Exception as e:                                 # noqa: BLE001
         print(f"[float] {month} 拉取失败: {e}")
         return -1
@@ -224,11 +240,12 @@ def run(start: str = "20060101") -> bool:
 
 
 def _shift_month(ym: str, delta: int) -> str:
-    y, m = int(ym[:4]), int(ym[4:])
+    """ISO月位移(返回YYYY-MM — 曾返回紧凑月致float_month写入垃圾行)"""
+    y, m = int(ym[:4]), int(ym[5:7]) if "-" in ym else int(ym[4:6])
     m += delta
     y += (m - 1) // 12
     m = (m - 1) % 12 + 1
-    return f"{y:04d}{m:02d}"
+    return f"{y:04d}-{m:02d}"
 
 
 def refresh() -> bool:
@@ -247,7 +264,7 @@ def refresh() -> bool:
             aggregate_month(conn, fm)                        # 解禁月重聚合
     cur = time.strftime("%Y-%m")
     for i in range(5):                                       # 当月+未来4月(预判口径)
-        aggregate_month(conn, _shift_month(cur.replace('-', ''), i))
+        aggregate_month(conn, _shift_month(cur, i))
     conn.execute("DETACH DATABASE rawdb")
     conn.close()
     return True
