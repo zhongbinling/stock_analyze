@@ -112,17 +112,32 @@ def test_macro_page_renders(server_app):
 
 
 def test_macro_html_js_syntax():
+    """模板级语法门禁(Jinja表达式占位替换)"""
     if not shutil.which("node"):
         pytest.skip("node 不可用")
     html = (REPO / "server" / "templates" / "admin" / "macro.html").read_text(encoding="utf-8")
     m = re.search(r"<script>([\s\S]*?)</script>", html)
     assert m, "缺 script 块"
-    # Jinja表达式({{ lv_json }})替换为占位再解析 — 模板内嵌属预期
     js = re.sub(r"\{\{.*?\}\}", "null", m.group(1))
     r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", js],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, f"JS 语法错误: {(r.stderr or '')[:400]}"
-    assert "{{ lv_json }}" in html        # M1r: 等级名单点注入
+    assert "{{ lv_json | safe }}" in html   # M1r注入必须|safe(自动转义致渲染页JS死块)
+
+
+def test_macro_rendered_js_parses(server_app):
+    """M4实测教训: 渲染后的页面JS必须可解析 — 模板级门禁测不出Jinja
+    自动转义(lv_json被转义成&#34;后整页script是语法死块, 巴菲特图/
+    事件列表全灭)。以真实渲染产物跑node。"""
+    if not shutil.which("node"):
+        pytest.skip("node 不可用")
+    body = server_app["client"].get("/admin/macro").get_data(as_text=True)
+    m = re.search(r"<script>([\s\S]*?)</script>", body)
+    assert m, "渲染页缺 script"
+    assert "&#34;" not in m.group(1), "Jinja自动转义泄漏进JS"
+    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", m.group(1)],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, f"渲染后JS语法错误: {(r.stderr or '')[:400]}"
 
 
 def test_macro_registered_in_backup():
