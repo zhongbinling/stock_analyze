@@ -109,15 +109,17 @@ def test_aggregate_preclose_and_latest(env):
 
 
 def test_refresh_replace_prevents_double(env, monkeypatch):
-    """修订滚动: 同月重拉先清后插, float_share变化不双计"""
+    """修订滚动: 同解禁月重拉先清(float_date窗)后插, 份额变化不双计 —
+    D1-21r: 公告日与解禁日跨月的修订事件是关键回归(原按ann_date删错位)"""
     def df_of(v):
-        return _float_df([("600000.SH", "20240905", "20240909", v, 0.1, "首发")])
+        # 公告2024-07(拉取窗外的早月), 解禁2024-09 — 跨月修订场景
+        return _float_df([("600000.SH", "20240715", "20240909", v, 0.1, "首发")])
     box = {"v": 1e9}
 
-    def fake(api, fields="", **kw):                     # 窗口感知(半月窗)
+    def fake(api, fields="", **kw):                     # 窗口感知(解禁日窗)
         lo, hi = kw["start_date"], kw["end_date"]
         rows = df_of(box["v"])
-        return rows[(rows["ann_date"] >= lo) & (rows["ann_date"] <= hi)]
+        return rows[(rows["float_date"] >= lo) & (rows["float_date"] <= hi)]
     monkeypatch.setattr(FF.T, "call", fake)
     conn = FF.connect()
     FF._pull_month(conn, "2024-09")

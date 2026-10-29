@@ -177,7 +177,9 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
         print(f"[float] {month} 拉取失败: {e}")
         return -1
     if replace:
-        conn.execute("DELETE FROM float_raw WHERE ann_date>=? AND ann_date<=?",
+        # D1-21r: 拉取窗口=解禁月 → 删除须同窗(float_date) — 原按ann_date删
+        # 与拉取窗错位, 修订事件(份额变化)新旧两行并存会双计
+        conn.execute("DELETE FROM float_raw WHERE float_date>=? AND float_date<=?",
                      (lo, hi))
         conn.commit()
     # 事件级聚合入库: 接口按持有人拆行(~6万行/月, 全史千万级) — 按

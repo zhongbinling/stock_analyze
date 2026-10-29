@@ -126,6 +126,18 @@ def _mf_df():
     ], columns=["ts_code", "net_amount"])
 
 
+def _fix_today(monkeypatch, y=2026, m=10, d=26):
+    """固定datetime.date.today(夹具10-19/20落在refresh 10日窗内、
+    10-24落在'近5天新鲜'窗内; 日期漂移防脆弱 — 2026-10-30起实测)"""
+    import datetime as _dt
+
+    class _Fixed(_dt.date):
+        @classmethod
+        def today(cls):
+            return _dt.date(y, m, d)
+    monkeypatch.setattr(_dt, "date", _Fixed)
+
+
 def test_refresh_fflow_dc_fills_thin_days(dc_env, monkeypatch):
     """G2: 日更主源 — thin日(行数<90%启用板块)按trade_date补, 健康日跳过, 未启用过滤"""
     FD = dc_env["FD"]
@@ -136,6 +148,7 @@ def test_refresh_fflow_dc_fills_thin_days(dc_env, monkeypatch):
     c.commit()
     c.close()
     calls = []
+    _fix_today(monkeypatch)
     monkeypatch.setattr(FD.T, "has_token", lambda: True)
     monkeypatch.setattr(FD.T, "call", lambda api, fields="", **kw:
                         calls.append(kw.get("trade_date")) or _mf_df())
@@ -173,6 +186,14 @@ def test_refresh_fundflow_routes_dc(dc_env, monkeypatch):
     (thin即新鲜度), 5天跳过仅剩东财分支"""
     import sectors as S
     import fetch_dc as FD
+    _fix_today(monkeypatch)
+
+    class _FakeDT:                      # sectors新鲜度用datetime.now(类级导入)
+        @staticmethod
+        def now():
+            import datetime as _dt
+            return _dt.datetime(2026, 10, 26, 12)
+    monkeypatch.setattr(S, "datetime", _FakeDT)
     conn = sqlite3.connect(str(dc_env["path"]))
     calls = {"dc": [], "em": []}
     monkeypatch.setattr(FD, "refresh_fflow_dc",
