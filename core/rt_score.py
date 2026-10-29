@@ -91,6 +91,37 @@ def quote_from_qt(a: dict, b: dict, fallback_date: str) -> dict:
             "amount2": (_f(b.get("amount_wan")) or 0) * 1e4}
 
 
+def rt_series(conn, snap: dict, minutes: list) -> list:
+    """D1-23: 分钟级实时情绪序列(回放重建用) — 取数一次, 逐分钟改末行
+    derive+分量+加权(全向量化, 242点≈10s)。池分量(涨停/接力)盘中历史
+    不可得, 用终值近似(snap即收盘快照)。minutes: [{t, close, cumvol}]"""
+    cfg = SC.load_cfg()
+    import pandas as pd
+    raw = fetch_frame(conn, cfg["index"]["primary"], cfg["index"]["secondary"])
+    if not len(raw) or not minutes:
+        return []
+    out, hi, lo, open_ = [], None, None, None
+    for i, m in enumerate(minutes):
+        c, v = m.get("close"), m.get("cumvol")
+        if c is None:
+            out.append(None)
+            continue
+        if i == 0 or open_ is None:
+            open_, hi, lo = c, c, c
+        hi, lo = max(hi, c), min(lo, c)
+        raw.loc[raw.index[-1], "open"] = open_
+        raw.loc[raw.index[-1], "high"] = hi
+        raw.loc[raw.index[-1], "low"] = lo
+        raw.loc[raw.index[-1], "close"] = c
+        if v is not None:
+            raw.loc[raw.index[-1], "volume"] = v
+        df = derive(raw.copy())
+        comp = SC.component_scores(df, cfg["window"], cfg.get("pool_min_periods", 60))
+        sc = SC.weighted_score(comp, cfg["weights"], cfg["smooth"])
+        out.append(None if pd.isna(sc.iloc[-1]) else round(float(sc.iloc[-1]), 1))
+    return out
+
+
 def fetch_snapshot(conn) -> dict:
     """实时快照(R1选型源): qt双指数量价 + tushare涨停结构(与每日
     fetch_tushare_mood_today 口径逐行一致; 失败→东财四池降级)"""

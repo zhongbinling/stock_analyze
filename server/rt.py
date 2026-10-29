@@ -111,6 +111,32 @@ def _hydrate_locked() -> None:
                       updated_at=d["updated_at"])
 
 
+def _minute_etf(etf_final: float) -> dict:
+    """D1-23: 8只ETF分钟线累计量 → 累计成交额估算(终值qt真值锚定)。
+    返回 {"HH:MM": 亿}; 失败返回空(仅收盘点有真值)。"""
+    from probe_rt import _curl
+    import json as _json
+    volsum, keys = {}, []
+    for code in ("sz159901", "sz159915", "sz159919", "sz159949",
+                 "sh510050", "sh510300", "sh510500", "sh512100"):
+        _, body = _curl(f"https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+                        f"?code={code}", timeout=8)
+        try:
+            arr = _json.loads(body)["data"][code]["data"]["data"]
+        except (ValueError, KeyError, TypeError):
+            return {}
+        for x in arr:
+            p = x.split()
+            if len(p) < 3:
+                continue
+            hhmm = f"{p[0][:2]}:{p[0][2:]}"
+            volsum[hhmm] = volsum.get(hhmm, 0.0) + float(p[2])
+    if not volsum or not etf_final:
+        return {}
+    tot = max(volsum.values()) or 1.0
+    return {k: round(etf_final * v / tot, 1) for k, v in sorted(volsum.items())}
+
+
 def _minute_samples(amt1f: float) -> list:
     """R5b: ifzq 上证分钟线 → 分时样本(价格/累计量; 累计额按量比线性
     估算 — 分钟线无分时额字段; **口径=上证**, 与实时tick的cumamt(qt
@@ -179,6 +205,24 @@ def backfill_today(now: datetime = None) -> str | None:
     samples = _minute_samples(snap.get("amount1") or 0)
     final = _sample_from("15:00:00", snap, rt, etf)
     if samples:
+        # D1-23: 逐分钟情绪(框架一次+末行改写)与ETF累计(量比估算)
+        try:
+            import rt_score
+            from db import connect as _conn2
+            c2 = _conn2()
+            try:
+                scores = rt_score.rt_series(c2, snap, samples)
+            finally:
+                c2.close()
+            for smp, sc in zip(samples, scores):
+                if sc is not None:
+                    smp["score"], smp["v1"], smp["stage"] = sc, sc, rt["stage"]
+        except Exception as e:                  # noqa: BLE001
+            print(f"[rt] 分钟情绪重算失败(仅收盘点): {e}")
+        etf_m = _minute_etf(etf) if etf else {}
+        for smp in samples:
+            if smp.get("etf") is None and smp["t"] in etf_m:
+                smp["etf"] = etf_m[smp["t"]]
         samples[-1].update({k: v for k, v in final.items()
                             if v is not None and samples[-1].get(k) is None})
     else:
@@ -206,25 +250,35 @@ def _persist_locked(path=None) -> None:
     con.close()
 
 
-def _meta() -> dict:
-    """对比基准: 昨收/昨日累计额(指数)/昨日ETF合计额 — 只读 sentiment.db"""
+def _meta(display_date: str = None) -> dict:
+    """对比基准: 昨收/昨日ETF合计 — 取**显示日之前**的最近交易日。
+    D1-23修复: 显示10-29时原取到10-29收盘(=今收)致参考线错位。"""
     try:
         import yaml
         cfg = yaml.safe_load((CORE / "config.yaml").read_text(encoding="utf-8"))
         pri = cfg["index"]["primary"]
         con = sqlite3.connect(f"file:{CORE / 'data' / 'sentiment.db'}?mode=ro", uri=True)
         try:
-            rows = con.execute(
-                "SELECT date,close,amount FROM index_daily WHERE code=? "
-                "ORDER BY date DESC LIMIT 2", (pri,)).fetchall()
-            etf = con.execute(
-                "SELECT date, SUM(amount) FROM etf_daily GROUP BY date "
-                "ORDER BY date DESC LIMIT 1").fetchone()
+            if display_date:
+                row = con.execute(
+                    "SELECT date,close FROM index_daily WHERE code=? AND date<? "
+                    "ORDER BY date DESC LIMIT 1", (pri, display_date)).fetchone()
+                etf = con.execute(
+                    "SELECT date, SUM(amount) FROM etf_daily WHERE date<? "
+                    "GROUP BY date ORDER BY date DESC LIMIT 1",
+                    (display_date,)).fetchone()
+                rows = [row] if row else []
+            else:
+                rows = con.execute(
+                    "SELECT date,close FROM index_daily WHERE code=? "
+                    "ORDER BY date DESC LIMIT 1", (pri,)).fetchall()
+                etf = con.execute(
+                    "SELECT date, SUM(amount) FROM etf_daily GROUP BY date "
+                    "ORDER BY date DESC LIMIT 1").fetchone()
         finally:
             con.close()
         out = {"prev_date": rows[0][0] if rows else None,
-               "prev_close": rows[0][1] if rows else None,
-               "prev_amt_yi": round(rows[0][2] / 1e8, 0) if rows and rows[0][2] else None}
+               "prev_close": rows[0][1] if rows else None}
         if etf and etf[1]:                      # etf_daily.amount 单位=千元
             out["prev_etf_yi"] = round(etf[1] / 1e5, 0)
             out["prev_etf_date"] = etf[0]
@@ -249,7 +303,7 @@ def latest() -> dict:
                          "updated_at": d["updated_at"], "fallback": True}
     state["fallback"] = bool(state["samples"]) and state["date"] != time.strftime("%Y-%m-%d")
     state["live"] = bool(state["samples"]) and is_market_time() and not state["fallback"]
-    state["meta"] = _meta()
+    state["meta"] = _meta(state["date"])   # D1-23: 按显示日取前一日基准
     try:
         if _app is not None:
             with _app.app_context():
@@ -270,7 +324,8 @@ def day(date_iso: str) -> dict | None:
     if not row:
         return None
     return {"date": date_iso, "updated_at": row[0],
-            "samples": json.loads(row[1]).get("samples", [])}
+            "samples": json.loads(row[1]).get("samples", []),
+            "meta": _meta(date_iso)}            # D1-23: 回看也带前一日基准
 
 
 def days() -> list:
