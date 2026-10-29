@@ -54,6 +54,15 @@ def test_html_event_annotation_wired():
     assert "D.events" in h and "D.evIdx" in h
 
 
+def test_ev_mechanism_defined_before_use():
+    """M3r回归: D.evIdx 定义必须先于首次使用 — 曾因机制块放在SUB_OPTS前、
+    baseOption.push 在其之前, 生成页 line329 直接 TypeError(视图空白)"""
+    import viewer as VW
+    h = VW.HTML
+    assert h.index("D.evIdx = (") < h.index("D.evIdx.length"), "定义须先于使用"
+    assert h.index("const baseOption = {") > h.index("D.evIdx = (")
+
+
 def test_viewer_js_syntax_still_clean():
     """既有 node 门禁自动覆盖新增脚本(单独跑一遍确保)"""
     if not shutil.which("node"):

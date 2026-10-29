@@ -399,6 +399,39 @@ const valAxis = (gi) => ({
   axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.grid } },
 });
 
+// ---- D1-18 M3: 宏观事件标注(上证+情绪分双grid菱形, 默认L3-L5) ----
+const EV_COLORS = {5: '#d03b3b', 4: '#e67e22', 3: '#eda100', 2: '#8e44ad', 1: '#898781'};
+const escE = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+D.evOn = {5: true, 4: true, 3: true, 2: false, 1: false};
+D.evIdx = (() => {            // 事件日期→交易日索引(吸附最近≥该日, 二分)
+  const out = [];
+  if (!D.events || !D.events.length) return out;
+  for (const e of D.events) {
+    let lo = 0, hi = D.dates.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (D.dates[mid] < e.date) lo = mid + 1; else hi = mid; }
+    if (lo < D.dates.length) out.push({i: lo, e});
+  }
+  return out;
+})();
+function evSeriesData(kind) {   // kind: 'idx'(上证收盘)|'score'(情绪分)
+  const out = [];
+  for (const o of D.evIdx) {
+    if (!D.evOn[o.e.level]) continue;
+    const y = kind === 'idx' ? (D.k[o.i] && D.k[o.i][1]) : D.score[o.i];
+    if (y == null) continue;
+    out.push({value: [D.dates[o.i], y, o.e.level],
+              itemStyle: {color: EV_COLORS[o.e.level]}, evt: o.e});
+  }
+  return out;
+}
+function setEvents() {
+  if (!D.evIdx.length) return;
+  chart.setOption({series: [
+    {id: 'evIdx', data: evSeriesData('idx')},
+    {id: 'evScore', data: evSeriesData('score')}]});
+}
+
+
 const baseOption = {
   animation: false,
   backgroundColor: "transparent",
@@ -830,38 +863,6 @@ function setZoom(days) {
 }
 
 // S2.2-A: 底部面板可选(checkbox) — D1-14 H4: 显隐并入render统一重排
-// ---- D1-18 M3: 宏观事件标注(上证+情绪分双grid菱形, 默认L3-L5) ----
-const EV_COLORS = {5: '#d03b3b', 4: '#e67e22', 3: '#eda100', 2: '#8e44ad', 1: '#898781'};
-const escE = (x) => String(x ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-D.evOn = {5: true, 4: true, 3: true, 2: false, 1: false};
-D.evIdx = (() => {            // 事件日期→交易日索引(吸附最近≥该日, 二分)
-  const out = [];
-  if (!D.events || !D.events.length) return out;
-  for (const e of D.events) {
-    let lo = 0, hi = D.dates.length;
-    while (lo < hi) { const mid = (lo + hi) >> 1; if (D.dates[mid] < e.date) lo = mid + 1; else hi = mid; }
-    if (lo < D.dates.length) out.push({i: lo, e});
-  }
-  return out;
-})();
-function evSeriesData(kind) {   // kind: 'idx'(上证收盘)|'score'(情绪分)
-  const out = [];
-  for (const o of D.evIdx) {
-    if (!D.evOn[o.e.level]) continue;
-    const y = kind === 'idx' ? (D.k[o.i] && D.k[o.i][1]) : D.score[o.i];
-    if (y == null) continue;
-    out.push({value: [D.dates[o.i], y, o.e.level],
-              itemStyle: {color: EV_COLORS[o.e.level]}, evt: o.e});
-  }
-  return out;
-}
-function setEvents() {
-  if (!D.evIdx.length) return;
-  chart.setOption({series: [
-    {id: 'evIdx', data: evSeriesData('idx')},
-    {id: 'evScore', data: evSeriesData('score')}]});
-}
-
 const SUB_OPTS = [
   { id: 'ckZb',  name: '炸板率%',   key: 'zb',  color: '#eda100' },
   { id: 'ckJl',  name: '接力率%',   key: 'jl',  color: '#1baf7a' },
