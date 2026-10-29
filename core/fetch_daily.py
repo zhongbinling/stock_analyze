@@ -439,22 +439,30 @@ def fetch_margin():
 
 
 def backfill_margin(start="20100331") -> bool:
-    """D1-14 H2: 历史段回补 [start, 库内最早日-1]; 库空则全量(由fetch_margin首装路径覆盖)"""
+    """D1-14 H2: 回补 [start, 库内最早日-1] + **近端缺口段 [库内最晚+1, 今天]**。
+    D1-21: 原仅"补更早段"对近端缺口(体检修复链的主场景)是死路 — 体检
+    修复全部缺口的定向补全直达此函数; 两段各自独立, 中段历史洞由全量重拉兜底。"""
     import tushare_api
     if not tushare_api.has_token():
         print("[margin-hist] 无 tushare token, 跳过")
         return True
     conn = connect()
-    first = conn.execute("SELECT MIN(date) FROM margin_daily").fetchone()[0]
-    iso = norm_date(str(start))
-    end = _shift_ymd(first, -1) if first else time.strftime("%Y%m%d")
-    if end < iso.replace("-", ""):
+    iso = norm_date(str(start)).replace("-", "")
+    today = time.strftime("%Y%m%d")
+    first, last = conn.execute("SELECT MIN(date), MAX(date) FROM margin_daily").fetchone()
+    t0, total = time.time(), 0
+    end = _shift_ymd(first, -1) if first else today
+    if end >= iso:
+        print(f"[margin-hist] 更早段 {iso} ~ {end}")
+        total += _pull_margin(conn, iso, end)
+    else:
         print(f"[margin-hist] 无更早段可补 (库内最早 {first})")
-        conn.close()
-        return True
-    print(f"[margin-hist] 回补 {iso} ~ {end}")
-    t0 = time.time()
-    total = _pull_margin(conn, iso.replace("-", ""), end)
+    # D1-21: 近端段 — 源端T+1延迟/更新失败留下的最近缺口
+    last = conn.execute("SELECT MAX(date) FROM margin_daily").fetchone()[0]
+    rec_from = _shift_ymd(last, 1) if last else today
+    if rec_from <= today:
+        print(f"[margin-hist] 近端段 {rec_from} ~ {today}")
+        total += _pull_margin(conn, rec_from, today)
     conn.close()
     print(f"[margin-hist] 结束 {time.time()-t0:.0f}s, 写入 {total} 日")
     return True

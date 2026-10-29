@@ -66,8 +66,8 @@ def test_fetch_margin_overlap_selfheal(m_env, monkeypatch):
     c.close()
 
 
-def test_backfill_margin_earlier_segment_only(m_env, monkeypatch):
-    """回补只拉[库内最早-1]之前, 不动现有段; 无更早段时no-op"""
+def test_backfill_margin_two_segments(m_env, monkeypatch):
+    """回补两段: 更早段[库内最早-1之前] + 近端段[库内最晚+1,今天](D1-21)"""
     c = sqlite3.connect(str(m_env["path"]))
     c.execute("INSERT INTO margin_daily VALUES('2020-05-18',1,1,1,1,1,1)")
     c.commit()
@@ -91,7 +91,8 @@ def test_backfill_margin_earlier_segment_only(m_env, monkeypatch):
     # 再跑一次: 库内最早=2010-03-31, 无更早段 → no-op
     got.clear()
     assert FD.backfill_margin("20100331") is True
-    assert not got
+    # D1-21: 无更早段时近端段仍拉(原死路修复 — 体检修复链直达近端缺口)
+    assert len(got) == 1 and got[0][0] > "20200518"
 
 
 def test_margin_hist_registered():

@@ -197,7 +197,7 @@ _ASSET_DATE_TABLES = [
     ("margin", "融资融券(tushare)", "margin_daily", None, "tushare", 7, ""),
     # D1-10 S1: SW底座表(D1-6起新增, 此前未注册导致无完成度)
     ("sw_daily", "SW行业指数日线(官方)", "sw_daily", None, "tushare", 7,
-     "遗留·官方停更段不再追补; 温度已用SW等权自算指数(sw_sic)"),
+     "官方源2026-10恢复(10-19~10-26曾停更); 温度主力已用SW等权自算(sw_sic)"),
     ("sw_sic", "SW等权自算指数", "sw_index_comp", None, "本系统聚合", 4,
      "温度量价输入(成分等权累乘)"),
     ("sw_breadth", "SW涨跌家数", "sw_breadth", None, "成分聚合", 4, ""),
@@ -338,9 +338,9 @@ def _norm_date(s) -> str:
 # 固定水位阈值会产生永续假缺口), 不再在本表注册。
 _MIN_ROW_RATIO = {"sector_daily": (0.25, 0.10),
                   "index_val_daily": (0.6, 0.3)}   # D1-14: 7指数/日, <5行=半截
-# D1-11h: 体检排除的遗留数据集 — sw_daily 官方源停更段无数据可补,
-# 温度链已用 sw_index_comp(D1-9), 参与体检只会产生永续假缺口。
-_SCAN_SKIP = {"sw_daily"}
+# D1-11h: 体检排除集 — D1-21: sw_daily 官方源已恢复(2026-10-27起有数据),
+# 退出豁免回归正常体检/修复(10-19~10-26停更段按需行内补全)。
+_SCAN_SKIP = set()
 
 
 def _covered_dates(con, qtable, dcol, cond, table) -> set:
@@ -549,9 +549,8 @@ def datasets() -> list:
                 out.append({"code": "sw3", "name": "申万三级·指数日线", "source": "tushare sw_daily",
                             "rows": r[0], "codes": r[1], "first": r[2], "last": r[3],
                             "completeness": None, "missing_n": 0, "missing_recent": [],
-                            # D1-19 P3: 止于标注 — 官方源停更段不再追补(BF行同口径)
                             "health": "ok",
-                            "note": f"{r[1]} 个三级指数 · 止于{r[3]}(官方源停更)"})
+                            "note": f"{r[1]} 个三级指数 · 数据至{r[3]}"})
         except sqlite3.Error:
             pass
         return out

@@ -23,9 +23,11 @@ from db import connect                                    # noqa: E402
 import tushare_api as T                                   # noqa: E402
 
 RAW_DB = BASE / "data" / "raw_daily.db"
-# 实测(2026-10): 返回列为 share_type(解禁类型), 无 holder_type;
-# start/end 过滤**公告日ann_date** — 解禁日可在未来, 按公告拉按解禁日分桶
+# 实测(2026-10-30终验): 返回列为 share_type(解禁类型), 无 holder_type;
+# **start/end 过滤的是解禁日float_date本身**(非公告日 — 此前误判);
+# 逐解禁月窗口拉取即所需分桶; 未来解禁月需显式延窗(否则未来月恒空)
 FIELDS = "ts_code,ann_date,float_date,float_share,float_ratio,share_type"
+FUTURE_M = 4          # 拉取窗口延伸的未来解禁月数
 
 
 def ensure_tables(conn):
@@ -206,13 +208,6 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
     return n
 
 
-def _touched_months(conn, lo: str, hi: str) -> list:
-    """该公告窗口入库事件涉及的解禁月(升序去重)"""
-    return [r[0] for r in conn.execute(
-        "SELECT DISTINCT substr(float_date,1,7) FROM float_raw "
-        "WHERE ann_date>=? AND ann_date<=? AND float_date IS NOT NULL "
-        "ORDER BY 1", (lo, hi))]
-
 
 def run(start: str = "20060101") -> bool:
     """全史回补: 已聚合月跳过, 每月一调用"""
@@ -225,22 +220,22 @@ def run(start: str = "20060101") -> bool:
     _attach(conn)
     done = {r[0] for r in conn.execute("SELECT month FROM float_month")}
     end_ym = time.strftime("%Y%m")
-    months = _months(start, end_ym)                 # 公告月(已拉取月由raw判重)
-    have_ann = {r[0] for r in conn.execute(
-        "SELECT DISTINCT substr(ann_date,1,7) FROM float_raw")}
-    months = [m for m in months if m not in have_ann]
-    print(f"[float] {len(months)} 公告月待回补 (自 {start})")
+    end_ym2 = _shift_month(end_ym, FUTURE_M)        # 含未来解禁月(预判口径)
+    months = _months(start, end_ym2)
+    have = {r[0] for r in conn.execute(
+        "SELECT DISTINCT substr(float_date,1,7) FROM float_raw")}
+    months = [m for m in months if m not in have]
+    print(f"[float] {len(months)} 解禁月待回补 (自 {start}, 含未来{FUTURE_M}月)")
     for i, m in enumerate(months, 1):
         n = _pull_month(conn, m)
         if n < 0:
             break                                  # 失败由人工重跑续传
-        for fm in _touched_months(conn, f"{m}-01", f"{m}-31"):
-            if fm not in done:
-                r = aggregate_month(conn, fm)
-                done.add(fm)
-                if r["amount_yi"] > 0 and i % 12 == 0:
-                    print(f"  [{i}/{len(months)}] 公告{m}→解禁{fm}: "
-                          f"{r['amount_yi']}亿/{r['n_events']}条")
+        if m not in done:
+            r = aggregate_month(conn, m)
+            done.add(m)
+            if r["amount_yi"] > 0 and i % 12 == 0:
+                print(f"  [{i}/{len(months)}] 解禁{m}: "
+                      f"{r['amount_yi']}亿/{r['n_events']}条")
     conn.execute("DETACH DATABASE rawdb")
     conn.close()
     print(f"[float] 结束 {time.time()-t0:.0f}s")
@@ -265,11 +260,10 @@ def refresh() -> bool:
     conn = connect()
     ensure_tables(conn)
     _attach(conn)
-    for m in _months(_shift_month(now_ym, -6), now_ym):     # 公告月滚动修订
-        if _pull_month(conn, m, replace=True) < 0:
+    for m in _months(_shift_month(now_ym, -6), _shift_month(now_ym, FUTURE_M)):
+        if _pull_month(conn, m, replace=True) < 0:           # 解禁月滚动修订
             continue
-        for fm in _touched_months(conn, f"{m}-01", f"{m}-31"):
-            aggregate_month(conn, fm)                        # 解禁月重聚合
+        aggregate_month(conn, m)
     cur = time.strftime("%Y-%m")
     for i in range(5):                                       # 当月+未来4月(预判口径)
         aggregate_month(conn, _shift_month(cur, i))

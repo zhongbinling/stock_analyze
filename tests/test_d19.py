@@ -99,7 +99,7 @@ def test_datasets_notes_enriched(m19):
     assert "覆盖至2026-10-28" in ds["calendar"]["note"]
     assert "未映射1" in ds["sw1"]["note"]             # BK0002 sw1_name=NULL
     assert "未映射" not in ds["sw2"]["note"]          # 全命中不添噪
-    assert "止于2026-10-19" in ds["sw3"]["note"] and "官方源停更" in ds["sw3"]["note"]
+    assert "数据至2026-10-19" in ds["sw3"]["note"]   # D1-21: 源恢复后动态口径(原"止于·官方停更")
 
 
 def test_data_page_renders_new_semantics(server_app):

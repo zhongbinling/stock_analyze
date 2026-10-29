@@ -178,8 +178,8 @@ async function loadDatasets() {
       const btn = `<button class="btn small" data-bf="${r.ds}" ${busy ? 'disabled' : ''}`
         + ` title="补全全部缺失日(${r.base || '全历史'}, 已有日跳过·幂等)">补全</button>`;
       rows.push(`<tr><td title="${esc(t && t.note || '')}">${esc(r.label)}</td><td class="hint">${esc(t ? t.db : 'sentiment.db')}</td>
-        <td class="hint">${t && t.first ? esc(t.first) : '--'}</td>
-        <td class="hint">${lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
+        <td class="hint">${r.span ? r.span[0] : (t && t.first ? esc(t.first) : '--')}</td>
+        <td class="hint">${r.span ? r.span[1] : lastTd(t)}</td><td>${pctCell(t)}</td><td>${gapCell(t)}</td>
         <td>${lastCell(r.ds)}</td><td>${btn}</td></tr>`);
     }
     for (const t of d.datasets) {
@@ -461,6 +461,7 @@ $('btnCheck').onclick = async () => {
         pendingRecheck = true;
         $('chkMsg').textContent = targets.length
           ? `已入队: ${targets.length} 项定向补全(窗口化) + 更新链(收尾统一重算), 队列清空后自动复检`
+            + (targets.includes('margin_hist') ? ' — 两融为源端T+1, 个别缺日需次日晚自愈' : '')
           : '无真缺口 — 已入队更新链, 队列清空后自动复检';
         $('tcCard').scrollIntoView({behavior: 'smooth', block: 'center'});
         poll(true);
@@ -588,10 +589,10 @@ const BF_ROWS = [
   { ds: 'sw_breadth', label: 'SW涨跌家数(2005起)', asset: 'sw_breadth', base: '自2005起' },
   { ds: 'sw_pool', label: 'SW涨停结构(2005起)', asset: 'sw_pool', base: '自2005起' },
   { ds: 'sw_fflow', label: 'SW主力资金流(2007起)', asset: 'sw_fflow', base: '自2007起' },
-  { ds: 'sw_daily', label: 'SW行业指数日线(官方)', asset: 'sw_daily', base: '遗留·官方停更段不追补' },
+  { ds: 'sw_daily', label: 'SW行业指数日线(官方)', asset: 'sw_daily', base: '官方源2026-10恢复·停更段按需回补' },
   { ds: 'zt_ts', label: '涨停结构·tushare(2020起)', asset: 'pool', base: '自2020起' },
   { ds: 'zt_ts', label: '板块涨停聚合·THS行业(2020起)', asset: 'sector_pool', base: '自2020起' },
-  { ds: 'zt_est', label: '涨停家数·估算(2012-2019)', asset: null, base: '2012-2019段' },
+  { ds: 'zt_est', label: '涨停家数·估算(2012-2019)', asset: null, base: '2012-2019段', span: ['2012-01', '2019-12'] },
   { ds: 'breadth', label: '涨跌家数·tushare(2018起)', asset: 'breadth', base: '自2018起' },
   { ds: 'sector_history', label: '板块日线·历史回补(东财)', asset: 'sector_daily', base: '自2012起·深史(东财)' },
   { ds: 'dc_daily', label: '板块日线·tushare近端(推荐)', asset: 'sector_daily', base: '近端·tushare dc窗口' },
@@ -600,8 +601,8 @@ const BF_ROWS = [
   { ds: 'margin_hist', label: '两融余额·历史回补(沪深北三所合计)', asset: 'margin', base: '自2010-03-31起' },
   { ds: 'etf_daily', label: '宽基ETF日线(国家队口径8只)', asset: 'etf', base: '自2005-02起' },
   { ds: 'mkt_val', label: '全A/宽基估值PE·PB(自算整体法)', asset: 'mkt_val', base: '自2010-01起' },
-  { ds: 'float_hist', label: '月度解禁·share_float(2006起)', asset: null, base: '自2006起·公告月分桶' },
-  { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年' },
+  { ds: 'float_hist', label: '月度解禁·share_float(2006起)', asset: null, base: '自2006起·公告月分桶', span: ['2006-12', '滚动'] },
+  { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年', span: ['滚动', '2027-12'] },
 ];
 // D1-11 E2: 数据集code → 定向补全项(有则体检行修复走backfill, 否则走更新链)
 const SCAN_DS = {};

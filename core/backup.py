@@ -62,7 +62,9 @@ TYPES = ("daily", "weekly", "manual", "pre-calc", "pre-backfill", "pre-restore")
 # D1-10 B1: 备份内使用原名文件(子目录 {type}_{ts}/ 下)
 ASSET_FILES = {"sentiment": "sentiment.db", "app": "app.db", "secret": "secret.key",
                "token": "tushare_token.txt", "cfg_core": "config.yaml",
-               "cfg_server": "server.yaml", "raw_daily": "raw_daily.db"}
+               "cfg_server": "server.yaml", "raw_daily": "raw_daily.db",
+               # D1-21: 批次6/7注册的资产漏登本表 → 日备KeyError('realtime')实测
+               "realtime": "realtime.db", "macro": "macro.db"}
 
 
 def _norm_type(btype: str) -> str:
