@@ -202,3 +202,59 @@ def import_events(events: list, path=None) -> dict:
         con.commit()
     con.close()
     return out
+
+
+# ── D1-18 M4: 巴菲特指标(总市值/GDP) ──
+# 中国年度GDP(万亿元, 手填编辑值 — 官方初步核算口径, 用户可按修订数调整;
+# 比值用"上一已完成年度", 2026年的日子用2025年值)
+GDP_ANNUAL = {
+    2005: 18.7, 2006: 21.9, 2007: 27.0, 2008: 31.9, 2009: 34.9,
+    2010: 41.2, 2011: 48.8, 2012: 54.0, 2013: 59.3, 2014: 64.4,
+    2015: 68.9, 2016: 74.4, 2017: 83.2, 2018: 91.9, 2019: 98.7,
+    2020: 101.4, 2021: 114.4, 2022: 121.0, 2023: 126.1, 2024: 134.9,
+    2025: 140.0,
+}
+
+
+def _gdp_for(year: int) -> float | None:
+    """≤year 的最近年度值(缺上年时回落更早)"""
+    ys = [y for y in GDP_ANNUAL if y <= year]
+    return GDP_ANNUAL[max(ys)] if ys else None
+
+
+def buffett(path_sentiment=None) -> dict:
+    """总市值/GDP(巴菲特指标): mkt_val_daily.mv_total(亿) ÷ 上年GDP(万亿)×100%。
+    返回 series + 最新值的全史/近5年分位; 数据缺失→空series(页面隐藏)。"""
+    import bisect
+    import sqlite3 as sq
+    from datetime import date as _d, timedelta as _td
+    p = path_sentiment or (CORE / "data" / "sentiment.db")
+    if not p.exists():
+        return {"series": [], "latest": None}
+    con = sq.connect(f"file:{Path(p).as_posix()}?mode=ro", uri=True)
+    try:
+        rows = con.execute("SELECT date, mv_total FROM mkt_val_daily "
+                           "WHERE mv_total IS NOT NULL ORDER BY date").fetchall()
+    except sq.Error:
+        return {"series": [], "latest": None}
+    finally:
+        con.close()
+    series = []
+    for d, mv in rows:
+        g = _gdp_for(int(d[:4]) - 1)
+        if not g:
+            continue
+        series.append({"date": d, "mv_yi": mv, "gdp_year": int(d[:4]) - 1,
+                       "ratio": round(mv / (g * 10000) * 100, 1)})
+    latest = None
+    if series:
+        last = series[-1]
+        ratios = [x["ratio"] for x in series]
+        cut = (_d.fromisoformat(last["date"]) - _td(days=1826)).isoformat()
+        r5 = [x["ratio"] for x in series if x["date"] >= cut]
+        rs = sorted(ratios)                     # bisect需有序(序列按日期非按值)
+        rs5 = sorted(r5)
+        latest = {**last,
+                  "pct_all": round(bisect.bisect_right(rs, last["ratio"]) / len(rs) * 100, 1),
+                  "pct_5y": round(bisect.bisect_right(rs5, last["ratio"]) / len(rs5) * 100, 1) if rs5 else None}
+    return {"series": series, "latest": latest}

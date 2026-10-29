@@ -25,11 +25,12 @@ from fetch_daily import load_cfg, norm_date, ymd  # noqa: E402
 
 INDEXES = {"000016.SH": "50", "000300.SH": "300", "000905.SH": "500", "000852.SH": "1000"}
 VAL_SQL = ("INSERT INTO mkt_val_daily(date,alla_pe,alla_pb,pe50,pb50,pe300,pb300,"
-           "pe500,pb500,pe1000,pb1000) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+           "pe500,pb500,pe1000,pb1000,mv_total) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
            "ON CONFLICT(date) DO UPDATE SET alla_pe=excluded.alla_pe,"
            "alla_pb=excluded.alla_pb,pe50=excluded.pe50,pb50=excluded.pb50,"
            "pe300=excluded.pe300,pb300=excluded.pb300,pe500=excluded.pe500,"
-           "pb500=excluded.pb500,pe1000=excluded.pe1000,pb1000=excluded.pb1000")
+           "pb500=excluded.pb500,pe1000=excluded.pe1000,pb1000=excluded.pb1000,"
+           "mv_total=excluded.mv_total")
 
 
 def _ensure_tables(conn):
@@ -39,7 +40,12 @@ def _ensure_tables(conn):
     conn.execute("""CREATE TABLE IF NOT EXISTS mkt_val_daily(
       date TEXT PRIMARY KEY, alla_pe REAL, alla_pb REAL,
       pe50 REAL, pb50 REAL, pe300 REAL, pb300 REAL,
-      pe500 REAL, pb500 REAL, pe1000 REAL, pb1000 REAL)""")
+      pe500 REAL, pb500 REAL, pe1000 REAL, pb1000 REAL,
+      mv_total REAL)""")
+    # D1-18 M4: 旧库增列 mv_total(亿元, 全A总市值)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mkt_val_daily)")}
+    if "mv_total" not in cols:
+        conn.execute("ALTER TABLE mkt_val_daily ADD COLUMN mv_total REAL")
     conn.commit()
 
 
@@ -48,11 +54,12 @@ def _val_check(target_iso):
         r = rows[0]
         if r[0] != target_iso:
             return f"日期错位 {r[0]}"
-        for v in r[1:]:
-            if v is None:
+        for i, v in enumerate(r):
+            if i == 0 or v is None:
                 continue
-            if v != v or v <= 0 or v >= 1000:
-                return f"估值越界 {v!r}"
+            hi = 1e7 if i == 11 else 1000        # M4: mv_total(亿)豁免<1000
+            if v != v or v <= 0 or v >= hi:
+                return f"越界 r[{i}]={v!r}"
         return None
     return all_checks(chk_same(0, target_iso), f)
 
@@ -148,9 +155,12 @@ def _fetch_one_day(conn, d_iso, verbose=True, min_n=30):
         mset = _members_on(conn, code, d_ymd)
         pe, pb = (None, None) if mset is None else _agg(rows, mset, min_n=min_n)
         vals[f"pe{tag}"], vals[f"pb{tag}"] = pe, pb
+    # D1-18 M4: 全A总市值(亿元) — 与pe/pb有效性解耦(亏损股pe无效但市值在);
+    # total_mv单位万元 → 亿元=÷1e4
+    mv_total = round(sum(mv for _, _, _, mv in rows if mv and mv > 0) / 1e4, 1)
     row = (d_iso, vals["alla_pe"], vals["alla_pb"], vals["pe50"], vals["pb50"],
            vals["pe300"], vals["pb300"], vals["pe500"], vals["pb500"],
-           vals["pe1000"], vals["pb1000"])
+           vals["pe1000"], vals["pb1000"], mv_total)
     if all(v is None for v in row[1:]):
         return False
     guarded_batch(conn, VAL_SQL, [row], label=f"mktval {d_iso}",
@@ -215,7 +225,9 @@ def run(start="20100101") -> bool:
     _ensure_tables(conn)
     iso = norm_date(str(start))
     dates = trading_dates(conn, load_cfg()["index"]["primary"], start=iso)
-    have = {r[0] for r in conn.execute("SELECT date FROM mkt_val_daily")}
+    # M4: mv_total空(旧史/新日)都重拉 — 旧日全行幂等upsert补列
+    have = {r[0] for r in conn.execute(
+        "SELECT date FROM mkt_val_daily WHERE mv_total IS NOT NULL")}
     todo = [d for d in dates if d not in have]
     print(f"[mktval] {len(todo)}/{len(dates)} 交易日待聚合 (自 {iso})")
     fails = 0

@@ -244,6 +244,14 @@ def api_macro_del(eid):
     return jsonify({"ok": True, "msg": "已删除"})
 
 
+@bp_admin.get("/api/macro/buffett")
+@require_level(7)
+def api_macro_buffett():
+    """D1-18 M4: 巴菲特指标(总市值/GDP)序列+最新分位"""
+    from server import macro
+    return jsonify(macro.buffett())
+
+
 @bp_admin.post("/api/macro/import")
 @require_level(7)
 def api_macro_import():

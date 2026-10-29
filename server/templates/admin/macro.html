@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}宏观策略 · {{ app_name }}{% endblock %}
 {% block content %}
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
 <section class="card">
   <h2>宏观舆情事件库 <span class="hint" id="mStats">加载中…</span></h2>
   <div class="row-flex" style="flex-wrap:wrap;gap:8px;margin-bottom:8px">
@@ -47,6 +48,13 @@
     <button class="btn primary" id="btnAdd">新增事件</button>
     <span class="hint" id="addMsg"></span>
   </div>
+</section>
+
+<section class="card">
+  <h2>总市值/GDP · 巴菲特指标 <span class="hint" id="bfState">加载中…</span></h2>
+  <p class="hint">全A总市值(亿元, daily_basic自算) ÷ 上一年度GDP(万亿, 手填编辑值);
+    80%/100% 为常用关注阈值 — 分位为当前值在全史/近5年中的时间占比水位</p>
+  <div id="chartBuffett" style="height:280px"></div>
 </section>
 
 <section class="card">
@@ -138,5 +146,44 @@ $('btnImport').onclick = async () => {
 };
 
 load();
+
+// ── D1-18 M4: 巴菲特指标图 ──
+(async () => {
+  try {
+    const d = await api('/admin/api/macro/buffett');
+    if (!d.series || !d.series.length) {
+      $('bfState').textContent = '暂无总市值数据(mv_total回补中)';
+      $('chartBuffett').style.display = 'none';
+      return;
+    }
+    const L = d.latest || {};
+    $('bfState').innerHTML = `最新 ${esc(L.date)} <b>${L.ratio}%</b>`
+      + (L.gdp_year ? ` · 对比${L.gdp_year}年GDP` : '')
+      + (L.pct_all != null ? ` · 全史分位 <b>${L.pct_all}%</b>` : '')
+      + (L.pct_5y != null ? ` · 近5年 <b>${L.pct_5y}%</b>` : '');
+    const ch = echarts.init($('chartBuffett'));
+    ch.setOption({
+      animation: false, backgroundColor: 'transparent',
+      grid: {left: 50, right: 20, top: 24, bottom: 46},
+      tooltip: {trigger: 'axis'},
+      xAxis: {type: 'category', data: d.series.map(x => x.date),
+              axisLabel: {color: '#898781'}},
+      yAxis: {type: 'value', scale: true, name: '%',
+              axisLabel: {color: '#898781'},
+              splitLine: {lineStyle: {color: '#eee'}}},
+      series: [{name: '总市值/GDP', type: 'line',
+        data: d.series.map(x => x.ratio), showSymbol: false,
+        lineStyle: {width: 1.6, color: '#2f5cd6'}, itemStyle: {color: '#2f5cd6'},
+        areaStyle: {opacity: 0.05},
+        markLine: {silent: true, symbol: 'none',
+          label: {fontSize: 10, formatter: '{c}%'},
+          data: [{yAxis: 80, lineStyle: {type: 'dashed', color: '#e34448'},
+                  label: {color: '#e34448'}},
+                 {yAxis: 100, lineStyle: {type: 'dashed', color: '#d03b3b'},
+                  label: {color: '#d03b3b'}}]}}],
+    });
+    window.addEventListener('resize', () => ch.resize());
+  } catch (e) { $('bfState').textContent = e.message; }
+})();
 </script>
 {% endblock %}
