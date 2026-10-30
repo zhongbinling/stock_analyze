@@ -200,8 +200,13 @@ def backfill_today(now: datetime = None) -> str | None:
         return "have"
     existing = day(target)
     if existing and len(existing["samples"]) >= 100:
-        _day_cache[target] = True
-        return "have"
+        # D1-23b: 午间重启会丢上午(实测10-30首样本12:55) — 盘后若首样本
+        # 晚于09:35(缺早盘)仍重建为全日分钟线
+        first_t = existing["samples"][0]["t"] if existing["samples"] else "99"
+        if first_t <= "09:35:00":
+            _day_cache[target] = True
+            return "have"
+        print(f"[rt] {target} 为半日样本(自{first_t}起), 盘后重建全日")
     samples = _minute_samples(snap.get("amount1") or 0)
     final = _sample_from("15:00:00", snap, rt, etf)
     if samples:
@@ -304,6 +309,7 @@ def latest() -> dict:
     state["fallback"] = bool(state["samples"]) and state["date"] != time.strftime("%Y-%m-%d")
     state["live"] = bool(state["samples"]) and is_market_time() and not state["fallback"]
     state["meta"] = _meta(state["date"])   # D1-23: 按显示日取前一日基准
+    state["meta"]["yday"] = _yday_curve(state["date"])   # D1-23b: 昨日累计额曲线
     try:
         if _app is not None:
             with _app.app_context():
@@ -325,7 +331,7 @@ def day(date_iso: str) -> dict | None:
         return None
     return {"date": date_iso, "updated_at": row[0],
             "samples": json.loads(row[1]).get("samples", []),
-            "meta": _meta(date_iso)}            # D1-23: 回看也带前一日基准
+            "meta": {**_meta(date_iso), "yday": _yday_curve(date_iso)}}
 
 
 def days() -> list:
@@ -402,3 +408,84 @@ def _enabled_cached() -> bool:
 def backfill_now() -> str:
     """R6c 数据管理卡「立即补采」入口(同步执行, 秒级)"""
     return backfill_today() or "idle"
+
+
+# ── D1-23b: 同花顺式量额副图数据 ──
+
+_mkline_cache = {"day": None, "bars": None}
+_yday_anchor_cache = {}
+_yday_curve_cache = {}
+
+
+def _mkline(n: int = 640) -> list:
+    """腾讯mkline m1分钟柱(数组: [dt,open,close,high,low,vol,...]); 按日缓存"""
+    today = time.strftime("%Y-%m-%d")
+    if _mkline_cache["day"] == today and _mkline_cache["bars"]:
+        return _mkline_cache["bars"]
+    from probe_rt import _curl
+    import json as _json
+    _, body = _curl(f"https://ifzq.gtimg.cn/appstock/app/kline/mkline"
+                    f"?param=sh000001,m1,,{n}", timeout=10)
+    try:
+        bars = _json.loads(body)["data"]["sh000001"]["m1"]
+    except (ValueError, KeyError, TypeError):
+        return []
+    _mkline_cache.update(day=today, bars=bars)
+    return bars
+
+
+def _yday_amt_anchor(date_iso: str) -> float | None:
+    """昨日上证官方成交额(亿, tushare index_daily千元口径); 按日缓存(终值数据)"""
+    if date_iso in _yday_anchor_cache:
+        return _yday_anchor_cache[date_iso]
+    try:
+        import tushare_api as T
+        if not T.has_token():
+            return None
+        df = T.call("index_daily", "trade_date,amount", ts_code="000001.SH",
+                    start_date=date_iso.replace("-", ""),
+                    end_date=date_iso.replace("-", ""))
+        v = float(df.iloc[0]["amount"]) / 1e5 if len(df) else None   # 千元→亿
+    except Exception:                                       # noqa: BLE001
+        v = None
+    _yday_anchor_cache[date_iso] = v
+    return v
+
+
+def _yday_curve(display_date: str) -> dict | None:
+    """昨日累计成交额曲线(亿, 按HH:MM对齐今日时刻): mkline分钟量比形态 ×
+    官方总额锚定(指数点数×量非金额, 不能直接乘 — 实测偏差2.3×)"""
+    if not display_date:
+        return None                              # 空态(latest无任何样本日)
+    key = display_date
+    if key in _yday_curve_cache:
+        return _yday_curve_cache[key]
+    bars = _mkline()
+    if not bars:
+        return None
+    import collections
+    days = collections.defaultdict(list)
+    for b in bars:
+        days[b[0][:8]].append(b)
+    prev = None
+    for d in sorted(days):
+        if d < display_date.replace("-", ""):
+            prev = d
+    if not prev:
+        return None
+    prev_iso = f"{prev[:4]}-{prev[4:6]}-{prev[6:8]}"
+    anchor = _yday_amt_anchor(prev_iso)
+    if not anchor:
+        return None
+    cum, total, pts = 0.0, 0.0, {}
+    day_bars = days[prev]
+    for b in day_bars:
+        v = float(b[5])
+        cum += v
+        total += v
+        hhmm = f"{b[0][8:10]}:{b[0][10:12]}"
+        pts[hhmm] = cum
+    out = {"date": prev_iso, "total_yi": round(anchor, 0),
+           "points": {k: round(anchor * c / total, 1) for k, c in pts.items()}}
+    _yday_curve_cache[key] = out
+    return out

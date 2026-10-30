@@ -15,7 +15,7 @@
   <div id="bannerReplay" class="hint" style="display:none;padding:4px 8px;border:1px dashed var(--line,#bbb);border-radius:6px;margin-bottom:6px">
     回看模式
   </div>
-  <div id="chartMain" style="height:340px"></div>
+  <div id="chartMain" style="height:520px"></div>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
     <div id="chartScore" style="height:240px;flex:2;min-width:340px"></div>
     <div id="chartEtf" style="height:240px;flex:1;min-width:280px"></div>
@@ -45,25 +45,50 @@ function render(data) {
   const ts = S.map(x => x.t);
   const last = S[S.length - 1] || {};
   const meta = data.meta || {};
-  // ── 图1: 上证分时(价格+昨收参考+累计量副轴) ──
+  // ── 图1: 上证分时(上价格/下量额双grid, 同花顺式 D1-23b) ──
+  const vols = [];                                   // 分钟量(万手, cumvol差分, 红涨绿跌)
+  for (let i = 0; i < S.length; i++) {
+    const v0 = i > 0 && S[i - 1].cumvol != null ? S[i - 1].cumvol : 0;
+    const up = i > 0 && S[i - 1].close != null && S[i].close >= S[i - 1].close;
+    vols.push(S[i].cumvol != null
+      ? {value: [S[i].t, Math.max(0, (S[i].cumvol - v0) / 1e4)],
+         itemStyle: {color: up ? '#e34448' : '#1baf7a'}}
+      : {value: [S[i].t, null]});
+  }
+  const yd = (meta.yday && meta.yday.points) || null;   // 昨日累计额(官方额锚定)
+  const ydLine = S.map(x => yd ? (yd[x.t.slice(0, 5)] ?? null) : null);
   charts.main = charts.main || echarts.init($('chartMain'), theme());
   charts.main.setOption({
-    ...chartOpt(), grid: {left: 56, right: 56, top: 30, bottom: 46},
-    legend: {data: ['上证', '累计成交额(亿)'], textStyle: {fontSize: 11}},
+    ...chartOpt(),
+    grid: [{left: 56, right: 56, top: 30, height: 250},
+           {left: 56, right: 56, top: 316, height: 150}],
+    legend: {data: ['上证', '分钟量(万手)', '今日累计额(亿)', '昨日累计额(亿)'],
+             textStyle: {fontSize: 11}},
     tooltip: {trigger: 'axis'},
-    xAxis: {type: 'category', data: ts, ...axisCommon()},
-    yAxis: [{type: 'value', scale: true, name: '指数', ...axisCommon()},
-            {type: 'value', scale: true, name: '亿元', splitLine: {show: false}, axisLabel: {color: '#898781'}}],
+    axisPointer: {link: [{xAxisIndex: 'all'}]},
+    xAxis: [{type: 'category', gridIndex: 0, data: ts, ...axisCommon()},
+            {type: 'category', gridIndex: 1, data: ts, ...axisCommon()}],
+    yAxis: [{type: 'value', scale: true, name: '指数', gridIndex: 0,
+             axisLabel: {color: '#898781'}},
+            {type: 'value', gridIndex: 1, name: '万手/亿',
+             axisLabel: {color: '#898781'}, splitLine: {show: false}}],
     series: [
-      {name: '上证', type: 'line', data: S.map(x => x.close), showSymbol: false,
+      {name: '上证', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
+       data: S.map(x => x.close), showSymbol: false,
        lineStyle: {width: 1.6, color: '#2f5cd6'}, itemStyle: {color: '#2f5cd6'},
        markLine: meta.prev_close ? {silent: true, symbol: 'none',
          label: {formatter: '昨收 {c}', fontSize: 10},
          lineStyle: {type: 'dashed', color: '#e34448'},
          data: [{yAxis: meta.prev_close}]} : undefined},
-      {name: '累计成交额(亿)', type: 'line', yAxisIndex: 1, data: S.map(x => x.cumamt),
-       showSymbol: false, lineStyle: {width: 1, color: '#eda100', opacity: 0.7},
-       itemStyle: {color: '#eda100'}}],
+      {name: '分钟量(万手)', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
+       data: vols, barMaxWidth: 2},
+      {name: '今日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+       data: S.map(x => x.cumamt), showSymbol: false,
+       lineStyle: {width: 1.4, color: '#eda100'}, itemStyle: {color: '#eda100'}},
+      {name: '昨日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
+       data: ydLine, showSymbol: false, connectNulls: true,
+       lineStyle: {width: 1.2, color: '#898781', type: 'dashed'},
+       itemStyle: {color: '#898781'}}],
   }, true);
   // ── 图2: 实时情绪(采样score) ──
   charts.score = charts.score || echarts.init($('chartScore'), theme());
