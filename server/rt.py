@@ -446,9 +446,10 @@ def _yday_amt_anchor(date_iso: str) -> float | None:
                     start_date=date_iso.replace("-", ""),
                     end_date=date_iso.replace("-", ""))
         v = float(df.iloc[0]["amount"]) / 1e5 if len(df) else None   # 千元→亿
-    except Exception:                                       # noqa: BLE001
+    except Exception:                                       # noqa: BLE101
         v = None
-    _yday_anchor_cache[date_iso] = v
+    if v is not None:                 # 瞬时失败不缓存 — 下次请求重试
+        _yday_anchor_cache[date_iso] = v
     return v
 
 

@@ -50,7 +50,7 @@ function render(data) {
   for (let i = 0; i < S.length; i++) {
     const v0 = i > 0 && S[i - 1].cumvol != null ? S[i - 1].cumvol : 0;
     const up = i > 0 && S[i - 1].close != null && S[i].close >= S[i - 1].close;
-    vols.push(S[i].cumvol != null
+    vols.push(S[i].cumvol != null && i > 0   // i==0的cumvol为开盘累计, 差分=假尖峰
       ? {value: [S[i].t, Math.max(0, (S[i].cumvol - v0) / 1e4)],
          itemStyle: {color: up ? '#e34448' : '#1baf7a'}}
       : {value: [S[i].t, null]});
