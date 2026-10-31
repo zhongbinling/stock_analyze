@@ -45,7 +45,7 @@ function render(data) {
   // 单调化(cummax, 源毛刺回退不进图)
   const cummax = (arr) => { let m = -Infinity; return arr.map(v =>
     v == null ? null : (m = Math.max(m, v))); };
-  const S = (data.samples || []).filter(x => x.t >= '09:30:00' && x.t <= '15:00:59');
+  const S = (data.samples || []).filter(x => x.t >= '09:30' && x.t <= '15:01');
   const ts = S.map(x => x.t);
   const last = S[S.length - 1] || {};
   const meta = data.meta || {};
@@ -90,7 +90,7 @@ function render(data) {
        data: cummax(S.map(x => x.cumamt)), showSymbol: false,
        lineStyle: {width: 1.4, color: '#eda100'}, itemStyle: {color: '#eda100'}},
       {name: '昨日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
-       data: ydLine, showSymbol: false, connectNulls: true,
+       data: cummax(ydLine), showSymbol: false, connectNulls: true,
        lineStyle: {width: 1.2, color: '#898781', type: 'dashed'},
        itemStyle: {color: '#898781'}}],
   }, true);

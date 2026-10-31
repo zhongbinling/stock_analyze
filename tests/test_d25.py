@@ -98,6 +98,6 @@ def test_minute_etf_monotonic(tmp_path, monkeypatch):
 def test_page_gates():
     html = (REPO / "server" / "templates" / "admin" / "realtime.html").read_text(encoding="utf-8")
     assert "cummax" in html                        # 累计显示单调化
-    assert "x.t >= '09:30:00' && x.t <= '15:00:59'" in html   # 渲染窗
+    assert "x.t >= '09:30' && x.t <= '15:01'" in html   # 渲染窗(短串边界含09:30首分钟)
     assert "data-day" in html and "rtDaysList" in html        # 日chips可点
     assert "viewDate = a.dataset.day" in html

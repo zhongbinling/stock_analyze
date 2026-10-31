@@ -229,6 +229,9 @@ def main():
             print(f"  分量 {r['comps']}")
             return 0
         snap = fetch_snapshot(conn)
+        if not snap:
+            print("[rt] 快照失败(qt不可达), 改用 --replay 验证")
+            return 1
         r = compute_rt(conn, snap)
         print(f"[rt] {r['date']} {time.strftime('%H:%M:%S')} 实时情绪 {r['score']:+.1f}"
               f" [{r['stage']}]  V1 {r['v1']:+.1f}")
