@@ -269,7 +269,9 @@ _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
               "breadth": "breadth", "sector_daily": "dc_daily",
               "sector_fflow": "dc_fflow", "index_val": "index_val",
               "margin": "margin_hist", "etf": "etf_daily",
-              "mkt_val": "mkt_val", "raw_daily": "raw", "raw_mf": "raw"}
+              "mkt_val": "mkt_val"}
+# 注: raw_daily/raw_mf 无定向补全通道(纯链路内自愈), 不入本表 —
+# 否则修复诊断会误报"回补零写入"
 # 兼容别名(D1-19期名称)
 _DELAY_LAG = _SOURCE_LAG
 

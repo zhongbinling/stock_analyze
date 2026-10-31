@@ -37,24 +37,35 @@ def refresh(days: int = 12) -> bool:
       volume REAL, amount REAL, pct_chg REAL,
       PRIMARY KEY(index_code, date))""")
     start = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+    end = date.today().strftime("%Y%m%d")
+    frames = []
     try:
-        df = T.call("sw_daily", "", start_date=start,
-                    end_date=date.today().strftime("%Y%m%d"))
+        # D1-24r: 全指×N日可超单次4000行上限(439×12=5268实测恰截断) → 分页
+        offset = 0
+        while True:
+            df = T.call("sw_daily", "", start_date=start, end_date=end,
+                        limit=4000, offset=offset)
+            frames.append(df)
+            if df is None or len(df) < 4000:
+                break
+            offset += 4000
     except Exception as e:                                  # noqa: BLE001
         print(f"[sw-bars] refresh失败: {e}")
         sent.close()
         return False
     n = 0
-    if df is not None and not df.empty:
+    for df in frames:
+        if df is None or df.empty:
+            continue
         sent.executemany(
             "INSERT OR REPLACE INTO sw_daily VALUES(?,?,?,?,?,?,?,?,?)",
             [(r["ts_code"], _iso(r["trade_date"]), r["open"], r["high"],
               r["low"], r["close"], r["vol"], r["amount"], r["pct_change"])
              for _, r in df.iterrows()])
-        sent.commit()
-        n = len(df)
+        n += len(df)
+    sent.commit()
     sent.close()
-    print(f"[sw-bars] refresh: {n} 行(全指近{days}日)")
+    print(f"[sw-bars] refresh: {n} 行(全指近{days}日, {len(frames)}页)")
     return True
 
 
