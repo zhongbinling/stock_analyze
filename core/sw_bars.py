@@ -24,6 +24,40 @@ def _iso(d):
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 else s
 
 
+def refresh(days: int = 12) -> bool:
+    """D1-24a: 增量刷新 — 无ts_code单call取全指近N日(实测439指数×3日1317行)
+    直接upsert。背景: backfill的7日幂等豁免使近端缺口(如10-28~30)被跳过
+    (repair实测19s零写入), 体检期望逐日完整 — 增量通道弥合两者。"""
+    if not T.has_token():
+        return True
+    from datetime import date, timedelta
+    sent = connect()
+    sent.execute("""CREATE TABLE IF NOT EXISTS sw_daily(
+      index_code TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL,
+      volume REAL, amount REAL, pct_chg REAL,
+      PRIMARY KEY(index_code, date))""")
+    start = (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+    try:
+        df = T.call("sw_daily", "", start_date=start,
+                    end_date=date.today().strftime("%Y%m%d"))
+    except Exception as e:                                  # noqa: BLE001
+        print(f"[sw-bars] refresh失败: {e}")
+        sent.close()
+        return False
+    n = 0
+    if df is not None and not df.empty:
+        sent.executemany(
+            "INSERT OR REPLACE INTO sw_daily VALUES(?,?,?,?,?,?,?,?,?)",
+            [(r["ts_code"], _iso(r["trade_date"]), r["open"], r["high"],
+              r["low"], r["close"], r["vol"], r["amount"], r["pct_change"])
+             for _, r in df.iterrows()])
+        sent.commit()
+        n = len(df)
+    sent.close()
+    print(f"[sw-bars] refresh: {n} 行(全指近{days}日)")
+    return True
+
+
 def backfill(start="19990101") -> bool:
     """逐指数一次全历史调用(ts_code参数!), 幂等: 最新≥行情最新-5日的指数跳过"""
     sent = connect()

@@ -61,13 +61,17 @@ def test_run_rejects_bad_pe(val_env, monkeypatch):
 
 
 def test_refresh_daily_batch(val_env, monkeypatch):
-    """日增: 按trade_date一次拿全指数, 白名单过滤, 当日一批"""
+    """日增: 按trade_date一次拿全指数, 白名单过滤, 当日一批
+    (D1-24r: 日期动态化 — 原硬编码20261023, 10-31起滑出7日回看窗实测)"""
+    import datetime as _dt
+    d_hit = (_dt.date.today() - _dt.timedelta(days=4)).strftime("%Y%m%d")
+
     def fake(api, fields="", **kw):                      # 逐日回看(接口须带trade_date)
         d = kw.get("trade_date", "")
         return pd.DataFrame([
             ("000300.SH", 13.9, 1.36), ("000016.SH", 11.7, 1.24),
             ("399005.SZ", 26.6, 2.58),                    # 不在白名单 → 滤除
-        ], columns=["ts_code", "pe", "pb"]) if d == "20261023" else pd.DataFrame(
+        ], columns=["ts_code", "pe", "pb"]) if d == d_hit else pd.DataFrame(
             columns=["ts_code", "pe", "pb"])
     monkeypatch.setattr(FV.T, "call", fake)
     assert FV.refresh(conn=sqlite3.connect(str(val_env["path"]))) is True
@@ -98,19 +102,21 @@ def test_refresh_lookback_heals_missed_days(val_env, monkeypatch):
     """D1-14r: 日增回看7天 — 错过日(服务某晚未跑)自动补, 不再永久缺"""
     import datetime as _dt
     FV = val_env["FV"]
+    d_miss = (_dt.date.today() - _dt.timedelta(days=5)).strftime("%Y%m%d")
+    d_now = _dt.date.today().strftime("%Y%m%d")
     def fake(api, fields="", **kw):                      # 逐日: 错过日+今日有数据
         d = kw.get("trade_date", "")
-        if d in ("20261023", "20261027"):
-            return pd.DataFrame([("000300.SH", 13.9 if d == "20261023" else 14.0,
-                                  1.36 if d == "20261023" else 1.37)],
+        if d in (d_miss, d_now):
+            return pd.DataFrame([("000300.SH", 13.9 if d == d_miss else 14.0,
+                                  1.36 if d == d_miss else 1.37)],
                                 columns=["ts_code", "pe", "pb"])
         return pd.DataFrame(columns=["ts_code", "pe", "pb"])
     monkeypatch.setattr(FV.T, "call", fake)
     assert FV.refresh(conn=sqlite3.connect(str(val_env["path"]))) is True
     c = sqlite3.connect(str(val_env["path"]))
-    n23 = c.execute("SELECT COUNT(*) FROM index_val_daily "
-                    "WHERE date='2026-10-23'").fetchone()[0]
-    n27 = c.execute("SELECT COUNT(*) FROM index_val_daily "
-                    "WHERE date='2026-10-27'").fetchone()[0]
-    assert n23 == 1 and n27 == 1                   # 错过日+今日都落库
+    n_miss = c.execute("SELECT COUNT(*) FROM index_val_daily WHERE date=?",
+                       (f"{d_miss[:4]}-{d_miss[4:6]}-{d_miss[6:]}",)).fetchone()[0]
+    n_now = c.execute("SELECT COUNT(*) FROM index_val_daily WHERE date=?",
+                      (f"{d_now[:4]}-{d_now[4:6]}-{d_now[6:]}",)).fetchone()[0]
+    assert n_miss == 1 and n_now == 1             # 错过日+今日都落库
     c.close()

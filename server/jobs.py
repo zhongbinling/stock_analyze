@@ -349,6 +349,17 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
         after = market.scan_gaps(window_days)
         after_miss = sum(len(a["missing"]) for a in after["assets"] if a["missing"])
         append(f"[repair] 修复后剩余缺口 {after_miss} 日(原 {total_missing})")
+        # D1-24b: 闭环诊断 — 剩余缺口按数据集给原因, 终结"修不好但不知为何"
+        if after_miss:
+            for a in after["assets"]:
+                if not a["missing"]:
+                    continue
+                reason = ("源端滞后自愈(末端lag白名单)" if a.get("delay")
+                          else "定向回补零写入 — 疑源端口径/接口变化, 请查该数据集最近补全任务日志"
+                          if a.get("has_path")
+                          else "无定向通道(更新链已覆盖, 属链路内自愈范畴)")
+                append(f"[repair] ⚠ {a['name']}: 剩{len(a['missing'])}日"
+                       f"({','.join(a['missing'][-3:])}) — {reason}")
         return 0
     return fn
 

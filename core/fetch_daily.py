@@ -566,7 +566,10 @@ def fetch_sw_daily(lookback=10):
                      ("pool-official", lambda: __import__("sw_pool").overlay(start)),
                      ("fflow", lambda: __import__("sw_fflow").backfill(start)
                       and __import__("sw_fflow").agg(start)),
-                     ("sic", lambda: __import__("sw_index_comp").build(start))):
+                     ("sic", lambda: __import__("sw_index_comp").build(start)),
+                     # D1-24a: 官方日线增量(无ts_code全指单call) — 此前夜间
+                     # 链不刷sw_daily, 近端缺口只能手工
+                     ("bars", lambda: __import__("sw_bars").refresh())):
         try:
             t0 = _t.time()
             ok = fn()
@@ -577,8 +580,10 @@ def fetch_sw_daily(lookback=10):
 
 
 def backfill_sw_daily(start="19990101"):
-    """D1-6 P4: SW行业指数日线(官方回溯~2012-08) — sw_bars.backfill"""
+    """D1-6 P4 + D1-24a: 先增量refresh(近端缺口 — backfill的7日豁免会
+    跳过体检所报的近端缺日), 再全史backfill(深缺口; 幂等)"""
     import sw_bars
+    sw_bars.refresh()
     return sw_bars.backfill(start)
 
 

@@ -257,10 +257,21 @@ def _today() -> str:
     return date.today().isoformat()
 
 
-# D1-19 P1: 源端发布延迟白名单(单位=交易日lag, 从窗口末端数) — 实测 tushare
-# margin D 日数据要到 D+2 早间更新链才可得(10-27 缺于 10-28 01:50 属常态),
-# 计入真缺口只会每晚必现假告警; 仅豁免末端 lag, 更早缺日仍算真缺口。
-_DELAY_LAG = {"margin": 1}
+# D1-19 P1 / D1-24c: 源端发布滞后配置(单位=交易日lag, 从窗口末端数)。
+# 体检分类与修复跳过共用; 新数据集源滞后只改这里。
+# 实测: margin D日数据 D+2 早间链才可得(仅豁免末端lag, 更早仍算真缺)。
+_SOURCE_LAG = {"margin": 1}
+# D1-24b/c: 资产code→定向补全数据集(镜像data.html BF_ROWS的asset映射;
+# 24e已立项: SCAN_DS应迁移服务端单点维护, 此为过渡)
+_REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
+              "sw_fflow": "sw_fflow", "sw_daily": "sw_daily",
+              "pool": "zt_ts", "sector_pool": "zt_ts",
+              "breadth": "breadth", "sector_daily": "dc_daily",
+              "sector_fflow": "dc_fflow", "index_val": "index_val",
+              "margin": "margin_hist", "etf": "etf_daily",
+              "mkt_val": "mkt_val", "raw_daily": "raw", "raw_mf": "raw"}
+# 兼容别名(D1-19期名称)
+_DELAY_LAG = _SOURCE_LAG
 
 
 def scan_gaps(window_days: int = 7) -> dict:
@@ -312,7 +323,8 @@ def scan_gaps(window_days: int = 7) -> dict:
                     real.append(d)
             assets.append({"code": code, "name": name,
                            "db": "raw_daily.db" if is_raw else "sentiment.db",
-                           "missing": real, "pending": pend, "delay": dly})
+                           "missing": real, "pending": pend, "delay": dly,
+                           "has_path": code in _REPAIR_DS})
         return {"window_days": window_days, "trading_days": len(base),
                 "latest": base[-1], "assets": assets}
     finally:
@@ -467,6 +479,20 @@ def datasets() -> list:
                 if missing:
                     note = (f"缺 {len(missing)} 天(近期: {','.join(missing[-3:])})"
                             + (f"·{base_note}" if base_note else ""))
+                elif last:                     # D1-24d: 自区间完整但落后日历
+                    try:
+                        latest_cal = con.execute(
+                            "SELECT MAX(cal_date) FROM calendar WHERE is_open=1 "
+                            "AND cal_date<=?", (time.strftime("%Y%m%d"),)).fetchone()[0]
+                        behind = con.execute(
+                            "SELECT COUNT(*) FROM calendar WHERE is_open=1 "
+                            "AND cal_date>? AND cal_date<=?",
+                            (last.replace("-", ""), latest_cal)).fetchone()[0] if latest_cal else 0
+                        lag_ok = _SOURCE_LAG.get(code, 0)
+                        if behind > lag_ok:
+                            note = (f"落后{behind}个交易日" + (f"·{base_note}" if base_note else ""))
+                    except sqlite3.Error:
+                        pass
                 extra = ""
                 if table == "margin_daily":
                     rzrq = con.execute(
