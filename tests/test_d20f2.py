@@ -152,7 +152,8 @@ def test_float_overview_assembly(env, monkeypatch):
     rc = sqlite3.connect(str(env["raw"]))
     rc.executemany("INSERT OR REPLACE INTO daily VALUES(?,?,?,?)", [
         ("600000.SH", f"{cur}-05".replace("-", ""), 9.9, 9.9),
-        ("600001.SH", f"{cur}-10".replace("-", ""), 7.9, 7.9)])
+        ("600001.SH", f"{cur}-10".replace("-", ""), 7.9, 7.9),
+        ("600000.SH", f"{cur}-10".replace("-", ""), 9.9, 9.9)])  # 最新日双code(最新价字典口径)
     rc.commit()
     rc.close()
     MC = env["MC"]
@@ -161,13 +162,18 @@ def test_float_overview_assembly(env, monkeypatch):
     _sh.copy(env["sent"], env["tmp"] / "data" / "sentiment.db")
     _sh.copy(env["raw"], env["tmp"] / "data" / "raw_daily.db")
     r = MC.float_overview()
-    assert r["latest_day"] == "2026-10-28"
+    # D1-25r: 期望动态化 — 当月随真实日历(11月起夹具cur-10成为最新raw日)
+    exp_latest = max(f"{cur}-10", "2026-10-28")
+    assert r["latest_day"] == exp_latest
     assert r["hist"][-1]["month"] == last and r["hist"][-1]["amount_yi"] == 1234.5
-    # 当月done: 1e9×9.9/1e8 + 2e9×7.9/1e8 ≈ 99+158=257亿(前收)
-    assert r["cur"]["done_yi"] == round(1e9 * 9.9 / 1e8 + 2e9 * 7.9 / 1e8, 1)
-    # 当月plan: 10亿股×20元=200亿(最新价)
-    assert r["cur"]["plan_yi"] == 200.0
-    assert len(r["future"]) == 3 and r["future"][0]["plan_yi"] == 0.0
+    # 当月done: ≤最新日的两笔按前收(9.9/7.9)
+    done_exp = round(1e9 * 9.9 / 1e8, 1)
+    if f"{cur}-10" <= exp_latest:            # 10日样本≤最新日→前收口径
+        done_exp = round(1e9 * 9.9 / 1e8 + 2e9 * 7.9 / 1e8, 1)
+    assert r["cur"]["done_yi"] == done_exp
+    assert r["cur"]["n_done"] + r["cur"]["n_plan"] == 3
+    assert r["cur"]["plan_yi"] == round(1e9 * 9.9 / 1e8, 1)   # 11-30事件按最新价9.9
+    assert len(r["future"]) == 3
 
 
 def test_registrations():

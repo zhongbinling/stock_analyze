@@ -41,7 +41,11 @@ function axisCommon() {
   return {axisLabel: {color: c}, splitLine: {lineStyle: {color: theme() === 'dark' ? '#2a2d33' : '#eee'}}};
 }
 function render(data) {
-  const S = data.samples || [];
+  // D1-25: 渲染窗 09:30~15:00(剔盘中启动的盘前tick/尾部), 累计序列显示
+  // 单调化(cummax, 源毛刺回退不进图)
+  const cummax = (arr) => { let m = -Infinity; return arr.map(v =>
+    v == null ? null : (m = Math.max(m, v))); };
+  const S = (data.samples || []).filter(x => x.t >= '09:30:00' && x.t <= '15:00:59');
   const ts = S.map(x => x.t);
   const last = S[S.length - 1] || {};
   const meta = data.meta || {};
@@ -83,7 +87,7 @@ function render(data) {
       {name: '分钟量(万手)', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
        data: vols, barMaxWidth: 2},
       {name: '今日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
-       data: S.map(x => x.cumamt), showSymbol: false,
+       data: cummax(S.map(x => x.cumamt)), showSymbol: false,
        lineStyle: {width: 1.4, color: '#eda100'}, itemStyle: {color: '#eda100'}},
       {name: '昨日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
        data: ydLine, showSymbol: false, connectNulls: true,
@@ -114,7 +118,7 @@ function render(data) {
     tooltip: {trigger: 'axis'},
     xAxis: {type: 'category', data: ts, ...axisCommon()},
     yAxis: {type: 'value', scale: true, ...axisCommon()},
-    series: [{name: '当日累计', type: 'line', data: S.map(x => x.etf), showSymbol: false,
+    series: [{name: '当日累计', type: 'line', data: cummax(S.map(x => x.etf)), showSymbol: false,
       lineStyle: {width: 1.8, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'},
       areaStyle: {opacity: 0.08},
       markLine: etfPrev ? {silent: true, symbol: 'none',
@@ -142,7 +146,13 @@ async function api(url) {
 async function loadDays() {
   try {
     const d = await api('/admin/api/rt/days');
-    $('rtDaysList').textContent = d.days.length ? `可回看 ${d.days.length} 日` : '暂无存档';
+    $('rtDaysList').innerHTML = d.days.length
+      ? d.days.slice(0, 10).map(x =>
+          `<a href="javascript:void(0)" class="btn small" data-day="${x}" style="margin-left:4px">${x.slice(5)}</a>`).join('')
+        + (d.days.length > 10 ? ` <span>共${d.days.length}日</span>` : '')
+      : '暂无存档';
+    document.querySelectorAll('#rtDaysList [data-day]').forEach(a =>
+      a.onclick = () => { viewDate = a.dataset.day; $('rtDate').value = a.dataset.day; load(); });
   } catch (e) {}
 }
 

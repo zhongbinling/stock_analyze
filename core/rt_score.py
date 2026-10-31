@@ -44,6 +44,11 @@ def rt_frame(conn, cfg, snap: dict):
     for k in ("zt_count", "dt_count", "zb_rate", "lb_max", "jl_rate"):
         row[k] = snap.get(k)
     df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+    # D1-25: 合成行含None会使列变object → derive减法抛 NoneType-float
+    # (10-31实测: qt失败日tick全天崩, 零采样) — 数值列强转根杀此类
+    for col in ("open", "high", "low", "close", "volume", "amount",
+                "volume2", "amount2"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
     return derive(df)
 
 
@@ -126,13 +131,17 @@ def fetch_snapshot(conn) -> dict:
     """实时快照(R1选型源): qt双指数量价 + tushare涨停结构(与每日
     fetch_tushare_mood_today 口径逐行一致; 失败→东财四池降级)"""
     from probe_rt import _curl, parse_qt
-    snap = {"date": time.strftime("%Y-%m-%d")}
+    snap = {}
     code, body = _curl(QT_INDEX_URL)
     if code == 200:
         segs = [parse_qt(s + ";") for s in body.split(";") if "v_" in s]
         segs = [s for s in segs if s]
         if len(segs) >= 2:
-            snap.update(quote_from_qt(segs[0], segs[1], snap["date"]))
+            snap.update(quote_from_qt(segs[0], segs[1],
+                                      time.strftime("%Y-%m-%d")))
+    if snap.get("close") is None:
+        return {}                  # D1-25: qt失败(DNS窗口等)不产出半截快照
+                                  # — 半截快照曾使tick全天崩(10-31零采样实测)
     snap.update(_pool_snapshot(conn))
     return snap
 

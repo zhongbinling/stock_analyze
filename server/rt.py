@@ -73,6 +73,8 @@ def tick(now: datetime = None) -> str:
         try:
             snap = rt_score.fetch_snapshot(conn)
             today = now.strftime("%Y-%m-%d")
+            if not snap:
+                return "stale"                  # D1-25: qt失败跳过本tick
             if snap.get("date") != today:
                 return "stale"                  # 节假日/盘前: qt返回上日数据
             rt = rt_score.compute_rt(conn, snap)
@@ -134,7 +136,11 @@ def _minute_etf(etf_final: float) -> dict:
     if not volsum or not etf_final:
         return {}
     tot = max(volsum.values()) or 1.0
-    return {k: round(etf_final * v / tot, 1) for k, v in sorted(volsum.items())}
+    out, mx = {}, 0.0
+    for k, v in sorted(volsum.items()):     # D1-25: 累计口径cummax防源毛刺回退
+        mx = max(mx, round(etf_final * v / tot, 1))
+        out[k] = mx
+    return out
 
 
 def _minute_samples(amt1f: float) -> list:
@@ -185,8 +191,8 @@ def backfill_today(now: datetime = None) -> str | None:
         try:
             snap = rt_score.fetch_snapshot(conn)
             target = snap.get("date")
-            if not target:
-                return None
+            if not target or snap.get("close") is None:
+                return None                     # D1-25: 无价格快照不补采
             if target == today and hm <= 15 * 60 + 5:
                 return None                  # 盘中当日: tick负责
             rt = rt_score.compute_rt(conn, snap)
