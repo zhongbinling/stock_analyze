@@ -658,7 +658,9 @@ async function loadRtStat() {
     $('rtStat').textContent = d.poller_alive ? '● 采集线程运行中' : '○ 线程未运行';
     $('rtStatDetail').innerHTML = `已采集 <b>${d.days}</b> 天 (${d.first || '--'} ~ ${d.latest || '--'})`
       + ` · 最新日 <b>${d.latest_n}</b> 点 · 今日 ${d.today_n} 点 · ${d.size_kb} KB`
-      + ` · 采集开关 <b>${d.enabled ? '开' : '关'}</b>`;
+      + ` · 采集开关 <b>${d.enabled ? '开' : '关'}</b>`
+      + ` · 最近备份 <b>${d.backup_at || '—'}</b>`
+      + ` · 历史自功能上线(${d.first || '—'})起积累, 深史无源可补(分钟线仅近3日)`;
   } catch (e) { $('rtStat').textContent = e.message; }
 }
 $('btnRtBackfill').onclick = async () => {

@@ -47,6 +47,17 @@ function render(data) {
   const cummax = (arr) => { let m = -Infinity; return arr.map(v =>
     v == null ? null : (m = Math.max(m, v))); };
   const S = (data.samples || []).filter(x => x.t >= '09:30' && x.t <= '15:01');
+  // D1-27: 同花顺式时间轴 — 半小时刻度(:00/:30) + 竖虚线, 15s采样取每分首点
+  const TICKS = new Set(['09:30', '10:00', '10:30', '11:00', '11:30',
+                         '13:00', '13:30', '14:00', '14:30', '15:00']);
+  const thsIv = (i, v) => TICKS.has(v.slice(0, 5))
+    && (i === 0 || ts[i - 1].slice(0, 5) !== v.slice(0, 5));
+  const thsX = (visible) => ({type: 'category', data: ts, show: visible,
+    axisLine: { lineStyle: { color: '#898781' } }, axisTick: { show: visible, interval: thsIv },
+    axisLabel: visible ? { color: '#898781', interval: thsIv, formatter: v => v.slice(0, 5) } : undefined,
+    splitLine: { show: visible, interval: thsIv,
+                 lineStyle: { color: theme() === 'dark' ? '#2a2d33' : '#e8e8e8', type: 'dashed' } }});
+
   const ts = S.map(x => x.t);
   const last = S[S.length - 1] || {};
   const meta = data.meta || {};
@@ -72,9 +83,9 @@ function render(data) {
              textStyle: {fontSize: 11}},
     tooltip: {trigger: 'axis'},
     axisPointer: {link: [{xAxisIndex: 'all'}]},
-    xAxis: [{type: 'category', gridIndex: 0, data: ts, show: false},   // 仅末grid显示时刻
-            {type: 'category', gridIndex: 1, data: ts, show: false},
-            {type: 'category', gridIndex: 2, data: ts, ...axisCommon()}],
+    xAxis: [Object.assign({}, thsX(false), {gridIndex: 0}),   // D1-27: 同花顺刻度
+            Object.assign({}, thsX(false), {gridIndex: 1}),
+            Object.assign({}, thsX(true), {gridIndex: 2})],
     yAxis: [{type: 'value', scale: true, name: '指数', gridIndex: 0,
              axisLabel: {color: '#898781'}},
             {type: 'value', gridIndex: 1, name: '亿',
@@ -107,7 +118,7 @@ function render(data) {
     ...chartOpt(), grid: {left: 40, right: 14, top: 26, bottom: 40},
     title: {text: '实时情绪分(与收盘同口径)', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
     tooltip: {trigger: 'axis'},
-    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    xAxis: thsX(true),
     yAxis: {type: 'value', min: -105, max: 105, ...axisCommon()},
     series: [{name: '实时情绪', type: 'line', data: scoreData,
       showSymbol: true, symbolSize: 3,   // R5: 盘后补采仅收盘点, 无符号不可见
@@ -124,7 +135,7 @@ function render(data) {
         ? `波动放大(开盘${scOpen >= 0 ? '+' : ''}${scOpen} ±20)` : '波动放大',
             left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
     tooltip: {trigger: 'axis'},
-    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    xAxis: thsX(true),
     yAxis: scOpen != null
       ? {type: 'value', min: scOpen - 20, max: scOpen + 20, ...axisCommon()}
       : {type: 'value', ...axisCommon()},
@@ -145,7 +156,7 @@ function render(data) {
     ...chartOpt(), grid: {left: 44, right: 14, top: 26, bottom: 40},
     title: {text: '宽基ETF累计成交(亿) vs 昨日', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
     tooltip: {trigger: 'axis'},
-    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    xAxis: thsX(true),
     yAxis: {type: 'value', scale: true, ...axisCommon()},
     series: [
       {name: '当日累计', type: 'line', data: cummax(S.map(x => x.etf)), showSymbol: false,
@@ -180,13 +191,21 @@ async function api(url) {
 async function loadDays() {
   try {
     const d = await api('/admin/api/rt/days');
-    $('rtDaysList').innerHTML = d.days.length
-      ? d.days.slice(0, 10).map(x =>
-          `<a href="javascript:void(0)" class="btn small" data-day="${x}" style="margin-left:4px">${x.slice(5)}</a>`).join('')
-        + (d.days.length > 10 ? ` <span>共${d.days.length}日</span>` : '')
-      : '暂无存档';
+    // D1-27: 近5交易日chips(日历化) — 有档可点, 无档灰化点击提示
+    const have = new Set(d.days || []);
+    const recent = d.recent && d.recent.length ? d.recent : (d.days || []).slice(0, 5);
+    $('rtDaysList').innerHTML = recent.map(x =>
+      `<a href="javascript:void(0)" class="btn small" data-day="${x}"
+         style="margin-left:4px;${have.has(x) ? '' : 'opacity:.4'}"
+         title="${have.has(x) ? '查看存档' : '该日无存档(功能上线前或未采集)'}">${x.slice(5)}</a>`).join('')
+      + ((d.days || []).length > recent.length ? ` <span class="hint">共${d.days.length}日存档</span>` : '');
     document.querySelectorAll('#rtDaysList [data-day]').forEach(a =>
-      a.onclick = () => { viewDate = a.dataset.day; $('rtDate').value = a.dataset.day; load(); });
+      a.onclick = () => {
+        viewDate = a.dataset.day; $('rtDate').value = a.dataset.day;
+        document.querySelectorAll('#rtDaysList [data-day]').forEach(x => x.style.fontWeight = '');
+        a.style.fontWeight = 'bold';
+        load();
+      });
   } catch (e) {}
 }
 
@@ -195,7 +214,8 @@ $('btnDay').onclick = () => {
   if (!v) { alert('请选择日期'); return; }
   viewDate = v; load();
 };
-$('btnToday').onclick = () => { viewDate = null; load(); };
+$('btnToday').onclick = () => { viewDate = null; load();
+  document.querySelectorAll('#rtDaysList [data-day]').forEach(x => x.style.fontWeight = ''); };
 $('rtEnabled').onchange = async () => {
   try {
     const r = await fetch('/admin/api/rt/settings', {method: 'POST',
@@ -229,6 +249,10 @@ async function load() {
     if (!viewDate && data.enabled != null) $('rtEnabled').checked = !!data.enabled;
     render(data);
     lastLive = !!data.live;
+    // D1-27: 状态角标 — 盘中实时/已就绪(显示日)/回看; 不再常驻"加载中"
+    $('rtState').textContent = viewDate ? `回看 ${viewDate}`
+      : (data.live ? '● 盘中实时' : (data.fallback ? `已就绪 · 显示 ${data.date}`
+        : '已就绪'));
     if (!viewDate && data.fallback)
       $('bannerReplay').style.display = '',
       $('bannerReplay').textContent = `非采集时段 — 显示最近交易日 ${data.date} 存档(采集开关保持)`;

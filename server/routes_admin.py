@@ -182,7 +182,7 @@ def api_rt_day():
 @require_level(7)
 def api_rt_days():
     from server import rt
-    return jsonify({"days": rt.days()})
+    return jsonify({"days": rt.days(), "recent": rt.recent_days(5)})
 
 
 @bp_admin.get("/api/rt/stats")

@@ -390,7 +390,7 @@ def stats() -> dict:
     finally:
         con.close()
     today = time.strftime("%Y-%m-%d")
-    return {
+    out = {
         "days": len(rows),
         "first": rows[-1][0] if rows else None,
         "latest": rows[0][0] if rows else None,
@@ -399,7 +399,19 @@ def stats() -> dict:
         "size_kb": round(RT_DB.stat().st_size / 1024, 1) if RT_DB.exists() else 0,
         "enabled": _enabled_cached(),
         "poller_alive": _thread is not None and _thread.is_alive(),
+        "recent": recent_days(5),             # D1-27: 近5交易日(chips日历化)
     }
+    try:                                      # D1-27: realtime资产最近备份
+        mf = (ROOT / "backups" / "manifest.json")
+        if mf.exists():
+            m = json.loads(mf.read_text(encoding="utf-8"))
+            e = next((x for x in reversed(m.get("entries", []))
+                      if x.get("asset") == "realtime"), None)
+            if e:
+                out["backup_at"] = (e.get("file", "").split("/")[0] or "")[:16]
+    except Exception:                                      # noqa: BLE001
+        pass
+    return out
 
 
 def _enabled_cached() -> bool:
@@ -552,3 +564,22 @@ def _yday_curve(display_date: str) -> dict | None:
            "points": {k: round(anchor * c / total, 1) for k, c in pts.items()}}
     _yday_curve_cache[key] = out
     return out
+
+
+def recent_days(n: int = 5) -> list:
+    """D1-27: 近N个交易日(ISO降序) — chips日历化(无档日也显示, 点击给提示)"""
+    try:
+        con = sqlite3.connect(
+            f"file:{(CORE / 'data' / 'sentiment.db').as_posix()}?mode=ro", uri=True)
+        rows = con.execute(
+            "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date<=? "
+            "ORDER BY cal_date DESC LIMIT ?",
+            (time.strftime("%Y%m%d"), int(n))).fetchall()
+        con.close()
+        return [_norm(r[0]) for r in rows]
+    except Exception:                                      # noqa: BLE001
+        return []
+
+
+def _norm(ymd: str) -> str:
+    return f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:8]}" if len(ymd) == 8 else ymd
