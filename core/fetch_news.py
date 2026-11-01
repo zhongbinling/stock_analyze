@@ -26,13 +26,6 @@ import tushare_api as T                                    # noqa: E402
 MACRO_DB = BASE / "data" / "macro.db"
 PAGE = 800                     # 实测单页上限
 RATE_LIMIT_PER_MIN = 18        # 实测20次/分钟(留余量)
-
-
-class RateLimited(Exception):
-    """tushare 频率超限(20次/分钟) — 上抛由run轮级等待"""
-    def __init__(self, day):
-        super().__init__(f"rate-limited at {day}")
-        self.day = day
 SRC_MN = "major_news"          # tushare官方宏观(深史)
 SRC_EM = "em_flash"            # akshare东财快讯(增量)
 
@@ -151,28 +144,25 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
     print(f"[news] major_news 待回补 {todo} 日 ({start}~{end})")
     t0, i, cur = time.time(), 0, d
     interval = 60.0 / RATE_LIMIT_PER_MIN          # 均匀限速(18次/分≈3.3s间隔)
+    rate_capped = False
     while cur <= d2:
+        if rate_capped:                           # 小时限频(30/h)耗尽 → 本轮到此
+            break
         iso = cur.isoformat()
         if iso not in done:
-            time.sleep(interval)                  # D1-28r: 先sleep再调(防burst)
-            try:
-                n = fetch_day(cur.strftime("%Y%m%d"), path)
-                if n < 0 and iso >= (dt.date.today() - dt.timedelta(days=3)).isoformat():
-                    pass                        # 近期日源未出数, 不中断
-            except RateLimited:
-                print(f"  ⏳ {iso} 超限, 额外等60s")
-                time.sleep(60)
-                try:
-                    fetch_day(cur.strftime("%Y%m%d"), path)
-                except Exception:               # noqa: BLE001
-                    pass                        # 重试仍失败 → 下一轮补
+            time.sleep(interval)
+            n = fetch_day(cur.strftime("%Y%m%d"), path)
+            if n == -2:                           # 小时限频 → 不再空转(曾空转500日×3.3s)
+                print(f"  ⏳ 小时限频(30/h)耗尽于{iso}, 本轮结束(渐进回补次轮续)")
+                rate_capped = True
             i += 1
             if i % 30 == 0:
                 print(f"  [{i}/{todo}] {time.time()-t0:.0f}s → {iso}", flush=True)
         cur += dt.timedelta(days=1)
     refresh_em(path)
     _summary(path)
-    print(f"[news] 回补轮结束 {time.time()-t0:.0f}s")
+    print(f"[news] 回补轮结束 {time.time()-t0:.0f}s"
+          + (f" (限频中断于{i}/{todo})" if rate_capped else ""))
     return True
 
 
