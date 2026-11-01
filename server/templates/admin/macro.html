@@ -82,10 +82,12 @@
   </div>
   <div class="row-flex" style="margin-top:8px">
     <span class="hint" id="aiDetail">--</span>
-    <button class="btn small" id="btnAiAnalyze">本地分析一批</button>
-    <button class="btn small" id="btnAiCloud">云端精析(L3+)</button>
+    <button class="btn small" id="btnAiAnalyze">本地一批</button>
+    <button class="btn small" id="btnAiCloud">云端(L3+)</button>
+    <button class="btn primary small" id="btnAiAll" title="循环本地全量→云端L3+, 异步入队">一键全量</button>
     <span class="hint" id="aiMsg"></span>
   </div>
+  <div class="row-flex" style="margin-top:6px;gap:4px;flex-wrap:wrap" id="aiLevels"></div>
 </section>
 
 <section class="card">
@@ -133,7 +135,9 @@ async function load() {
         <td class="${LV_CLS[e.level] || ''}">${esc(LV_NAME[e.level] || e.level)}</td>
         <td><b>${esc(e.title)}</b></td>
         <td class="hint">${esc(e.type || '--')}</td>
-        <td class="hint">${esc(e.source || '--')}</td>
+        <td class="hint">${(e.source || '').startsWith('ai_')
+          ? `<b style="color:#6250d6">AI</b> ${esc((e.source || '').split(':')[1] || '')}`
+          : esc(e.source || '--')}</td>
         <td class="hint" style="max-width:420px">${esc(e.content || '')}</td>
         <td><button class="btn small" data-del="${e.id}">删除</button></td></tr>`).join('')
         : '<tr><td colspan="7" class="hint">无匹配事件</td></tr>');
@@ -193,11 +197,24 @@ async function loadAiConfig() {
 }
 async function loadAiProg() {
   try {
-    const d = await api('/admin/api/ai/progress');
-    $('aiProg').textContent = d.total_raw ? `原始${d.total_raw}条 · 待分析${d.pending}` : '暂无新闻';
-    $('aiDetail').innerHTML = `本地完成 <b>${d.done}</b> · 失败${d.fail} · 云端${d.cloud_done}`
-      + (d.cloud_pending ? ` · <b>待云端${d.cloud_pending}</b>` : '')
-      + (d.pending ? ` · <b>待分析${d.pending}</b>` : '');
+    const d = await api('/admin/api/ai/summary');
+    const pct = d.total_raw ? Math.round(d.done / d.total_raw * 100) : 0;
+    $('aiProg').textContent = d.total_raw
+      ? `原始${d.total_raw} · 本地${pct}% · 待${d.pending}` : '暂无新闻';
+    $('aiDetail').innerHTML = `本地 <b>${d.done}</b>(${pct}%) · 失败${d.fail}`
+      + ` · 云端 <b>${d.cloud_done}</b>` + (d.cloud_pending ? ` · <b>待云端${d.cloud_pending}</b>` : '');
+    // 等级徽标(AI/手工分列)
+    const L = d.levels || {};
+    const LV_C = {5:'#d03b3b', 4:'#e67e22', 3:'#eda100', 2:'#8e44ad', 1:'#898781'};
+    const lvBadge = (lv) => {
+      const ai = (L.ai || {})[lv] || 0, mn = (L.manual || {})[lv] || 0;
+      if (!ai && !mn) return '';
+      return `<span style="background:${LV_C[lv]};
+        color:#fff;padding:1px 5px;border-radius:3px;font-size:11px;margin-right:2px"
+        title="AI ${ai} · 手工 ${mn}">L${lv} ${ai + mn}</span>`;
+    };
+    $('aiLevels').innerHTML = [5,4,3,2,1].map(lvBadge).join('')
+      + `<span class="hint" style="margin-left:6px">数字=AI+手工</span>`;
   } catch (e) { $('aiDetail').textContent = e.message; }
 }
 $('btnAiSave').onclick = async () => {
@@ -209,6 +226,14 @@ $('btnAiSave').onclick = async () => {
               model: $('aiCloudModel').value, api_key: $('aiCloudKey').value || undefined}
     })});
     $('aiMsg').textContent = r.msg;
+  } catch (e) { $('aiMsg').textContent = e.message; }
+};
+$('btnAiAll').onclick = async () => {
+  $('aiMsg').textContent = '⏳ 全量分析入队中…';
+  try {
+    const r = await api('/admin/api/ai/analyze-all', {method: 'POST', body: '{}'});
+    $('aiMsg').textContent = r.msg;
+    poll && setTimeout(loadAiProg, 5000);
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
 $('btnAiCloud').onclick = async () => {

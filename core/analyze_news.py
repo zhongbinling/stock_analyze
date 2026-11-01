@@ -288,3 +288,31 @@ def analyze_cloud_batch(batch_size: int = 5, cfg: dict = None,
         AND (c.id IS NULL OR c.status = 'fail')""").fetchone()[0]
     con.close()
     return {"analyzed": analyzed, "failed": failed, "pending": pending}
+
+
+def level_counts() -> dict:
+    """N4: 成品库按等级计数(AI/手工分列)"""
+    db_path = BASE / "data" / "macro.db"
+    if not db_path.exists():
+        return {"ai": {}, "manual": {}}
+    con = sqlite3.connect(str(db_path))
+    try:
+        ensure_tables(con)
+        out = {"ai": {}, "manual": {}}
+        for lv, src, n in con.execute(
+                "SELECT level, source LIKE 'ai_%', COUNT(*) FROM macro_events "
+                "GROUP BY level, source LIKE 'ai_%'"):
+            key = "ai" if src else "manual"
+            out[key][str(lv)] = n
+    except sqlite3.Error:
+        out = {"ai": {}, "manual": {}}
+    finally:
+        con.close()
+    return out
+
+
+def auto_analyze(local_batch: int = 20, cloud_batch: int = 10) -> dict:
+    """N4: 自动分析(夜间链挂载) — 先本地全量, 后云端L3+"""
+    r1 = analyze_batch(local_batch)
+    r2 = analyze_cloud_batch(cloud_batch)
+    return {"local": r1, "cloud": r2}

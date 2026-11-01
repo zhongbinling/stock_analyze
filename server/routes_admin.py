@@ -275,6 +275,46 @@ def api_ai_analyze():
     return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})
 
 
+@bp_admin.get("/api/ai/summary")
+@require_level(7)
+def api_ai_summary():
+    """D1-28 N4: AI分析总览 — 进度+等级计数(AI/手工分列)"""
+    from server import macro as _m
+    import sys as _s
+    _s.path.insert(0, str(_m.CORE))
+    import analyze_news as AN
+    prog = AN.progress()
+    prog["levels"] = AN.level_counts()
+    return jsonify(prog)
+
+
+@bp_admin.post("/api/ai/analyze-all")
+@require_level(7)
+def api_ai_analyze_all():
+    """D1-28 N4: 一键全量分析(本地全量→云端L3+, 异步入队)"""
+    from server import jobs as J
+    if J.get_setting("ai_local_enabled", "0") != "1":
+        return jsonify({"msg": "本地AI未启用, 请先配置"}), 400
+
+    def fn(append):
+        import analyze_news as AN
+        append(f"全量分析开始(本地→云端)")
+        total_local = total_cloud = 0
+        while True:
+            r = AN.analyze_batch(20)
+            total_local += r.get("analyzed", 0)
+            append(f"  本地批次: +{r.get('analyzed', 0)} (待{r.get('pending', 0)})")
+            if r.get("analyzed", 0) == 0:
+                break
+        r2 = AN.analyze_cloud_batch(20)
+        total_cloud = r2.get("analyzed", 0)
+        append(f"  云端批次: +{total_cloud}")
+        append(f"全量分析完成: 本地{total_local} 云端{total_cloud}")
+        return 0
+    ok, msg = J.enqueue("analyze_all", fn, target="AI全量分析", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 已入队"})
+
+
 @bp_admin.post("/api/ai/analyze-cloud")
 @require_level(7)
 def api_ai_analyze_cloud():
