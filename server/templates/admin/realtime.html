@@ -15,9 +15,10 @@
   <div id="bannerReplay" class="hint" style="display:none;padding:4px 8px;border:1px dashed var(--line,#bbb);border-radius:6px;margin-bottom:6px">
     回看模式
   </div>
-  <div id="chartMain" style="height:520px"></div>
+  <div id="chartMain" style="height:660px"></div>
   <div style="display:flex;gap:10px;flex-wrap:wrap">
-    <div id="chartScore" style="height:240px;flex:2;min-width:340px"></div>
+    <div id="chartScore" style="height:240px;flex:1;min-width:300px"></div>
+    <div id="chartScoreZoom" style="height:240px;flex:1;min-width:300px"></div>
     <div id="chartEtf" style="height:240px;flex:1;min-width:280px"></div>
   </div>
   <p class="hint">分时=采样点(盘中15s/档) · 实时情绪与收盘评分同口径(R2算法) · ETF=8只国家队当日累计成交额 vs 昨日总量 · 盘后与节假日自动停采, 历史日可回看</p>
@@ -64,17 +65,21 @@ function render(data) {
   charts.main = charts.main || echarts.init($('chartMain'), theme());
   charts.main.setOption({
     ...chartOpt(),
-    grid: [{left: 56, right: 56, top: 30, height: 250},
-           {left: 56, right: 56, top: 316, height: 150}],
+    grid: [{left: 56, right: 56, top: 28, height: 210},        // 价格
+           {left: 56, right: 56, top: 272, height: 110},       // 累计额(今/昨)
+           {left: 56, right: 56, top: 416, height: 180}],      // 分钟量(独立刻度)
     legend: {data: ['上证', '分钟量(万手)', '今日累计额(亿)', '昨日累计额(亿)'],
              textStyle: {fontSize: 11}},
     tooltip: {trigger: 'axis'},
     axisPointer: {link: [{xAxisIndex: 'all'}]},
     xAxis: [{type: 'category', gridIndex: 0, data: ts, ...axisCommon()},
-            {type: 'category', gridIndex: 1, data: ts, ...axisCommon()}],
+            {type: 'category', gridIndex: 1, data: ts, ...axisCommon()},
+            {type: 'category', gridIndex: 2, data: ts, ...axisCommon()}],
     yAxis: [{type: 'value', scale: true, name: '指数', gridIndex: 0,
              axisLabel: {color: '#898781'}},
-            {type: 'value', gridIndex: 1, name: '万手/亿',
+            {type: 'value', gridIndex: 1, name: '亿',
+             axisLabel: {color: '#898781'}, splitLine: {show: false}},
+            {type: 'value', gridIndex: 2, name: '万手',
              axisLabel: {color: '#898781'}, splitLine: {show: false}}],
     series: [
       {name: '上证', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
@@ -84,17 +89,19 @@ function render(data) {
          label: {formatter: '昨收 {c}', fontSize: 10},
          lineStyle: {type: 'dashed', color: '#e34448'},
          data: [{yAxis: meta.prev_close}]} : undefined},
-      {name: '分钟量(万手)', type: 'bar', xAxisIndex: 1, yAxisIndex: 1,
-       data: vols, barMaxWidth: 2},
       {name: '今日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
        data: cummax(S.map(x => x.cumamt)), showSymbol: false,
        lineStyle: {width: 1.4, color: '#eda100'}, itemStyle: {color: '#eda100'}},
       {name: '昨日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
        data: cummax(ydLine), showSymbol: false, connectNulls: true,
        lineStyle: {width: 1.2, color: '#898781', type: 'dashed'},
-       itemStyle: {color: '#898781'}}],
+       itemStyle: {color: '#898781'}},
+      {name: '分钟量(万手)', type: 'bar', xAxisIndex: 2, yAxisIndex: 2,
+       data: vols, barMaxWidth: 3}],
   }, true);
-  // ── 图2: 实时情绪(采样score) ──
+  // ── 图2: 实时情绪双图(全幅 + 开盘基准±20放大镜) ──
+  const scoreData = S.map(x => x.score);
+  const scOpen = scoreData.find(v => v != null);
   charts.score = charts.score || echarts.init($('chartScore'), theme());
   charts.score.setOption({
     ...chartOpt(), grid: {left: 40, right: 14, top: 26, bottom: 40},
@@ -102,29 +109,56 @@ function render(data) {
     tooltip: {trigger: 'axis'},
     xAxis: {type: 'category', data: ts, ...axisCommon()},
     yAxis: {type: 'value', min: -105, max: 105, ...axisCommon()},
-    series: [{name: '实时情绪', type: 'line', data: S.map(x => x.score),
+    series: [{name: '实时情绪', type: 'line', data: scoreData,
       showSymbol: true, symbolSize: 3,   // R5: 盘后补采仅收盘点, 无符号不可见
       lineStyle: {width: 1.8, color: '#6250d6'}, itemStyle: {color: '#6250d6'},
       areaStyle: {opacity: 0.06},
       markLine: {silent: true, symbol: 'none', label: {show: false},
         lineStyle: {type: 'dashed', color: '#bbb'}, data: [{yAxis: 0}]}}],
   }, true);
-  // ── 图3: ETF 当日累计 vs 昨日总量 ──
+  // D1-26: 放大镜 — 以开盘情绪为基准±20窗(clip截越界段, 日内波动可见性×5)
+  charts.zoom = charts.zoom || echarts.init($('chartScoreZoom'), theme());
+  charts.zoom.setOption({
+    ...chartOpt(), grid: {left: 40, right: 14, top: 26, bottom: 40},
+    title: {text: scOpen != null
+        ? `波动放大(开盘${scOpen >= 0 ? '+' : ''}${scOpen} ±20)` : '波动放大',
+            left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
+    tooltip: {trigger: 'axis'},
+    xAxis: {type: 'category', data: ts, ...axisCommon()},
+    yAxis: scOpen != null
+      ? {type: 'value', min: scOpen - 20, max: scOpen + 20, ...axisCommon()}
+      : {type: 'value', ...axisCommon()},
+    series: [{name: '情绪(放大)', type: 'line', data: scoreData,
+      showSymbol: false, clip: true,
+      lineStyle: {width: 1.6, color: '#e34448'}, itemStyle: {color: '#e34448'},
+      markLine: scOpen != null ? {silent: true, symbol: 'none',
+        label: {formatter: '开盘', fontSize: 10},
+        lineStyle: {type: 'dashed', color: '#898781'},
+        data: [{yAxis: scOpen}]} : undefined}],
+  }, true);
+  // ── 图3: ETF 当日累计 vs 昨日分钟对照 ──
   charts.etf = charts.etf || echarts.init($('chartEtf'), theme());
   const etfNow = last.etf, etfPrev = meta.prev_etf_yi;
+  const yde = (meta.yday_etf && meta.yday_etf.points) || null;
+  const ydeLine = S.map(x => yde ? (yde[x.t.slice(0, 5)] ?? null) : null);
   charts.etf.setOption({
     ...chartOpt(), grid: {left: 44, right: 14, top: 26, bottom: 40},
     title: {text: '宽基ETF累计成交(亿) vs 昨日', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
     tooltip: {trigger: 'axis'},
     xAxis: {type: 'category', data: ts, ...axisCommon()},
     yAxis: {type: 'value', scale: true, ...axisCommon()},
-    series: [{name: '当日累计', type: 'line', data: cummax(S.map(x => x.etf)), showSymbol: false,
-      lineStyle: {width: 1.8, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'},
-      areaStyle: {opacity: 0.08},
-      markLine: etfPrev ? {silent: true, symbol: 'none',
-        label: {formatter: '昨日 {c}亿', fontSize: 10},
-        lineStyle: {type: 'dashed', color: '#e34448'},
-        data: [{yAxis: etfPrev}]} : undefined}],
+    series: [
+      {name: '当日累计', type: 'line', data: cummax(S.map(x => x.etf)), showSymbol: false,
+       lineStyle: {width: 1.8, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'},
+       areaStyle: {opacity: 0.08},
+       markLine: etfPrev ? {silent: true, symbol: 'none',
+         label: {formatter: '昨日总量 {c}亿', fontSize: 10},
+         lineStyle: {type: 'dashed', color: '#e34448'},
+         data: [{yAxis: etfPrev}]} : undefined},
+      {name: '昨日累计', type: 'line', data: cummax(ydeLine),
+       showSymbol: false, connectNulls: true,
+       lineStyle: {width: 1.2, color: '#898781', type: 'dashed'},
+       itemStyle: {color: '#898781'}}],
   }, true);
   // ── 状态行 ──
   const pct = etfNow && etfPrev ? ` · ETF达成昨日 ${Math.round(etfNow / etfPrev * 100)}%` : '';

@@ -98,7 +98,7 @@ def test_partial_day_rebuilt_after_close(env):
 def test_page_dual_grid_gates():
     html = (REPO / "server" / "templates" / "admin" / "realtime.html").read_text(encoding="utf-8")
     for mk in ("分钟量(万手)", "今日累计额(亿)", "昨日累计额(亿)",
-               "meta.yday", "gridIndex: 1", "chartMain", "520px"):
+               "meta.yday", "chartMain", "660px"):   # D1-26: 主图扩为三grid
         assert mk in html, f"页面缺: {mk}"
-    assert "barMaxWidth: 2" in html                    # 分钟量细柱
+    assert "barMaxWidth: 3" in html                    # 分钟量细柱(D1-26独立grid加宽)
     assert "'#e34448' : '#1baf7a'" in html             # 红涨绿跌

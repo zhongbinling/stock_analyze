@@ -316,6 +316,7 @@ def latest() -> dict:
     state["live"] = bool(state["samples"]) and is_market_time() and not state["fallback"]
     state["meta"] = _meta(state["date"])   # D1-23: 按显示日取前一日基准
     state["meta"]["yday"] = _yday_curve(state["date"])   # D1-23b: 昨日累计额曲线
+    state["meta"]["yday_etf"] = _yday_etf_curve(state["date"])   # D1-26: 昨日ETF
     try:
         if _app is not None:
             with _app.app_context():
@@ -337,7 +338,8 @@ def day(date_iso: str) -> dict | None:
         return None
     return {"date": date_iso, "updated_at": row[0],
             "samples": json.loads(row[1]).get("samples", []),
-            "meta": {**_meta(date_iso), "yday": _yday_curve(date_iso)}}
+            "meta": {**_meta(date_iso), "yday": _yday_curve(date_iso),
+                     "yday_etf": _yday_etf_curve(date_iso)}}
 
 
 def days() -> list:
@@ -418,26 +420,78 @@ def backfill_now() -> str:
 
 # ── D1-23b: 同花顺式量额副图数据 ──
 
-_mkline_cache = {"day": None, "bars": None}
+_mkline_cache = {}          # code -> (day, bars)
 _yday_anchor_cache = {}
 _yday_curve_cache = {}
 
 
-def _mkline(n: int = 640) -> list:
-    """腾讯mkline m1分钟柱(数组: [dt,open,close,high,low,vol,...]); 按日缓存"""
+def _mkline(code: str = "sh000001", n: int = 640) -> list:
+    """腾讯mkline m1分钟柱(数组: [dt,open,close,high,low,vol,...]); 按code+日缓存"""
     today = time.strftime("%Y-%m-%d")
-    if _mkline_cache["day"] == today and _mkline_cache["bars"]:
-        return _mkline_cache["bars"]
+    c = _mkline_cache.get(code)
+    if c and c[0] == today and c[1]:
+        return c[1]
     from probe_rt import _curl
     import json as _json
     _, body = _curl(f"https://ifzq.gtimg.cn/appstock/app/kline/mkline"
-                    f"?param=sh000001,m1,,{n}", timeout=10)
+                    f"?param={code},m1,,{n}", timeout=10)
     try:
-        bars = _json.loads(body)["data"]["sh000001"]["m1"]
+        bars = _json.loads(body)["data"][code]["m1"]
     except (ValueError, KeyError, TypeError):
         return []
-    _mkline_cache.update(day=today, bars=bars)
+    _mkline_cache[code] = (today, bars)
     return bars
+
+
+def _prev_mkday(days: dict, display_date: str):
+    """mkline日组中 < display_date 的最近日(YYYYMMDD)"""
+    prev = None
+    for d in sorted(days):
+        if d < display_date.replace("-", ""):
+            prev = d
+    return prev
+
+
+def _yday_etf_curve(display_date: str) -> dict | None:
+    """D1-26: 昨日宽基ETF累计成交额曲线(亿, HH:MM) — 8只ETF昨日分钟量比
+    × etf_daily昨日精确总额锚定(库内真值, 非估算额)"""
+    if not display_date:
+        return None
+    import collections
+    volsum = collections.defaultdict(float)
+    for code in ("sz159901", "sz159915", "sz159919", "sz159949",
+                 "sh510050", "sh510300", "sh510500", "sh512100"):
+        bars = _mkline(code)
+        if not bars:
+            return None
+        days = collections.defaultdict(list)
+        for b in bars:
+            days[b[0][:8]].append(b)
+        prev = _prev_mkday(days, display_date)
+        if not prev:
+            return None
+        prev_iso = f"{prev[:4]}-{prev[4:6]}-{prev[6:8]}"
+        for b in days[prev]:
+            hhmm = f"{b[0][8:10]}:{b[0][10:12]}"
+            volsum[hhmm] += float(b[5])
+    if not volsum:
+        return None
+    try:
+        con = sqlite3.connect(
+            f"file:{(CORE / 'data' / 'sentiment.db').as_posix()}?mode=ro", uri=True)
+        tot = con.execute("SELECT SUM(amount) FROM etf_daily WHERE date=?",
+                          (prev_iso,)).fetchone()[0]
+        con.close()
+    except sqlite3.Error:
+        tot = None
+    if not tot:
+        return None
+    total_yi = round(tot / 1e5, 1)              # 千元→亿
+    out, cum, all_cum = {}, 0.0, sum(volsum.values())
+    for k in sorted(volsum):
+        cum += volsum[k]
+        out[k] = round(total_yi * cum / all_cum, 1)
+    return {"date": prev_iso, "total_yi": total_yi, "points": out}
 
 
 def _yday_amt_anchor(date_iso: str) -> float | None:
@@ -474,10 +528,7 @@ def _yday_curve(display_date: str) -> dict | None:
     days = collections.defaultdict(list)
     for b in bars:
         days[b[0][:8]].append(b)
-    prev = None
-    for d in sorted(days):
-        if d < display_date.replace("-", ""):
-            prev = d
+    prev = _prev_mkday(days, display_date)
     if not prev:
         return None
     prev_iso = f"{prev[:4]}-{prev[4:6]}-{prev[6:8]}"
