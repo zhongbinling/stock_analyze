@@ -74,6 +74,18 @@
 </section>
 
 <section class="card">
+  <h2>宏观新闻抓取 <span class="hint" id="newsStat">加载中…</span></h2>
+  <p class="hint">macro.db·news_raw 轻量标题层 — tushare major_news(官方宏观, 2018起深史) + 东财快讯增量(含摘要);
+    正文由AI分析阶段按需重查; 抓取与分析解耦(D1-28 N1)</p>
+  <div class="row-flex" style="gap:10px;flex-wrap:wrap">
+    <span class="hint" id="newsDetail">--</span>
+    <button class="btn small" id="btnNewsInc">向最新拉(增量)</button>
+    <button class="btn small" id="btnNewsBackfill">向前回补(2018起·入队)</button>
+    <span class="hint" id="newsMsg"></span>
+  </div>
+</section>
+
+<section class="card">
   <h2>实时行情库 <span class="hint" id="rtStat">加载中…</span>
     <a class="btn small" style="float:right" href="/admin/realtime">实时页·历史回看 →</a></h2>
   <p class="hint">独立库 realtime.db(按天一行 rt_day); 交易日盘中自动采样(15s档), 盘后/盘前自动分钟重建;
@@ -669,8 +681,60 @@ $('btnRtBackfill').onclick = async () => {
     const r = await api('/admin/api/rt/backfill', {method: 'POST', body: '{}'});
     $('rtBfMsg').textContent = r.msg + ` (${r.result})`;
     loadRtStat();
+// D1-28 N1: 宏观新闻抓取卡
+async function loadNewsStat() {
+  try {
+    const d = await api('/admin/api/macro/news/stats');
+    const srcs = Object.entries(d.sources || {});
+    $('newsStat').textContent = d.total ? `共 ${d.total} 条` : '暂无数据';
+    $('newsDetail').innerHTML = srcs.length
+      ? srcs.map(([k, v]) => `${k}: <b>${v.rows}</b>条/${v.days}日(${v.first || '--'}~${v.last || '--'})`).join(' · ')
+      : '--';
+  } catch (e) { $('newsStat').textContent = e.message; }
+}
+$('btnNewsInc').onclick = async () => {
+  $('newsMsg').textContent = '⏳ 拉取中…';
+  try { const r = await api('/admin/api/macro/news/fetch', {method: 'POST',
+    body: JSON.stringify({mode: 'incremental'})});
+    $('newsMsg').textContent = r.msg; loadNewsStat();
+  } catch (e) { $('newsMsg').textContent = e.message; }
+};
+$('btnNewsBackfill').onclick = async () => {
+  if (!confirm('全史回补(2018起, 海量日较慢, 异步入队)?')) return;
+  try { const r = await api('/admin/api/macro/news/fetch', {method: 'POST',
+    body: JSON.stringify({mode: 'backfill'})});
+    $('newsMsg').textContent = r.msg;
+  } catch (e) { $('newsMsg').textContent = e.message; }
+};
+loadNewsStat();
   } catch (e) { $('rtBfMsg').textContent = e.message; }
 };
 loadRtStat();
+// D1-28 N1: 宏观新闻抓取卡
+async function loadNewsStat() {
+  try {
+    const d = await api('/admin/api/macro/news/stats');
+    const srcs = Object.entries(d.sources || {});
+    $('newsStat').textContent = d.total ? `共 ${d.total} 条` : '暂无数据';
+    $('newsDetail').innerHTML = srcs.length
+      ? srcs.map(([k, v]) => `${k}: <b>${v.rows}</b>条/${v.days}日(${v.first || '--'}~${v.last || '--'})`).join(' · ')
+      : '--';
+  } catch (e) { $('newsStat').textContent = e.message; }
+}
+$('btnNewsInc').onclick = async () => {
+  $('newsMsg').textContent = '⏳ 拉取中…';
+  try { const r = await api('/admin/api/macro/news/fetch', {method: 'POST',
+    body: JSON.stringify({mode: 'incremental'})});
+    $('newsMsg').textContent = r.msg; loadNewsStat();
+  } catch (e) { $('newsMsg').textContent = e.message; }
+};
+$('btnNewsBackfill').onclick = async () => {
+  if (!confirm('全史回补(2018起, 海量日较慢, 异步入队)?')) return;
+  try { const r = await api('/admin/api/macro/news/fetch', {method: 'POST',
+    body: JSON.stringify({mode: 'backfill'})});
+    $('newsMsg').textContent = r.msg;
+  } catch (e) { $('newsMsg').textContent = e.message; }
+};
+loadNewsStat();
 </script>
 {% endblock %}

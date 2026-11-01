@@ -692,6 +692,9 @@ BACKFILLS = {
     "mkt_val": ("全A/宽基估值回补(2010起, 自算整体法)",
                 [("mkt_val_daily", None, "date")],
                 lambda start: __import__("fetch_mktval").run(start), "20100101"),
+    "news_fetch": ("宏观新闻抓取·major_news回补(2018起)+em快讯增量",
+                   [("news_raw", None, "pub_time")],
+                   lambda start: __import__("fetch_news").run(start), "20180601"),
     "float_hist": ("月度解禁·share_float回补(2006起, 公告月拉取解禁月分桶)",
                    [("float_month", None, "month")],
                    lambda start: __import__("fetch_float").run(start), "20060101"),
@@ -845,6 +848,8 @@ def main():
         fetch_mktval.refresh()
         import fetch_float
         fetch_float.refresh()          # D1-20: 近6+未来4月解禁滚动修订
+        import fetch_news
+        fetch_news.refresh()           # D1-28 N1: 宏观新闻日增(近3日+em快讯)
     except Exception as e:  # noqa: BLE001
         print(f"[mktval] 挂载异常(跳过): {type(e).__name__}: {e}")
     fetch_tushare_mood_today()

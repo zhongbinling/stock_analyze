@@ -283,6 +283,46 @@ def api_macro_float():
     return jsonify(macro.float_overview(int(hist), int(future)))
 
 
+@bp_admin.get("/api/macro/news/stats")
+@require_level(7)
+def api_macro_news_stats():
+    """D1-28 N1: 新闻抓取同步区间图(每源覆盖/起止/行数)"""
+    import fetch_news as FN
+    import sqlite3 as sq
+    from server import macro
+    p = macro.CORE / "data" / "macro.db"
+    if not p.exists():
+        return jsonify({"sources": {}, "total": 0})
+    con = sq.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
+    try:
+        total = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
+    except sq.Error:
+        return jsonify({"sources": {}, "total": 0})
+    finally:
+        con.close()
+    return jsonify({"sources": FN.sync_map(), "total": total})
+
+
+@bp_admin.post("/api/macro/news/fetch")
+@require_level(7)
+def api_macro_news_fetch():
+    """D1-28 N1: 抓取控制 — mode=backfill(全史回补)/incremental(近3日+em);
+    backfill异步入队, incremental同步秒级"""
+    from server import jobs
+    d = request.get_json(force=True, silent=True) or {}
+    mode = d.get("mode", "incremental")
+    if mode not in ("backfill", "incremental"):
+        return jsonify({"msg": "mode 应为 backfill|incremental"}), 400
+    if mode == "backfill":
+        start = str(d.get("start") or "20180601")
+        ok, msg = jobs.enqueue("backfill", jobs.task_backfill("news_fetch", start),
+                               target=f"宏观新闻回补(自{start})", trigger="manual")
+        return jsonify({"ok": ok, "msg": msg + " — 全史回补已入队(2018海量日较慢), 进度见任务中心"})
+    import fetch_news as FN
+    FN.refresh()
+    return jsonify({"ok": True, "msg": "增量完成(近3日+em快讯)", "sources": FN.sync_map()})
+
+
 @bp_admin.post("/api/macro/import")
 @require_level(7)
 def api_macro_import():
