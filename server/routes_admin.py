@@ -300,12 +300,15 @@ def api_ai_analyze_all():
         import analyze_news as AN
         append(f"全量分析开始(本地→云端)")
         total_local = total_cloud = 0
-        while True:
+        MAX_BATCHES = 50                              # 安全上限(50×20=1000条)
+        for i in range(MAX_BATCHES):
             r = AN.analyze_batch(20)
             total_local += r.get("analyzed", 0)
-            append(f"  本地批次: +{r.get('analyzed', 0)} (待{r.get('pending', 0)})")
+            append(f"  本地[{i+1}]: +{r.get('analyzed', 0)} (待{r.get('pending', 0)})")
             if r.get("analyzed", 0) == 0:
                 break
+        else:
+            append(f"  ⚠ 达批次上限{MAX_BATCHES}, 剩余待下轮(待{r.get('pending', 0)})")
         r2 = AN.analyze_cloud_batch(20)
         total_cloud = r2.get("analyzed", 0)
         append(f"  云端批次: +{total_cloud}")
