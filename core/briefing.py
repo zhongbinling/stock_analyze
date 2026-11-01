@@ -63,9 +63,10 @@ def generate_html(out=None) -> Path:
     if val:
         # 分位从viewer payload读取(表里只有原始值)
         try:
-            import json as _j
+            import score as _S
             import viewer as _V
-            vd = _V.build_payload(_V.load_cfg.__module__ and __import__("score").load_cfg())
+            cfg = _S.load_cfg()
+            vd = _V.build_payload(cfg)
             mval = vd.get("mval", {})
             i = len(vd["dates"]) - 1
             pe_pct = mval.get("alla_pe_pct", [None] * (i + 1))[i]

@@ -679,15 +679,16 @@ def _sync_cron_jobs(app):
                            CronTrigger(hour=gh, minute=gm, day_of_week="mon-fri"),
                            id="daily_generate")
 
-    # D1-29: 简报双时刻(盘后19:00 + 次日07:00)
-    _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
-                                       target="数据简报", trigger="schedule"),
-                       CronTrigger(hour=19, minute=0, day_of_week="mon-fri"),
-                       id="briefing_evening")
-    _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
-                                       target="数据简报", trigger="schedule"),
-                       CronTrigger(hour=7, minute=0),
-                       id="briefing_morning")
+    # D1-29: 简报双时刻(盘后19:00 + 次日07:00) — 受auto_generate开关
+    if ag:
+        _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
+                                           target="数据简报", trigger="schedule"),
+                           CronTrigger(hour=19, minute=0, day_of_week="mon-fri"),
+                           id="briefing_evening")
+        _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
+                                           target="数据简报", trigger="schedule"),
+                           CronTrigger(hour=7, minute=0),
+                           id="briefing_morning")
 
     # B1: 日备/周备(策略热更新同机制)
     if get_setting("backup_enabled") == "1":
