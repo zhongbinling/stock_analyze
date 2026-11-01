@@ -48,13 +48,14 @@ def analyze_news(base_url: str, model: str, api_key: str,
                  title: str, content: str = "",
                  found_text: str = "", timeout: int = 60) -> dict:
     """单条新闻AI分析 → {"level", "type", "impact", "direction"}; 失败抛"""
-    prompt_text = (f"{title}\n{content or ''}")
+    # found_text追加到content尾部(补充原文信息进分析上下文)
+    full_content = content or "无详细内容"
     if found_text:
-        prompt_text += f"\n\n补充原文摘要: {found_text[:500]}"
+        full_content += f"\n\n补充原文摘要: {found_text[:500]}"
     resp = chat(base_url, model,
                 [{"role": "user",
                   "content": ANALYSIS_PROMPT.format(title=title,
-                                                    content=content or "无详细内容")}],
+                                                    content=full_content)}],
                 api_key=api_key, temperature=0.1, max_tokens=2000,
                 timeout=timeout)
     # 提取JSON(模型可能包裹在```json ...```中)

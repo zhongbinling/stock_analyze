@@ -42,26 +42,23 @@ def _cfg(key, default=""):
 
 
 def get_ai_config() -> dict:
-    """读AI配置(优先环境变量, 后备AppSetting via server)"""
+    """读AI配置 — 直读app.db的app_settings表(轻量, 不起Flask)"""
+    defaults = {"ai_local_base_url": "http://localhost:11434/v1",
+                "ai_local_model": "", "ai_local_api_key": "",
+                "ai_local_enabled": "0"}
     try:
-        from server import jobs as J
-        with_j = None
-        # server在sys.path时读AppSetting
-        import server
-        from flask import Flask
-        app = Flask(__name__)
-        app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{ROOT / 'data' / 'app.db'}"
-        from server.models import db
-        db.init_app(app)
-        with app.app_context():
-            base = J.get_setting("ai_local_base_url", "http://localhost:11434/v1")
-            model = J.get_setting("ai_local_model", "qwen3.8:27b")
-            key = J.get_setting("ai_local_api_key", "")
-            enabled = J.get_setting("ai_local_enabled", "0") == "1"
-    except Exception:
-        base, model, key, enabled = "http://localhost:11434/v1", "qwen3.8:27b", "", False
-    return {"base_url": base, "model": model, "api_key": key, "enabled": enabled}
-
+        import sqlite3 as _sq
+        con = _sq.connect(f"file:{ROOT / 'data' / 'app.db'}?mode=ro", uri=True)
+        for row in con.execute(
+                "SELECT skey, value FROM app_settings WHERE skey LIKE 'ai_local_%'"):
+            defaults[row[0]] = row[1]
+        con.close()
+    except Exception:                                     # noqa: BLE001
+        pass
+    return {"base_url": defaults["ai_local_base_url"],
+            "model": defaults["ai_local_model"],
+            "api_key": defaults["ai_local_api_key"],
+            "enabled": defaults["ai_local_enabled"] == "1"}
 
 def analyze_batch(batch_size: int = 5) -> dict:
     """取N条待分析 → AI调用 → news_local + macro_events成品upsert"""
