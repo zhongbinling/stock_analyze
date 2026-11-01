@@ -25,6 +25,14 @@ import tushare_api as T                                    # noqa: E402
 
 MACRO_DB = BASE / "data" / "macro.db"
 PAGE = 800                     # 实测单页上限
+RATE_LIMIT_PER_MIN = 18        # 实测20次/分钟(留余量)
+
+
+class RateLimited(Exception):
+    """tushare 频率超限(20次/分钟) — 上抛由run轮级等待"""
+    def __init__(self, day):
+        super().__init__(f"rate-limited at {day}")
+        self.day = day
 SRC_MN = "major_news"          # tushare官方宏观(深史)
 SRC_EM = "em_flash"            # akshare东财快讯(增量)
 
@@ -64,6 +72,9 @@ def fetch_day(day_ymd: str, path=None) -> int:
             if offset >= 4800:            # 单日>6页的保护(6×800)
                 break
     except Exception as e:                                 # noqa: BLE001
+        if "频率超限" in str(e):
+            print(f"[news] {day_ymd} 频率超限(30次/小时), 跳过本轮")
+            return -2                       # 调用方可判断是否继续
         print(f"[news] {day_ymd} 拉取失败: {str(e)[:80]}")
         return -1
     con = _conn(path)
@@ -139,15 +150,25 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
         cur += dt.timedelta(days=1)
     print(f"[news] major_news 待回补 {todo} 日 ({start}~{end})")
     t0, i, cur = time.time(), 0, d
+    interval = 60.0 / RATE_LIMIT_PER_MIN          # 均匀限速(18次/分≈3.3s间隔)
     while cur <= d2:
         iso = cur.isoformat()
         if iso not in done:
-            n = fetch_day(cur.strftime("%Y%m%d"), path)
-            if n < 0 and iso >= (dt.date.today() - dt.timedelta(days=3)).isoformat():
-                pass                            # 近期日源未出数, 不中断
+            time.sleep(interval)                  # D1-28r: 先sleep再调(防burst)
+            try:
+                n = fetch_day(cur.strftime("%Y%m%d"), path)
+                if n < 0 and iso >= (dt.date.today() - dt.timedelta(days=3)).isoformat():
+                    pass                        # 近期日源未出数, 不中断
+            except RateLimited:
+                print(f"  ⏳ {iso} 超限, 额外等60s")
+                time.sleep(60)
+                try:
+                    fetch_day(cur.strftime("%Y%m%d"), path)
+                except Exception:               # noqa: BLE001
+                    pass                        # 重试仍失败 → 下一轮补
             i += 1
-            if i % 60 == 0:
-                print(f"  [{i}/{todo}] {time.time()-t0:.0f}s → {iso}")
+            if i % 30 == 0:
+                print(f"  [{i}/{todo}] {time.time()-t0:.0f}s → {iso}", flush=True)
         cur += dt.timedelta(days=1)
     refresh_em(path)
     _summary(path)
@@ -156,11 +177,24 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
 
 
 def refresh(path=None) -> bool:
-    """日增: major_news 近3日 + em快讯"""
+    """日增: major_news 近3日 + em快讯; 顺带渐进回补(限额内推10日/天)"""
     import datetime as dt
+    done = days_done(SRC_MN, path)
     for back in range(3):
         d = (dt.date.today() - dt.timedelta(days=back)).strftime("%Y%m%d")
         fetch_day(d, path)
+    # 渐进回补: 从最近未覆盖日往前推10日(30次/小时限内安全)
+    probe = dt.date.today() - dt.timedelta(days=4)
+    filled = 0
+    while filled < 10 and probe >= dt.date(2018, 6, 1):
+        iso = probe.isoformat()
+        if iso not in done:
+            n = fetch_day(probe.strftime("%Y%m%d"), path)
+            if n == -2:                       # 限频 → 本轮回补到此为止
+                break
+            if isinstance(n, int) and n >= 0:
+                filled += 1
+        probe -= dt.timedelta(days=1)
     refresh_em(path)
     _summary(path)
     return True
