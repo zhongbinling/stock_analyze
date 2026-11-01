@@ -80,3 +80,22 @@ def test_latest_carries_yday_etf(server_app, monkeypatch, tmp_path):
                                                          "total_yi": 465.0, "points": {}})
     st = rt.latest()
     assert st["meta"]["yday_etf"]["total_yi"] == 465.0
+
+
+def test_yday_etf_prev_mismatch_skips_code(env):
+    """某code昨日基准日与他code不一(覆盖差) → 跳过该code不混日"""
+    rt, mp = env["rt"], env["mp"]
+    full = _mk_bars("x", "20261029", "20261030")          # 昨日=10-29
+    short = _mk_bars("x", "20261028", "20261029")[:3]     # 该code只到10-29前段? 制造prev=10-28
+    # 实际构造: 无10-30的bars → prev(相对10-30)=10-28 ≠ 10-29
+    older = [b for b in short if b[0].startswith("20261028")]
+    seq = iter([full, older] + [full] * 6)                 # 第2个code异常
+    mp.setattr(rt, "_mkline", lambda code="sh000001", n=640: next(seq, full))
+    db = env["core"] / "data" / "sentiment.db"
+    import sqlite3 as sq
+    c = sq.connect(str(db))
+    c.execute("CREATE TABLE IF NOT EXISTS etf_daily(date TEXT, amount REAL)")
+    c.execute("INSERT INTO etf_daily VALUES('2026-10-29', 4.65e7)")
+    c.commit(); c.close()
+    r = rt._yday_etf_curve("2026-10-30")
+    assert r is not None and r["date"] == "2026-10-29"     # 仍以多数code基准日

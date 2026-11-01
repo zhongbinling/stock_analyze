@@ -72,8 +72,8 @@ function render(data) {
              textStyle: {fontSize: 11}},
     tooltip: {trigger: 'axis'},
     axisPointer: {link: [{xAxisIndex: 'all'}]},
-    xAxis: [{type: 'category', gridIndex: 0, data: ts, ...axisCommon()},
-            {type: 'category', gridIndex: 1, data: ts, ...axisCommon()},
+    xAxis: [{type: 'category', gridIndex: 0, data: ts, show: false},   // 仅末grid显示时刻
+            {type: 'category', gridIndex: 1, data: ts, show: false},
             {type: 'category', gridIndex: 2, data: ts, ...axisCommon()}],
     yAxis: [{type: 'value', scale: true, name: '指数', gridIndex: 0,
              axisLabel: {color: '#898781'}},
@@ -212,7 +212,7 @@ window.addEventListener('resize', () =>
 // 主题切换(theme.js只改data-theme不重载) → dispose重建, 否则暗色下轴/字不可读
 new MutationObserver(() => {
   Object.values(charts).forEach(c => c && c.dispose());
-  charts.main = charts.score = charts.etf = null;
+  charts.main = charts.score = charts.etf = charts.zoom = null;   // D1-26r: zoom同置空
   load();
 }).observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 

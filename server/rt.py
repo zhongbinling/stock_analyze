@@ -459,6 +459,7 @@ def _yday_etf_curve(display_date: str) -> dict | None:
         return None
     import collections
     volsum = collections.defaultdict(float)
+    prev_ref = None
     for code in ("sz159901", "sz159915", "sz159919", "sz159949",
                  "sh510050", "sh510300", "sh510500", "sh512100"):
         bars = _mkline(code)
@@ -470,6 +471,10 @@ def _yday_etf_curve(display_date: str) -> dict | None:
         prev = _prev_mkday(days, display_date)
         if not prev:
             return None
+        if prev_ref is None:
+            prev_ref = prev                 # 以首code昨日为基准日
+        elif prev != prev_ref:
+            continue                        # D1-26r: 覆盖不一(新上市等)跳过该code防混日
         prev_iso = f"{prev[:4]}-{prev[4:6]}-{prev[6:8]}"
         for b in days[prev]:
             hhmm = f"{b[0][8:10]}:{b[0][10:12]}"
