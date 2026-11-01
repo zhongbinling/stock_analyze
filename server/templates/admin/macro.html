@@ -196,6 +196,7 @@ async function loadAiProg() {
     const d = await api('/admin/api/ai/progress');
     $('aiProg').textContent = d.total_raw ? `原始${d.total_raw}条 · 待分析${d.pending}` : '暂无新闻';
     $('aiDetail').innerHTML = `本地完成 <b>${d.done}</b> · 失败${d.fail} · 云端${d.cloud_done}`
+      + (d.cloud_pending ? ` · <b>待云端${d.cloud_pending}</b>` : '')
       + (d.pending ? ` · <b>待分析${d.pending}</b>` : '');
   } catch (e) { $('aiDetail').textContent = e.message; }
 }

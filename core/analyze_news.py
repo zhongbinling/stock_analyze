@@ -14,6 +14,12 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def ensure_tables(conn):
+    # D1-28 N3r: macro_events也在此确保(独立CLI跑时无server/macro建表,
+    # UPDATE/INSERT会炸"no such table")
+    conn.execute("""CREATE TABLE IF NOT EXISTS macro_events(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT, level INTEGER, content TEXT, source TEXT,
+      date TEXT, type TEXT, created_at TEXT, updated_at TEXT)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS news_local(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       news_id INTEGER NOT NULL,
@@ -141,7 +147,8 @@ def progress() -> dict:
     """分析进度"""
     db_path = BASE / "data" / "macro.db"
     if not db_path.exists():
-        return {"pending": 0, "done": 0, "fail": 0, "cloud_done": 0, "total_raw": 0}
+        return {"pending": 0, "done": 0, "fail": 0, "cloud_done": 0,
+                "cloud_pending": 0, "total_raw": 0}
     con = sqlite3.connect(str(db_path))
     try:
         ensure_tables(con)
@@ -153,12 +160,18 @@ def progress() -> dict:
         fail = con.execute("SELECT COUNT(*) FROM news_local WHERE status='fail'").fetchone()[0]
         cloud_done = con.execute("SELECT COUNT(*) FROM news_cloud WHERE status='done'").fetchone()[0]
         total_raw = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
+        cloud_pending = con.execute("""
+            SELECT COUNT(*) FROM news_local l
+            LEFT JOIN news_cloud c ON c.news_id = l.news_id
+            WHERE l.status='done' AND l.level >= 3
+            AND (c.id IS NULL OR c.status = 'fail')""").fetchone()[0]
     except sqlite3.Error:
-        pending = done = fail = cloud_done = total_raw = 0
+        pending = done = fail = cloud_done = total_raw = cloud_pending = 0
     finally:
         con.close()
     return {"pending": pending, "done": done, "fail": fail,
-            "cloud_done": cloud_done, "total_raw": total_raw}
+            "cloud_done": cloud_done, "cloud_pending": cloud_pending,
+            "total_raw": total_raw}
 
 
 def main():
