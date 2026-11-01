@@ -275,6 +275,20 @@ def api_ai_analyze():
     return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})
 
 
+@bp_admin.post("/api/ai/analyze-cloud")
+@require_level(7)
+def api_ai_analyze_cloud():
+    """D1-28 N3: 手动触发云端二次分析(L3+, 异步入队)"""
+    from server import jobs as J
+    if J.get_setting("ai_cloud_enabled", "0") != "1":
+        return jsonify({"msg": "云端AI未启用, 请先配置并开启"}), 400
+    d = request.get_json(force=True, silent=True) or {}
+    batch = min(int(d.get("batch", 5)), 20)
+    ok, msg = J.enqueue("analyze_cloud", J.task_analyze_cloud(batch),
+                        target=f"云端AI×{batch}", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 已入队(仅L3+控成本)"})
+
+
 @bp_admin.post("/api/briefing/run")
 @require_level(7)
 def api_briefing_run():

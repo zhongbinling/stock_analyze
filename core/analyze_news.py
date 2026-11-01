@@ -177,3 +177,101 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def get_cloud_config() -> dict:
+    """读云端AI配置 — 直读app.db(同get_ai_config轻量模式)"""
+    defaults = {"ai_cloud_base_url": "", "ai_cloud_model": "",
+                "ai_cloud_api_key": "", "ai_cloud_enabled": "0"}
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(f"file:{ROOT / 'data' / 'app.db'}?mode=ro", uri=True)
+        for row in con.execute(
+                "SELECT skey, value FROM app_settings WHERE skey LIKE 'ai_cloud_%'"):
+            defaults[row[0]] = row[1]
+        con.close()
+    except Exception:                                     # noqa: BLE001
+        pass
+    return {"base_url": defaults["ai_cloud_base_url"],
+            "model": defaults["ai_cloud_model"],
+            "api_key": defaults["ai_cloud_api_key"],
+            "enabled": defaults["ai_cloud_enabled"] == "1"}
+
+
+def analyze_cloud_batch(batch_size: int = 5, cfg: dict = None,
+                         db_path=None) -> dict:
+    """N3: 云端二次分析 — 仅L3+本地分析过的, 控成本;
+    输入=新闻+本地AI结果, 输出可修正等级; 成品库以云端为准
+    cfg/db_path可选参数供测试注入(生产走默认模块级)"""
+    import ai_client
+    cfg = cfg or get_cloud_config()
+    if not cfg["enabled"] or not cfg["base_url"] or not cfg["model"]:
+        return {"analyzed": 0, "msg": "云端AI未配置或未启用"}
+    db_path = db_path or BASE / "data" / "macro.db"
+    con = sqlite3.connect(str(db_path))
+    ensure_tables(con)
+    # 取L3+且有本地done分析、无cloud记录的
+    rows = con.execute("""
+        SELECT l.news_id, l.id, n.title, COALESCE(n.content,''),
+               n.pub_time, l.level, l.type, l.impact, l.direction
+        FROM news_local l
+        JOIN news_raw n ON n.id = l.news_id
+        LEFT JOIN news_cloud c ON c.news_id = l.news_id
+        WHERE l.status='done' AND l.level >= 3
+        AND (c.id IS NULL OR c.status = 'fail')
+        ORDER BY l.level DESC, n.pub_time DESC LIMIT ?""", (batch_size,)).fetchall()
+    if not rows:
+        con.close()
+        return {"analyzed": 0, "msg": "无待云端分析(L3+)"}
+    analyzed, failed = 0, 0
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    for (news_id, local_id, title, content, pub_time,
+         l_level, l_type, l_impact, l_direction) in rows:
+        local = {"level": l_level, "type": l_type,
+                 "impact": l_impact, "direction": l_direction}
+        try:
+            result = ai_client.analyze_news_cloud(
+                cfg["base_url"], cfg["model"], cfg["api_key"],
+                title, content[:2000], local, timeout=120)
+            analysis_json = json.dumps(result, ensure_ascii=False)
+            con.execute("""INSERT INTO news_cloud
+                (news_id, local_id, status, level, type, impact, direction,
+                 analysis_json, model, analyzed_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(news_id) DO UPDATE SET
+                status='done', level=excluded.level, type=excluded.type,
+                impact=excluded.impact, direction=excluded.direction,
+                analysis_json=excluded.analysis_json,
+                model=excluded.model, analyzed_at=excluded.analyzed_at""",
+                (news_id, local_id, "done", result["level"], result["type"],
+                 result["impact"], result["direction"],
+                 analysis_json, cfg["model"], now))
+            # 成品库以云端结果覆盖(等级可能修正)
+            date = pub_time[:10] if pub_time else now[:10]
+            existing = con.execute(
+                "SELECT id FROM macro_events WHERE title=? AND date=?",
+                (title, date)).fetchone()
+            if existing:
+                con.execute(
+                    "UPDATE macro_events SET level=?, type=?, source=?, updated_at=? WHERE id=?",
+                    (result["level"], result["type"],
+                     f"ai_cloud:{cfg['model']}", now, existing[0]))
+            analyzed += 1
+        except Exception as e:
+            con.execute("""INSERT INTO news_cloud
+                (news_id, local_id, status, analysis_json, model, analyzed_at)
+                VALUES(?,?,?,?,?,?)
+                ON CONFLICT(news_id) DO UPDATE SET
+                status='fail', analysis_json=excluded.analysis_json,
+                analyzed_at=excluded.analyzed_at""",
+                (news_id, local_id, "fail",
+                 json.dumps({"error": str(e)[:200]}), cfg["model"], now))
+            failed += 1
+    con.commit()
+    pending = con.execute("""
+        SELECT COUNT(*) FROM news_local l
+        LEFT JOIN news_cloud c ON c.news_id = l.news_id
+        WHERE l.status='done' AND l.level >= 3
+        AND (c.id IS NULL OR c.status = 'fail')""").fetchone()[0]
+    con.close()
+    return {"analyzed": analyzed, "failed": failed, "pending": pending}

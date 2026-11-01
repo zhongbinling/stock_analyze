@@ -375,6 +375,17 @@ def task_analyze_news(batch_size: int = 10):
     return fn
 
 
+def task_analyze_cloud(batch_size: int = 5):
+    """D1-28 N3: 云端二次分析任务(闭包)"""
+    def fn(append):
+        import analyze_news as AN
+        append(f"[{utcnow_str()}] 云端AI分析开始: 批量{batch_size}条(L3+)")
+        r = AN.analyze_cloud_batch(batch_size)
+        append(f"[{utcnow_str()}] 云端AI分析结束: {r}")
+        return 0
+    return fn
+
+
 def task_briefing(trigger: str = "manual"):
     """D1-29: 数据简报生成 → ViewRun(复用视图管理)"""
     def fn(append):

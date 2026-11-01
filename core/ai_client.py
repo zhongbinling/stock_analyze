@@ -79,3 +79,61 @@ def analyze_news(base_url: str, model: str, api_key: str,
     except (json.JSONDecodeError, ValueError, TypeError):
         return {"level": 1, "type": "其他", "impact": "",
                 "direction": "中性", "_parse_error": resp[:100]}
+
+
+CLOUD_PROMPT = """你是资深A股宏观策略分析师。以下是本地AI的初步分析，请进行更深入的二次分析。
+
+新闻标题: {title}
+新闻内容: {content}
+本地AI初步: L{local_level} [{local_type}] {local_impact} ({local_direction})
+
+请综合评估（可修正等级），严格按JSON输出:
+{{"level": 1, "type": "政策", "impact": "更精准的影响分析(30字内)", "direction": "利多", "reasoning": "修正理由(30字内)"}}
+
+等级标准:
+L5 股灾级: 流动性危机/千股跌停/系统性风险
+L4 重大级: 政策组合拳(如9·24类)/超预期重磅
+L3 重要级: 加息降息/重要经济数据/重大监管
+L2 关注级: 部委喊话/行业新闻
+L1 普通级: 一般性事件
+
+type: 政策|货币|产业|地缘|市场|其他
+direction: 利多|利空|中性"""
+
+
+def analyze_news_cloud(base_url: str, model: str, api_key: str,
+                       title: str, content: str,
+                       local: dict, timeout: int = 120) -> dict:
+    """云端二次分析(含本地结果作为上下文)"""
+    resp = chat(base_url, model,
+                [{"role": "user",
+                  "content": CLOUD_PROMPT.format(
+                      title=title, content=content or "无详细内容",
+                      local_level=local.get("level", 1),
+                      local_type=local.get("type", ""),
+                      local_impact=local.get("impact", ""),
+                      local_direction=local.get("direction", ""))}],
+                api_key=api_key, temperature=0.1, max_tokens=2000,
+                timeout=timeout)
+    text = resp.strip()
+    if "```" in text:
+        parts = text.split("```")
+        for p in parts:
+            p = p.replace("json", "").strip()
+            if p.startswith("{"):
+                text = p
+                break
+    try:
+        j = json.loads(text)
+        level = int(j.get("level", 1))
+        if not 1 <= level <= 5:
+            level = 1
+        return {"level": level,
+                "type": str(j.get("type", "其他"))[:16],
+                "impact": str(j.get("impact", ""))[:150],
+                "direction": str(j.get("direction", "中性"))[:8],
+                "reasoning": str(j.get("reasoning", ""))[:100]}
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {"level": local.get("level", 1), "type": local.get("type", "其他"),
+                "impact": local.get("impact", ""), "direction": local.get("direction", "中性"),
+                "_parse_error": resp[:100]}
