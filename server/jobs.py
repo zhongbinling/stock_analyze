@@ -364,6 +364,17 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
     return fn
 
 
+def task_analyze_news(batch_size: int = 10):
+    """D1-28 N2: AI分析任务(闭包)"""
+    def fn(append):
+        import analyze_news as AN
+        append(f"[{utcnow_str()}] AI分析开始: 批量{batch_size}条")
+        r = AN.analyze_batch(batch_size)
+        append(f"[{utcnow_str()}] AI分析结束: {r}")
+        return 0
+    return fn
+
+
 def task_briefing(trigger: str = "manual"):
     """D1-29: 数据简报生成 → ViewRun(复用视图管理)"""
     def fn(append):

@@ -65,6 +65,29 @@
 </section>
 
 <section class="card">
+  <h2>AI分析配置与进度 <span class="hint" id="aiProg">加载中…</span></h2>
+  <p class="hint">本地模型分析全量新闻(L1-L5), L3+事件交云端二次精析; OpenAI兼容接口</p>
+  <div class="row-flex" style="gap:8px;flex-wrap:wrap;align-items:center">
+    <label class="chk"><input type="checkbox" id="aiLocalEnabled"> 本地AI</label>
+    <input class="input" id="aiLocalUrl" placeholder="http://localhost:11434/v1" style="width:200px">
+    <input class="input" id="aiLocalModel" placeholder="模型名" style="width:120px">
+    <input class="input" id="aiLocalKey" type="password" placeholder="key(可选)" style="width:100px">
+  </div>
+  <div class="row-flex" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:6px">
+    <label class="chk"><input type="checkbox" id="aiCloudEnabled"> 云端AI(L3+)</label>
+    <input class="input" id="aiCloudUrl" placeholder="https://api.deepseek.com/v1" style="width:200px">
+    <input class="input" id="aiCloudModel" placeholder="模型名" style="width:120px">
+    <input class="input" id="aiCloudKey" type="password" placeholder="API key" style="width:100px">
+    <button class="btn primary small" id="btnAiSave">保存配置</button>
+  </div>
+  <div class="row-flex" style="margin-top:8px">
+    <span class="hint" id="aiDetail">--</span>
+    <button class="btn small" id="btnAiAnalyze">分析一批(10条)</button>
+    <span class="hint" id="aiMsg"></span>
+  </div>
+</section>
+
+<section class="card">
   <h2>批量导入(外部工具/第三方数据通道)</h2>
   <p class="hint">JSON数组, 字段: date(YYYY-MM-DD)/title/level(1-5)/type/source/content;
     按(标题+日期)自动去重, 非法条目跳过并报告。示例:
@@ -153,6 +176,48 @@ $('btnImport').onclick = async () => {
 };
 
 load();
+
+// ── D1-28 N2: AI配置+进度 ──
+async function loadAiConfig() {
+  try {
+    const d = await api('/admin/api/ai/config');
+    $('aiLocalEnabled').checked = d.local.enabled;
+    $('aiLocalUrl').value = d.local.base_url || '';
+    $('aiLocalModel').value = d.local.model || '';
+    $('aiCloudEnabled').checked = d.cloud.enabled;
+    $('aiCloudUrl').value = d.cloud.base_url || '';
+    $('aiCloudModel').value = d.cloud.model || '';
+    loadAiProg();
+  } catch (e) { $('aiProg').textContent = e.message; }
+}
+async function loadAiProg() {
+  try {
+    const d = await api('/admin/api/ai/progress');
+    $('aiProg').textContent = d.total_raw ? `原始${d.total_raw}条 · 待分析${d.pending}` : '暂无新闻';
+    $('aiDetail').innerHTML = `本地完成 <b>${d.done}</b> · 失败${d.fail} · 云端${d.cloud_done}`
+      + (d.pending ? ` · <b>待分析${d.pending}</b>` : '');
+  } catch (e) { $('aiDetail').textContent = e.message; }
+}
+$('btnAiSave').onclick = async () => {
+  try {
+    const r = await api('/admin/api/ai/config', {method: 'POST', body: JSON.stringify({
+      local: {enabled: $('aiLocalEnabled').checked, base_url: $('aiLocalUrl').value,
+              model: $('aiLocalModel').value, api_key: $('aiLocalKey').value || undefined},
+      cloud: {enabled: $('aiCloudEnabled').checked, base_url: $('aiCloudUrl').value,
+              model: $('aiCloudModel').value, api_key: $('aiCloudKey').value || undefined}
+    })});
+    $('aiMsg').textContent = r.msg;
+  } catch (e) { $('aiMsg').textContent = e.message; }
+};
+$('btnAiAnalyze').onclick = async () => {
+  $('aiMsg').textContent = '⏳ 入队中…';
+  try {
+    const r = await api('/admin/api/ai/analyze', {method: 'POST', body: JSON.stringify({batch: 10})});
+    $('aiMsg').textContent = r.msg;
+    setTimeout(loadAiProg, 3000);
+  } catch (e) { $('aiMsg').textContent = e.message; }
+};
+loadAiConfig();
 
 // ── D1-20 F2: 月度解禁柱状图 ──
 (async () => {

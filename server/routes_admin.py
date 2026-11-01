@@ -218,6 +218,63 @@ def api_rt_settings():
 
 # ── D1-18 M1/M2: 宏观舆情事件库页与API ──
 
+@bp_admin.get("/api/ai/config")
+@require_level(7)
+def api_ai_config():
+    """D1-28 N2: AI配置读取"""
+    from server import jobs as J
+    return jsonify({
+        "local": {"enabled": J.get_setting("ai_local_enabled", "0") == "1",
+                  "base_url": J.get_setting("ai_local_base_url", "http://localhost:11434/v1"),
+                  "model": J.get_setting("ai_local_model", ""),
+                  "has_key": bool(J.get_setting("ai_local_api_key", ""))},
+        "cloud": {"enabled": J.get_setting("ai_cloud_enabled", "0") == "1",
+                  "base_url": J.get_setting("ai_cloud_base_url", ""),
+                  "model": J.get_setting("ai_cloud_model", ""),
+                  "has_key": bool(J.get_setting("ai_cloud_api_key", ""))}})
+
+
+@bp_admin.post("/api/ai/config")
+@require_level(7)
+def api_ai_config_save():
+    """D1-28 N2: AI配置保存(仅传非空字段)"""
+    from server import jobs as J
+    d = request.get_json(force=True, silent=True) or {}
+    for prefix in ("local", "cloud"):
+        cfg = d.get(prefix) or {}
+        for k in ("enabled", "base_url", "model"):
+            if k in cfg:
+                v = cfg[k]
+                J.set_setting(f"ai_{prefix}_{k}",
+                              ("1" if v else "0") if k == "enabled" else str(v))
+        if "api_key" in cfg and cfg["api_key"]:
+            J.set_setting(f"ai_{prefix}_api_key", str(cfg["api_key"]))
+    return jsonify({"ok": True, "msg": "AI配置已保存"})
+
+
+@bp_admin.get("/api/ai/progress")
+@require_level(7)
+def api_ai_progress():
+    """D1-28 N2: 分析进度"""
+    from server import macro
+    import sys as _s
+    _s.path.insert(0, str(macro.CORE))
+    import analyze_news as AN
+    return jsonify(AN.progress())
+
+
+@bp_admin.post("/api/ai/analyze")
+@require_level(7)
+def api_ai_analyze():
+    """D1-28 N2: 手动触发分析批次(异步入队)"""
+    from server import jobs as J
+    d = request.get_json(force=True, silent=True) or {}
+    batch = min(int(d.get("batch", 10)), 50)
+    ok, msg = J.enqueue("analyze", J.task_analyze_news(batch),
+                        target=f"AI分析×{batch}", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})
+
+
 @bp_admin.post("/api/briefing/run")
 @require_level(7)
 def api_briefing_run():
