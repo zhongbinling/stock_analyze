@@ -18,7 +18,8 @@
     <div class="row-flex">
       <span>名称 <input class="input" id="fName" placeholder="如 情绪视图·保守版"></span>
       <span>类型
-        <select class="input" id="fType"><option value="sentiment">情绪视图</option><option value="sector_heat">板块温度</option></select>
+        <select class="input" id="fType"><option value="sentiment">情绪视图</option><option value="sector_heat">板块温度</option>
+           <option value="briefing">数据简报</option></select>
       </span>
       <span>环境
         <select class="input" id="fEnv"><option value="test">test 测试</option><option value="prod">prod 产线</option></select>
@@ -43,6 +44,14 @@
 <section class="card">
   <h2>生成历史</h2>
   <table class="table" id="runTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card" id="briefing">
+  <h2>数据简报 <span class="hint">每日 19:00 / 07:00 自动 · 手动触发</span></h2>
+  <div class="row-flex">
+    <button class="btn primary" id="btnBriefing">立即生成简报</button>
+    <span class="hint" id="briefingMsg"></span>
+  </div>
 </section>
 
 <section class="card">
@@ -195,6 +204,15 @@ async function poll(quick) {
 }
 
 $('btnRefresh').onclick = () => { loadDefs(); loadRuns(); poll(true); };
+// D1-29: 简报手动触发
+$('btnBriefing').onclick = async () => {
+  $('briefingMsg').textContent = '⏳ 入队中…';
+  try {
+    const r = await api('/admin/api/briefing/run', {method: 'POST'});
+    $('briefingMsg').textContent = r.msg;
+    poll(true);
+  } catch (e) { $('briefingMsg').textContent = e.message; }
+};
 loadDefs(); loadRuns(); poll(true);
 </script>
 {% endblock %}

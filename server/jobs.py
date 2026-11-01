@@ -364,6 +364,45 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
     return fn
 
 
+def task_briefing(trigger: str = "manual"):
+    """D1-29: 数据简报生成 → ViewRun(复用视图管理)"""
+    def fn(append):
+        from server.models import ViewDef, ViewRun
+        import server.market as market
+        data_date = market.latest_index_date()
+        if not data_date:
+            append("! 行情库无数据")
+            return 1
+        vd = ViewDef.query.filter_by(type="briefing", enabled=1).first()
+        if not vd:
+            vd = ViewDef(name="数据简报", type="briefing", env="prod",
+                         auto_publish=1, enabled=1)
+            db.session.add(vd)
+            db.session.commit()
+            append(f"> 首次自动创建简报规则 (id={vd.id})")
+        run = ViewRun(def_id=vd.id, def_name=vd.name, env=vd.env,
+                      vtype="briefing", status="running", data_date=data_date)
+        db.session.add(run)
+        db.session.commit()
+        t0 = time.time()
+        out = (VIEWS_STORE / vd.env / "briefing" /
+               time.strftime("%Y%m%d") /
+               (time.strftime("%H%M%S") + "_briefing.html"))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        rc = _run([sys.executable, "-u", "briefing.py", "--out", str(out)], append)
+        run.status = "done" if rc == 0 else "fail"
+        run.generated_at = _now()
+        run.duration_s = round(time.time() - t0, 1)
+        run.file_path = str(out.relative_to(ROOT)).replace("\\", "/") if out.exists() else None
+        run.size_kb = out.stat().st_size // 1024 if out.exists() else 0
+        if rc == 0 and vd.env == "prod" and vd.auto_publish:
+            run.published = 1
+            run.published_at = _now()
+        db.session.commit()
+        return rc
+    return fn
+
+
 def task_backup(btype: str, trigger: str = "manual", assets: list | None = None):
     """返回备份任务函数(闭包): in-process 调 core/backup.run_all + 落 BackupRun
     D1-11 C3: assets 子集(分块备份), None=全部"""
@@ -624,7 +663,8 @@ def _sync_cron_jobs(app):
     uh, um = _parse_hhmm(get_setting("update_cron"), 16, 35)
     gh, gm = _parse_hhmm(get_setting("generate_cron"), 18, 0)
 
-    for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup"):
+    for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup",
+                "briefing_evening", "briefing_morning"):
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
     if au:
@@ -638,6 +678,16 @@ def _sync_cron_jobs(app):
         _scheduler.add_job(_make_sched_generate(app),
                            CronTrigger(hour=gh, minute=gm, day_of_week="mon-fri"),
                            id="daily_generate")
+
+    # D1-29: 简报双时刻(盘后19:00 + 次日07:00)
+    _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
+                                       target="数据简报", trigger="schedule"),
+                       CronTrigger(hour=19, minute=0, day_of_week="mon-fri"),
+                       id="briefing_evening")
+    _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
+                                       target="数据简报", trigger="schedule"),
+                       CronTrigger(hour=7, minute=0),
+                       id="briefing_morning")
 
     # B1: 日备/周备(策略热更新同机制)
     if get_setting("backup_enabled") == "1":

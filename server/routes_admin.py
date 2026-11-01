@@ -218,6 +218,16 @@ def api_rt_settings():
 
 # ── D1-18 M1/M2: 宏观舆情事件库页与API ──
 
+@bp_admin.post("/api/briefing/run")
+@require_level(7)
+def api_briefing_run():
+    """D1-29: 手动触发数据简报(异步入队)"""
+    from server import jobs
+    ok, msg = jobs.enqueue("generate", jobs.task_briefing("manual"),
+                           target="数据简报", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 简报生成已入队, 进度见任务中心"})
+
+
 @bp_admin.get("/macro")
 @require_level(7)
 def macro_page():
