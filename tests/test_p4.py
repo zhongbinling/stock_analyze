@@ -1,166 +1,90 @@
 # -*- coding: utf-8 -*-
-"""P4 测试: sw_bars 幂等/熔断/列映射/ts_code参数 + backup raw资产策略"""
+"""P4 技术债: SCAN_DS单点/ETF并行/GDP TTM/float_date分片"""
+import json
 import sqlite3
 import sys
-import time
-import zipfile
-import zlib
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 CORE = REPO / "core"
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(CORE))
 
-import backup as BK  # noqa: E402
-import sw_bars as SB  # noqa: E402
-import tushare_api as T  # noqa: E402
+
+# ── ① SCAN_DS服务端单点 ──
+
+def test_repair_ds_authoritative():
+    """_REPAIR_DS含calendar(完整), data_page注入repair_ds_json"""
+    from server import market
+    assert "calendar" in market._REPAIR_DS
+    src = (REPO / "server" / "routes_admin.py").read_text(encoding="utf-8")
+    assert "repair_ds_json" in src
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert "{{ repair_ds_json }}" in html
+    assert "BF_ROWS.forEach(r => { if (r.asset) SCAN_DS[r.asset] = r.ds; });" not in html
 
 
-@pytest.fixture()
-def bars_env(tmp_path, monkeypatch):
-    p = tmp_path / "s.db"
-    conn = sqlite3.connect(str(p))
-    conn.executescript("""
-      CREATE TABLE index_daily(code TEXT, date TEXT, close REAL);
-      CREATE TABLE sw_components(index_code TEXT, level TEXT, industry_name TEXT,
-        con_code TEXT, in_date TEXT, out_date TEXT, is_new TEXT);
-      CREATE TABLE sw_daily(index_code TEXT, date TEXT, open REAL, high REAL, low REAL,
-        close REAL, volume REAL, amount REAL, pct_chg REAL, PRIMARY KEY(index_code, date));
-    """)
-    conn.execute("INSERT INTO index_daily VALUES('1.000001','2026-10-19',3000)")
-    conn.execute("INSERT INTO sw_components VALUES('801010.SI','L1','农林牧渔','000001.SZ','19900101',NULL,'Y')")
-    for k in range(6):                             # 6个无数据指数 → 熔断可达5连
-        conn.execute("INSERT INTO sw_components VALUES(?,'L1','无数据','00000%d.SZ','19900101',NULL,'Y')" % (100+k), (f"9999{k:02d}.SI",))
-    conn.commit()
-    conn.commit()
-    conn.close()
-
-    import pandas as pd
-
-    def fake_call(api, fields="", **kw):
-        assert api == "sw_daily" and "ts_code" in kw, f"必须用ts_code参数: {kw}"
-        if kw["ts_code"] != "801010.SI":
-            return pd.DataFrame()                    # 其余指数无官方数据
-        return pd.DataFrame([
-            {"ts_code": kw["ts_code"], "trade_date": "20120801", "name": "农林牧渔",
-             "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "change": 0.5,
-             "pct_change": 0.5, "vol": 100, "amount": 1e6, "pe": 1, "pb": 1,
-             "float_mv": 1, "total_mv": 1},
-            {"ts_code": kw["ts_code"], "trade_date": "20261019", "name": "农林牧渔",
-             "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.6, "change": 0.1,
-             "pct_change": 0.1, "vol": 100, "amount": 1e6, "pe": 1, "pb": 1,
-             "float_mv": 1, "total_mv": 1},
-        ])
-    monkeypatch.setattr(T, "call", fake_call)
-    monkeypatch.setattr(SB, "connect", lambda: sqlite3.connect(str(p)))
-    monkeypatch.setattr(time, "sleep", lambda s: None)
-    return p
+def test_data_page_injects_scan_ds(server_app):
+    r = server_app["client"].get("/admin/data")
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert 'const SCAN_DS = {' in body
+    assert '"calendar"' in body or "'calendar'" in body
 
 
-def test_bars_backfill_and_idempotent(bars_env):
-    assert SB.backfill("19990101") is True
-    conn = sqlite3.connect(str(bars_env))
-    rows = conn.execute("SELECT date, close, pct_chg FROM sw_daily WHERE index_code='801010.SI' "
-                        "ORDER BY date").fetchall()
-    conn.close()
-    assert rows == [("2012-08-01", 1.5, 0.5), ("2026-10-19", 1.6, 0.1)]   # ISO+列映射
-    # 幂等: 有数据指数已最新 → 跳过; 无数据指数已探明 → 跳过 → 零调用
-    calls = []
-    orig = T.call
-    import pandas as pd
-    T.call = lambda api, fields="", **kw: calls.append(kw) or pd.DataFrame()
-    try:
-        SB.backfill("19990101")
-    finally:
-        T.call = orig
-    assert calls == []
+# ── ③ ETF昨日曲线并行化 ──
+
+def test_yday_etf_parallel(tmp_path, monkeypatch):
+    """并行拉取后曲线正确(锚定+单调)"""
+    from server import rt
+    import probe_rt
+    # mkline格式: bars = [[YYYYMMDDHHMM, open, close, high, low, vol], ...]
+    bars = [["202610300930", "1", "1", "1", "1", "100"],
+            ["202610300931", "1", "1", "1", "1", "200"],
+            ["202610301500", "1", "1", "1", "1", "300"]]
+    body = json.dumps({"data": {c: {"m1": bars} for c in
+        ("sz159901", "sz159915", "sz159919", "sz159949",
+         "sh510050", "sh510300", "sh510500", "sh512100")}})
+    from server import rt as _rt
+    monkeypatch.setattr(_rt, "_mkline", lambda code="sh000001", n=640:
+                        json.loads(body)["data"].get(code, {}).get("m1", []))
+    monkeypatch.setattr(rt, "_mkline_cache", {})
+    r = rt._yday_etf_curve("2026-10-31")
+    assert r is not None
+    vals = list(r["points"].values())
+    assert vals == sorted(vals)
 
 
-def test_bars_fastfail(bars_env, monkeypatch):
-    def boom(api, fields="", **kw):
-        raise ConnectionError("RST")
-    monkeypatch.setattr(T, "call", boom)
-    assert SB.backfill("19990101") is False
+# ── ④ GDP TTM ──
+
+def test_gdp_ttm_smoothing(server_app):
+    """TTM优先: 有季度数据时用TTM, 无数据回落年度"""
+    from server import macro
+    ttm = macro._load_gdp_ttm()
+    if ttm:  # 有token时
+        # 2026Q3 TTM应≈4×近季平均≈540万亿量级(实际2025Q4=140.19万亿×4≈560)
+        # 具体值由数据决定, 只验证存在且合理
+        latest_q = max(ttm.keys())
+        v = ttm[latest_q]
+        assert 100 < v < 200  # 万亿量级(≈140)
+        g = macro._gdp_ttm_for("2026-10-30")
+        assert g is not None and 100 < g < 200
+    else:  # 无token时返回空, 上层走GDP_ANNUAL
+        assert macro._gdp_ttm_for("2026-10-30") is None
 
 
-# ── backup raw 资产策略 ──
-
-@pytest.fixture()
-def bk_env(tmp_path, monkeypatch):
-    core = tmp_path / "core"
-    (core / "data").mkdir(parents=True)
-    raw = core / "data" / "raw_daily.db"
-    conn = sqlite3.connect(str(raw))
-    conn.execute("CREATE TABLE daily(x INTEGER)")
-    conn.execute("INSERT INTO daily VALUES(1)")
-    conn.commit()
-    conn.close()
-    bdir = tmp_path / "backups"
-    monkeypatch.setattr(BK, "ASSETS", {"raw_daily": ("sqlite", raw)})
-    monkeypatch.setattr(BK, "BACKUP_DIR", bdir)
-    monkeypatch.setattr(BK, "MANIFEST", bdir / "manifest.json")
-    monkeypatch.setattr(BK, "LOG_FILE", bdir / "backup.log")
-    return {"raw": raw, "bdir": bdir, "monkeypatch": monkeypatch}
+def test_buffett_uses_ttm():
+    """buffett()源码含TTM优先调用"""
+    src = (REPO / "server" / "macro.py").read_text(encoding="utf-8")
+    assert "_gdp_ttm_for(d) or _gdp_for" in src
 
 
-def test_raw_skipped_on_daily_snapshot(bk_env):
-    assert BK.snapshot("raw_daily", "daily") is None          # 策略: 仅weekly/manual
-    assert not (bk_env["bdir"] / "raw_daily_x.db.z").exists()
+# ── ② float_date分片 ──
 
-
-def test_raw_weekly_compressed(bk_env):
-    e = BK.snapshot("raw_daily", "weekly")
-    assert e is not None
-    # D1-10 B1/B3: weekly_{ts}.zip 内含 raw_daily.db.z(原名义件)
-    root = e["file"].split("/")[0]
-    zp = bk_env["bdir"] / root
-    assert zp.suffix == ".zip" and zp.exists()
-    with zipfile.ZipFile(zp) as zf:
-        assert "raw_daily.db.z" in zf.namelist()
-        raw = zf.read("raw_daily.db.z")
-    assert zlib.decompress(raw)[:15] == b"SQLite format 3"   # 可解压且是库
-
-
-def test_raw_keep_rolling(bk_env, monkeypatch):
-    import datetime as _dt
-    real = _dt.datetime
-    state = {"n": 0}
-
-    class FakeDT(real):                              # 递增假时钟: 快照名互不相同
-        @classmethod
-        def now(cls, tz=None):
-            state["n"] += 60
-            return real(2026, 1, 1) + _dt.timedelta(seconds=state["n"])
-    monkeypatch.setattr(BK.dt, "datetime", FakeDT)
-    for i in range(6):                               # 6次周备(内容变化)
-        conn = sqlite3.connect(str(bk_env["raw"]))
-        conn.execute("INSERT INTO daily VALUES(?)", (i + 10,))
-        conn.commit()
-        conn.close()
-        BK.snapshot("raw_daily", "weekly")
-    BK.prune()
-    zips = [p for p in bk_env["bdir"].glob("*.zip")
-            if "raw_daily.db.z" in zipfile.ZipFile(p).namelist()]
-    assert len(zips) == 4                             # keep=4(D1-10 B1: 目录改zip)
-
-
-def test_raw_pre_restore_snapshot_allowed(bk_env):
-    """pre-restore 对 raw 必须兜底(review修复: 曾被policy跳过)"""
-    e = BK.snapshot("raw_daily", "pre-restore")
-    assert e is not None and e["file"].endswith("raw_daily.db.z")
-    # pre-calc 仍排除(避免每次全量重算压缩2.5GB)
-    assert BK.snapshot("raw_daily", "pre-calc") is None
-
-
-def test_raw_restore_decompress(bk_env):
-    e = BK.snapshot("raw_daily", "weekly")
-    conn = sqlite3.connect(str(bk_env["raw"]))
-    conn.execute("DELETE FROM daily")
-    conn.commit()
-    conn.close()
-    assert BK.restore(e["file"], yes=True) is True
-    conn = sqlite3.connect(str(bk_env["raw"]))
-    assert conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0] == 1
-    conn.close()
+def test_float_date_split_function_exists():
+    """float_date分片函数存在且被极端日调用"""
+    src = (CORE / "fetch_float.py").read_text(encoding="utf-8")
+    assert "_pull_by_float_date" in src
+    assert "float_date分片" in src

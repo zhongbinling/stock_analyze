@@ -147,7 +147,10 @@ _HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 @bp_admin.get("/data")
 @require_level(7)
 def data_page():
-    return render_template("admin/data.html")
+    from server import market
+    # P4①: SCAN_DS服务端单点(替代前端BF_ROWS镜像, _REPAIR_DS唯一真源)
+    return render_template("admin/data.html",
+                          repair_ds_json=json.dumps(market._REPAIR_DS))
 
 
 # ── D1-17 R3+R4: 实时行情页与API ──

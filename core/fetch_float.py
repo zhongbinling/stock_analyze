@@ -163,9 +163,10 @@ def _pull_month(conn, month: str, replace: bool = False) -> int:
         d2 = _dt.date.fromisoformat(w_hi)
         if (d2 - d1).days <= 0:
             # 极端日(如2024-02-19股权激励全员拆行)单日>10万行, offset无解:
-            # 已拉到的~9.6万行留在frames照常聚合, 仅缺尾部(小额头寸为主),
-            # 跳过不中断整月; 完整方案(float_date二次切分)见计划待定优化
-            print(f"  ⚠ {w_lo} 单日公告超10万行, 尾部跳过(部分聚合)")
+            # P4②改进 — 尝试按float_date子窗口分片(先拉首页看float_date分布,
+            # 对每个distinct float_date单独查询); 首页失败则跳过尾部
+            print(f"  ⚠ {w_lo} 单日公告超10万行, 尝试float_date分片...")
+            _pull_by_float_date(frames, w_lo, w_hi)
             return
         mid = d1 + (d2 - d1) / 2
         _rec(w_lo, mid.isoformat())
@@ -285,3 +286,39 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _pull_by_float_date(frames, ann_lo, ann_hi):
+    """P4②: 极端日按float_date分片 — 首页取distinct float_date分布,
+    对每个float_date子窗口查询(start_date/end_date按公告日+float_date过滤)"""
+    try:
+        # 首页看float_date分布
+        df0 = T.call("share_float", FIELDS,
+                     start_date=ann_lo.replace("-", ""),
+                     end_date=ann_hi.replace("-", ""), limit=100, offset=0)
+        if df0 is None or df0.empty:
+            return
+        fdates = sorted(set(str(r.get("float_date") or "")
+                            for _, r in df0.iterrows() if r.get("float_date")))
+        if not fdates:
+            print(f"    无float_date分布, 跳过")
+            return
+        print(f"    float_date {len(fdates)} 个子窗口({fdates[0][:8]}~{fdates[-1][:8]})")
+        for fd in fdates:
+            try:
+                offset = 0
+                while True:
+                    df = T.call("share_float", FIELDS,
+                                start_date=ann_lo.replace("-", ""),
+                                end_date=ann_hi.replace("-", ""),
+                                float_date=str(fd), limit=PAGE, offset=offset)
+                    frames.append(df)
+                    if df is None or len(df) < PAGE:
+                        break
+                    offset += PAGE
+                    if offset >= 100000:
+                        break
+            except Exception:                           # noqa: BLE001
+                continue                                # 该float_date失败不拖累
+    except Exception as e:                              # noqa: BLE001
+        print(f"    float_date分片失败: {e}, 尾部跳过")

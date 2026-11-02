@@ -260,6 +260,76 @@ GDP_ANNUAL = {
 }
 
 
+_gdp_ttm_cache = {"day": None, "data": {}}
+
+
+def _load_gdp_ttm() -> dict:
+    """P4④: cn_gdp季度数据 → 滚动4季GDP(万亿元, TTM口径) — 比年度
+    手填更平滑(年内逐季更新而非隔年跳变); 按日缓存(季频数据变化极低);
+    不可得时回落GDP_ANNUAL"""
+    import time as _t
+    today = _t.strftime("%Y-%m-%d")
+    if _gdp_ttm_cache["day"] == today and _gdp_ttm_cache["data"]:
+        return _gdp_ttm_cache["data"]
+    try:
+        import sys as _s
+        if str(CORE) not in _s.path:
+            _s.path.insert(0, str(CORE))
+        import tushare_api as T
+        if not T.has_token():
+            return {}
+        df = T.call("cn_gdp", "quarter,gdp")
+        rows = sorted(df.itertuples(index=False), key=lambda r: r.quarter)
+        # P4④修正: cn_gdp是**累计值**(Q2=H1,Q3=9月,Q4=全年) — 先差分还原
+        # 单季, 再取最近4季之和=TTM; Q4值本身=年度GDP
+        ttm = {}
+        by_q = [(r.quarter, float(r.gdp)) for r in rows]
+        quarters = []          # (year, q, 单季值)
+        cum_map = {}           # (y, q) → 累计值(差分基准)
+        for qtr, cum in by_q:
+            y, q = int(qtr[:4]), int(qtr[5])
+            cum_map[(y, q)] = cum
+            if q == 1:
+                quarters.append((y, q, cum))
+            else:
+                prev = cum_map.get((y, q - 1))     # 上季**累计值** (非单季)
+                if prev is not None:
+                    quarters.append((y, q, cum - prev))
+        # 滚动4季TTM(单位亿元→万亿÷1e4)
+        window = []
+        for y, q, val in quarters:
+            window.append(val)
+            if len(window) > 4:
+                window.pop(0)
+            if len(window) == 4:
+                ttm[(y, q)] = round(sum(window) / 1e4, 2)
+        _gdp_ttm_cache.update(day=today, data=ttm)
+        return ttm
+    except Exception:                                     # noqa: BLE001
+        return {}
+
+
+def _gdp_ttm_for(date_iso: str) -> float | None:
+    """日期→最近已公布季度的TTM GDP(万亿); 无数据回落None(上层走GDP_ANNUAL)"""
+    ttm = _load_gdp_ttm()
+    if not ttm:
+        return None
+    y, m = int(date_iso[:4]), int(date_iso[5:7])
+    # 该日之前最近已公布的季度(GDP公布约滞后1季度)
+    if m <= 4:       # Q1-Q2: 用上年Q3(上年10月公布)
+        cand = [(y - 1, 3), (y - 1, 2), (y - 1, 1), (y - 1, 4)]
+    elif m <= 7:     # Q3: 用上年Q4(今年1月公布)
+        cand = [(y - 1, 4), (y - 1, 3), (y - 1, 2), (y - 1, 1)]
+    elif m <= 10:    # Q4: 用今年Q1(今年4月公布)
+        cand = [(y, 1), (y - 1, 4), (y - 1, 3), (y - 1, 2)]
+    else:            # Q4末: 用今年Q2(今年7月公布)
+        cand = [(y, 2), (y, 1), (y - 1, 4), (y - 1, 3)]
+    for yq in cand:
+        if yq in ttm:
+            return ttm[yq]
+    return None
+
+
 def _gdp_for(year: int) -> float | None:
     """≤year 的最近年度值(缺上年时回落更早)"""
     ys = [y for y in GDP_ANNUAL if y <= year]
@@ -285,7 +355,7 @@ def buffett(path_sentiment=None) -> dict:
         con.close()
     series = []
     for d, mv in rows:
-        g = _gdp_for(int(d[:4]) - 1)
+        g = _gdp_ttm_for(d) or _gdp_for(int(d[:4]) - 1)  # P4④: TTM优先, 年度兜底
         if not g:
             continue
         series.append({"date": d, "mv_yi": mv, "gdp_year": int(d[:4]) - 1,

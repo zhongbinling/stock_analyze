@@ -230,7 +230,9 @@ def test_data_html_script_syntax():
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     m = re.search(r"<script>([\s\S]*?)</script>", html)
     assert m, "data.html 缺 script 块"
-    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", m.group(1)],
+    # P4①: SCAN_DS服务端注入含Jinja表达式({{ repair_ds_json }}) — 替换后再解析
+    js = re.sub(r"\{\{.*?\}\}", "{}", m.group(1))
+    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", js],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, f"JS 语法错误: {r.stderr[:500]}"
 

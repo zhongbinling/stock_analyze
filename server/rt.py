@@ -470,10 +470,11 @@ def _yday_etf_curve(display_date: str) -> dict | None:
     if not display_date:
         return None
     import collections
-    volsum = collections.defaultdict(float)
-    prev_ref = None
-    for code in ("sz159901", "sz159915", "sz159919", "sz159949",
-                 "sh510050", "sh510300", "sh510500", "sh512100"):
+    from concurrent.futures import ThreadPoolExecutor
+    ETF_CODES = ("sz159901", "sz159915", "sz159919", "sz159949",
+                 "sh510050", "sh510300", "sh510500", "sh512100")
+
+    def _one_day_bars(code):
         bars = _mkline(code)
         if not bars:
             return None
@@ -483,16 +484,27 @@ def _yday_etf_curve(display_date: str) -> dict | None:
         prev = _prev_mkday(days, display_date)
         if not prev:
             return None
+        return prev, days[prev]
+
+    # P4③: 8只ETF mkline并行拉取(串行8s→并行~1s首载)
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(_one_day_bars, ETF_CODES))
+    volsum = collections.defaultdict(float)
+    prev_ref = None
+    for r in results:
+        if r is None:
+            continue
+        prev, day_bars = r
         if prev_ref is None:
-            prev_ref = prev                 # 以首code昨日为基准日
+            prev_ref = prev
         elif prev != prev_ref:
-            continue                        # D1-26r: 覆盖不一(新上市等)跳过该code防混日
-        prev_iso = f"{prev[:4]}-{prev[4:6]}-{prev[6:8]}"
-        for b in days[prev]:
+            continue
+        for b in day_bars:
             hhmm = f"{b[0][8:10]}:{b[0][10:12]}"
             volsum[hhmm] += float(b[5])
-    if not volsum:
+    if not volsum or prev_ref is None:
         return None
+    prev_iso = f"{prev_ref[:4]}-{prev_ref[4:6]}-{prev_ref[6:8]}"
     try:
         con = sqlite3.connect(
             f"file:{(CORE / 'data' / 'sentiment.db').as_posix()}?mode=ro", uri=True)

@@ -628,10 +628,8 @@ const BF_ROWS = [
   { ds: 'float_hist', label: '月度解禁·share_float(2006起)', asset: null, base: '自2006起·公告月分桶', span: ['2006-12', '滚动'] },
   { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年', span: ['滚动', '2027-12'] },
 ];
-// D1-11 E2: 数据集code → 定向补全项(有则体检行修复走backfill, 否则走更新链)
-const SCAN_DS = {};
-BF_ROWS.forEach(r => { if (r.asset) SCAN_DS[r.asset] = r.ds; });
-SCAN_DS.calendar = 'calendar';
+// P4①: SCAN_DS服务端单点注入(_REPAIR_DS唯一真源, 消除BF_ROWS镜像)
+const SCAN_DS = {{ repair_ds_json }};
 // D1-13⑤: 非时序资产(清单/日历/映射)拆「基础与映射」分组; REG_DS=有定向刷新器
 const NON_TS = new Set(['sectors', 'calendar', 'sw1', 'sw2']);
 const REG_DS = { calendar: 'calendar' };
