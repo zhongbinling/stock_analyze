@@ -22,7 +22,7 @@ def test_repair_ds_authoritative():
     src = (REPO / "server" / "routes_admin.py").read_text(encoding="utf-8")
     assert "repair_ds_json" in src
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
-    assert "{{ repair_ds_json }}" in html
+    assert "repair_ds_json | safe" in html  # P4①r: |safe必须(防auto-escape)
     assert "BF_ROWS.forEach(r => { if (r.asset) SCAN_DS[r.asset] = r.ds; });" not in html
 
 

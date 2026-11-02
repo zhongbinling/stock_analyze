@@ -629,7 +629,7 @@ const BF_ROWS = [
   { ds: 'calendar', label: '交易日历·刷新', asset: null, base: '近2年+未来半年', span: ['滚动', '2027-12'] },
 ];
 // P4①: SCAN_DS服务端单点注入(_REPAIR_DS唯一真源, 消除BF_ROWS镜像)
-const SCAN_DS = {{ repair_ds_json }};
+const SCAN_DS = {{ repair_ds_json | safe }};  // P4①r: |safe必须 — auto-escape会把引号变&#34;致整块JS死
 // D1-13⑤: 非时序资产(清单/日历/映射)拆「基础与映射」分组; REG_DS=有定向刷新器
 const NON_TS = new Set(['sectors', 'calendar', 'sw1', 'sw2']);
 const REG_DS = { calendar: 'calendar' };
