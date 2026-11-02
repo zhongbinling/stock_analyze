@@ -4,6 +4,7 @@
 用法: python briefing.py [--out path.html]
 """
 import argparse
+import json
 import sqlite3
 import sys
 import time
@@ -47,10 +48,22 @@ def generate_html(out=None) -> Path:
     now = _dt.now()
     h24 = (now - _td(hours=24)).strftime("%Y-%m-%d")
     d7 = (now - _td(days=7)).strftime("%Y-%m-%d")
-    ev24 = [e for e in MC.list_events() if e["date"] >= h24 and e["level"] >= 2]
-    ev7 = [e for e in MC.list_events() if h24 > e["date"] >= d7 and e["level"] >= 2]
+    ev24 = [e for e in MC.list_events()["events"] if e["date"] >= h24 and e["level"] >= 2]
+    ev7 = [e for e in MC.list_events()["events"] if h24 > e["date"] >= d7 and e["level"] >= 2]
 
-    def _fmt_pct(v): return f"{v:.0f}%" if v is not None else "--"
+    def _fmt_pct(v): return f"{v*100:.0f}%" if v is not None else "--"  # viewer小数→%
+    def _pct_bar(v, label=""):
+        """D1-29r: 分位进度条(≥80%红/≤20%蓝/中间灰, 情绪图环境面板同配色)"""
+        if v is None:
+            return f'<span style="color:#999">{label}--</span>'
+        pct = round(v * 100)
+        color = "#e34448" if pct >= 80 else "#2f5cd6" if pct <= 20 else "#898781"
+        bar = (f'<div style="display:inline-block;width:60px;height:8px;'
+               f'background:#e8e8e8;border-radius:4px;vertical-align:middle">'
+               f'<div style="width:{max(pct,2)}%;height:100%;background:{color};'
+               f'border-radius:4px"></div></div>')
+        return f'{label}{bar} <b style="color:{color}">{pct}%</b>'
+
     def _lv_badge(lv): return f'<span style="background:{"#d03b3b" if lv>=5 else "#e67e22" if lv==4 else "#eda100" if lv==3 else "#8e44ad"};color:#fff;padding:1px 5px;border-radius:3px;font-size:11px">L{lv}</span>'
 
     rows_score = ""
@@ -76,14 +89,16 @@ def generate_html(out=None) -> Path:
         except Exception:
             pe_pct = pb_pct = pe_pct5 = r300_pct = None
         rows_val = (f"<tr><td>全A PE/PB</td><td>{val[1]:.1f} / {val[2]:.2f}</td>"
-                    f"<td>全史<b>{_fmt_pct(pe_pct)}</b> · 5年<b>{_fmt_pct(pe_pct5)}</b></td></tr>"
+                    f"<td>{_pct_bar(pe_pct, '全史')} {_pct_bar(pe_pct5, '5年')}</td></tr>"
                     f"<tr><td>沪深300 PE</td><td>{val[3]:.1f}</td>"
-                    f"<td>全史<b>{_fmt_pct(r300_pct)}</b></td></tr>")
+                    f"<td>{_pct_bar(r300_pct, '全史')}</td></tr>")
 
     rows_bf = ""
     if bf:
+        bf_all = bf['pct_all'] / 100 if bf['pct_all'] else None
+        bf_5 = bf.get('pct_5y') / 100 if bf.get('pct_5y') else None
         rows_bf = (f"<tr><td>巴菲特指数</td><td><b>{bf['ratio']}%</b></td>"
-                   f"<td>全史分位<b>{bf['pct_all']}%</b> · 5年<b>{bf.get('pct_5y') or '--'}%</b></td></tr>")
+                   f"<td>{_pct_bar(bf_all, '全史')} {_pct_bar(bf_5, '5年')}</td></tr>")
 
     mg_html = ""
     if mg:

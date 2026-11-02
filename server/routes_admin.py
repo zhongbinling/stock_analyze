@@ -356,14 +356,52 @@ def macro_page():
 @bp_admin.get("/api/macro/events")
 @require_level(7)
 def api_macro_events():
+    """D1-30a: ≥N等级/分页/类型下拉数据"""
     from server import macro
-    evs = macro.list_events(
+    r = macro.list_events(
         level=request.args.get("level", "").strip() or None,
+        level_min=request.args.get("level_min", "").strip() or None,
         d_from=request.args.get("from", "").strip() or None,
         d_to=request.args.get("to", "").strip() or None,
         type_=request.args.get("type", "").strip() or None,
-        q=request.args.get("q", "").strip() or None)
-    return jsonify({"events": evs, "stats": macro.stats()})
+        q=request.args.get("q", "").strip() or None,
+        limit=request.args.get("limit", "30"),
+        page=request.args.get("page", "1"))
+    # 类型下拉(DISTINCT)
+    con = macro._conn()
+    try:
+        types = [r2[0] for r2 in con.execute(
+            "SELECT DISTINCT type FROM macro_events WHERE type IS NOT NULL AND type != '' ORDER BY 1")]
+    except Exception:
+        types = []
+    finally:
+        con.close()
+    r["types"] = types
+    r["stats"] = macro.stats()
+    return jsonify(r)
+
+
+@bp_admin.get("/api/macro/news/running")
+@require_level(7)
+def api_macro_news_running():
+    """D1-30b: 新闻抓取/AI分析运行态"""
+    from server.models import Job
+    running = {}
+    for j in Job.query.filter_by(status="running").all():
+        running.setdefault(j.kind, []).append(j.target or "")
+    return jsonify({"running": running})
+
+
+@bp_admin.post("/api/ai/pause")
+@require_level(7)
+def api_ai_pause():
+    """D1-30c: 停止分析(置ai_pause标记, 分析循环检查后break)"""
+    from server import jobs as J
+    d = request.get_json(force=True, silent=True) or {}
+    pause = bool(d.get("pause", True))
+    J.set_setting("ai_pause", "1" if pause else "0")
+    return jsonify({"ok": True,
+                    "msg": "已暂停 — 当前批次完成后停止" if pause else "已恢复"})
 
 
 @bp_admin.post("/api/macro/events")

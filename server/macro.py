@@ -6,6 +6,7 @@
 等级口径: L5股灾级 L4重大级 L3重要级 L2关注级 L1普通级。
 """
 import re
+import json
 import sqlite3
 import threading
 import time
@@ -81,12 +82,15 @@ def _row(r):
 
 
 def list_events(level=None, d_from=None, d_to=None, type_=None, q=None,
-                limit=500, path=None) -> list:
-    """M2 检索: 等级/日期区间/类型/关键词(标题+内容), 日期倒序"""
+                limit=500, path=None, level_min=None, page=1) -> dict:
+    """M2+D1-30a: 检索(≥N等级/分页/L2+含AI分析); 返回{events,total,page,pages}"""
     sql, args = "SELECT * FROM macro_events WHERE 1=1", []
     if level:
         sql += " AND level=?"
         args.append(int(level))
+    if level_min:
+        sql += " AND level>=?"
+        args.append(int(level_min))
     if d_from:
         sql += " AND date>=?"
         args.append(d_from)
@@ -99,12 +103,49 @@ def list_events(level=None, d_from=None, d_to=None, type_=None, q=None,
     if q:
         sql += " AND (title LIKE ? OR content LIKE ?)"
         args += [f"%{q}%", f"%{q}%"]
-    sql += " ORDER BY date DESC, id DESC LIMIT ?"
-    args.append(int(limit))
+    # 先算总数(分页)
+    count_sql = sql.replace("SELECT *", "SELECT COUNT(*)", 1)
     con = _conn(path)
+    total = con.execute(count_sql, args).fetchone()[0]
+    pages = max(1, (total + int(limit) - 1) // int(limit))
+    page = max(1, min(int(page), pages))
+    sql += " ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
+    args += [int(limit), (page - 1) * int(limit)]
     rows = [_row(r) for r in con.execute(sql, args).fetchall()]
+    # D1-30a: L2+附加AI分析(需在con.close()前执行)
+    if rows:
+        _attach_ai_analysis(con, rows, path)
     con.close()
-    return rows
+    return {"events": rows, "total": total, "page": page, "pages": pages}
+
+
+def _attach_ai_analysis(con, events, path=None):
+    """D1-30a: 按标题匹配附加AI分析(本地impact/云端reasoning)"""
+    try:
+        titles = [e["title"] for e in events if e["level"] >= 2]
+        if not titles:
+            return
+        ph = ",".join("?" * len(titles))
+        ai = {}
+        for r in con.execute(f"""
+            SELECT n.title, l.level, l.type, l.impact, l.direction,
+                   COALESCE(c.analysis_json, l.analysis_json) as best_json
+            FROM news_raw n
+            JOIN news_local l ON l.news_id = n.id
+            LEFT JOIN news_cloud c ON c.news_id = n.id
+            WHERE n.title IN ({ph})""", titles):
+            ej = {}
+            try:
+                ej = json.loads(r[5]) if r[5] else {}
+            except (ValueError, TypeError):
+                pass
+            ai[r[0]] = {"ai_level": r[1], "ai_type": r[2], "ai_impact": r[3],
+                        "ai_direction": r[4], "ai_reasoning": ej.get("reasoning", "")}
+        for e in events:
+            if e["title"] in ai:
+                e.update(ai[e["title"]])
+    except sqlite3.Error:
+        pass
 
 
 def stats(path=None) -> dict:

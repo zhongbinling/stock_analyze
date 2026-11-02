@@ -66,12 +66,26 @@ def get_ai_config() -> dict:
             "api_key": defaults["ai_local_api_key"],
             "enabled": defaults["ai_local_enabled"] == "1"}
 
+def _is_paused() -> bool:
+    """D1-30c: ai_pause标记(AppSetting, 分析循环每批检查)"""
+    try:
+        import sqlite3 as _sq
+        con = _sq.connect(f"file:{ROOT / 'data' / 'app.db'}?mode=ro", uri=True)
+        v = con.execute("SELECT value FROM app_settings WHERE skey='ai_pause'").fetchone()
+        con.close()
+        return v and v[0] == "1"
+    except Exception:                                     # noqa: BLE001
+        return False
+
+
 def analyze_batch(batch_size: int = 5) -> dict:
     """取N条待分析 → AI调用 → news_local + macro_events成品upsert"""
     import ai_client
     cfg = get_ai_config()
     if not cfg["enabled"]:
         return {"analyzed": 0, "msg": "本地AI未启用"}
+    if _is_paused():
+        return {"analyzed": 0, "msg": "已暂停"}
     db_path = BASE / "data" / "macro.db"
     con = sqlite3.connect(str(db_path))
     ensure_tables(con)
@@ -217,6 +231,8 @@ def analyze_cloud_batch(batch_size: int = 5, cfg: dict = None,
     输入=新闻+本地AI结果, 输出可修正等级; 成品库以云端为准
     cfg/db_path可选参数供测试注入(生产走默认模块级)"""
     import ai_client
+    if _is_paused():
+        return {"analyzed": 0, "msg": "已暂停"}
     cfg = cfg or get_cloud_config()
     if not cfg["enabled"] or not cfg["base_url"] or not cfg["model"]:
         return {"analyzed": 0, "msg": "云端AI未配置或未启用"}

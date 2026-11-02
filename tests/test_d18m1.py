@@ -23,23 +23,23 @@ def macro_mod(tmp_path, monkeypatch):
 def test_ensure_db_seeds_each_level(macro_mod):
     macro_mod.ensure_db()
     evs = macro_mod.list_events()
-    assert len(evs) == 5
-    assert {e["level"] for e in evs} == {1, 2, 3, 4, 5}     # 每级≥1条
-    assert all(e["source"] == "模拟样例" for e in evs)       # 可识别删除
+    assert evs['total'] == 5 and len(evs['events']) == 5
+    assert {e["level"] for e in evs["events"]} == {1, 2, 3, 4, 5}     # 每级≥1条
+    assert all(e["source"] == "模拟样例" for e in evs["events"])       # 可识别删除
     macro_mod.ensure_db()                                    # 幂等不重复播种
-    assert len(macro_mod.list_events()) == 5
+    assert macro_mod.list_events()['total'] == 5
 
 
 def test_list_filters(macro_mod):
     macro_mod.ensure_db()
-    assert all(e["level"] == 5 for e in macro_mod.list_events(level=5))
-    evs = macro_mod.list_events(d_from="2024-09-01", d_to="2024-09-30")
+    assert all(e["level"] == 5 for e in macro_mod.list_events(level=5)['events'])
+    evs = macro_mod.list_events(d_from="2024-09-01", d_to="2024-09-30")['events']
     assert {e["date"] for e in evs} == {"2024-09-24", "2024-09-19"}
-    assert all(e["type"] == "货币" for e in macro_mod.list_events(type_="货币"))
-    assert any("降息" in e["title"] for e in macro_mod.list_events(q="降息"))
-    assert macro_mod.list_events(q="绝不存在的词XYZ") == []
+    assert all(e["type"] == "货币" for e in macro_mod.list_events(type_="货币")['events'])
+    assert any("降息" in e["title"] for e in macro_mod.list_events(q="降息")['events'])
+    assert macro_mod.list_events(q="绝不存在的词XYZ")['events'] == []
     # 倒序
-    dates = [e["date"] for e in macro_mod.list_events()]
+    dates = [e["date"] for e in macro_mod.list_events()["events"]]
     assert dates == sorted(dates, reverse=True)
 
 

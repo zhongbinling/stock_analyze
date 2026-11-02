@@ -14,18 +14,33 @@
   <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
     <select class="input" id="fLevel" style="width:110px">
       <option value="">全部等级</option>
-      {% for lv, (name, desc) in levels.items() | reverse %}
-      <option value="{{ lv }}">{{ name }}</option>
-      {% endfor %}
+      <option value="1">L1</option><option value="2">L2</option>
+      <option value="3">L3</option><option value="4">L4</option><option value="5">L5</option>
     </select>
-    <span>日期 <input class="input" type="date" id="fFrom" style="width:140px"> ~
-      <input class="input" type="date" id="fTo" style="width:140px"></span>
-    <input class="input" id="fType" placeholder="类型(政策/货币/产业…)" style="width:150px">
-    <input class="input" id="fQ" placeholder="关键词(标题/内容)" style="width:170px">
+    <select class="input" id="fLevelMin" style="width:100px" title="选L3命中L3/L4/L5">
+      <option value="">不限</option>
+      <option value="2">≥L2</option><option value="3">≥L3</option>
+      <option value="4">≥L4</option><option value="5">=L5</option>
+    </select>
+    <span>日期 <input class="input" type="date" id="fFrom" style="width:130px"> ~
+      <input class="input" type="date" id="fTo" style="width:130px"></span>
+    <select class="input" id="fType" style="width:110px">
+      <option value="">全部类型</option>
+    </select>
+    <input class="input" id="fQ" placeholder="关键词(标题/内容)" style="width:150px">
     <button class="btn primary" id="btnSearch">检索</button>
     <button class="btn" id="btnReset">重置</button>
   </div>
+  <div class="row-flex" style="margin-top:6px;gap:10px;align-items:center">
+    <span class="hint" id="evTotal">--</span>
+    <span id="pageNav" style="display:flex;gap:4px;align-items:center"></span>
+  </div>
   <table class="table" id="mTable"><tbody><tr><td>加载中…</td></tr></tbody></table>
+</section>
+
+<section class="card" id="evDetail" style="display:none">
+  <h2>事件详情 <button class="btn small" onclick="document.getElementById('evDetail').style.display='none'" style="float:right">关闭</button></h2>
+  <div id="evDetailBody"></div>
 </section>
 
 <section class="card">
@@ -84,6 +99,7 @@
     <span class="hint" id="aiDetail">--</span>
     <button class="btn small" id="btnAiAnalyze">本地一批</button>
     <button class="btn small" id="btnAiCloud">云端(L3+)</button>
+    <button class="btn small" id="btnAiPause" title="当前批次完成后停止分析">暂停分析</button>
     <button class="btn primary small" id="btnAiAll" title="循环本地全量→云端L3+, 异步入队">一键全量</button>
     <span class="hint" id="aiMsg"></span>
   </div>
@@ -117,70 +133,94 @@ async function api(url, opts = {}) {
   return j;
 }
 
-async function load() {
+let curPage = 1;
+function _defaultDates() {
+  const to = new Date(), from = new Date(Date.now() - 7 * 864e5);
+  $('fFrom').value = from.toISOString().slice(0, 10);
+  $('fTo').value = to.toISOString().slice(0, 10);
+}
+async function load(page = 1) {
+  curPage = page;
   const p = new URLSearchParams();
   if ($('fLevel').value) p.set('level', $('fLevel').value);
+  if ($('fLevelMin').value) p.set('level_min', $('fLevelMin').value);
   if ($('fFrom').value) p.set('from', $('fFrom').value);
   if ($('fTo').value) p.set('to', $('fTo').value);
   if ($('fType').value.trim()) p.set('type', $('fType').value.trim());
   if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  p.set('page', page); p.set('limit', 30);
   try {
     const d = await api('/admin/api/macro/events?' + p.toString());
-    $('mStats').textContent = `共 ${d.stats.total} 条 · 本次 ${d.events.length} 条`;
-    for (const lv of [5, 4, 3, 2, 1])
-      $('cnt' + lv).textContent = d.stats.by_level[lv] || 0;
-    $('mTable').innerHTML = '<tr><th>日期</th><th>等级</th><th>标题</th><th>类型</th><th>来源</th><th>内容</th><th></th></tr>'
+    $('evTotal').textContent = `共 ${d.total} 条 · 第${d.page}/${d.pages}页`;
+    // 类型下拉(首次填充)
+    if (d.types && d.types.length && $('fType').options.length <= 1)
+      d.types.forEach(t => $('fType').add(new Option(t, t)));
+    for (const lv of [5, 4, 3, 2, 1]) {
+      const el = $('cnt' + lv);
+      if (el) el.textContent = (d.stats.by_level || {})[lv] || 0;
+    }
+    $('mTable').innerHTML = '<tr><th>日期</th><th>等级</th><th>标题</th><th>类型</th><th>来源</th><th>操作</th></tr>'
       + (d.events.length ? d.events.map(e => `<tr>
         <td class="hint">${esc(e.date)}</td>
-        <td class="${LV_CLS[e.level] || ''}">${esc(LV_NAME[e.level] || e.level)}</td>
-        <td><b>${esc(e.title)}</b></td>
+        <td>${LV_CLS[e.level] ? `<b style="color:${LV_NAME_COLORS[e.level] || '#555'}">L${e.level}</b>` : 'L' + e.level}</td>
+        <td><a href="javascript:void(0)" data-ev="${esc(JSON.stringify(e)).replace(/"/g, '&quot;')}"
+          style="color:inherit;text-decoration:underline;cursor:pointer">${esc(e.title)}</a></td>
         <td class="hint">${esc(e.type || '--')}</td>
         <td class="hint">${(e.source || '').startsWith('ai_')
-          ? `<b style="color:#6250d6">AI</b> ${esc((e.source || '').split(':')[1] || '')}`
-          : esc(e.source || '--')}</td>
-        <td class="hint" style="max-width:420px">${esc(e.content || '')}</td>
-        <td><button class="btn small" data-del="${e.id}">删除</button></td></tr>`).join('')
-        : '<tr><td colspan="7" class="hint">无匹配事件</td></tr>');
+          ? `<b style="color:#6250d6">AI</b>` : esc(e.source || '--')}</td>
+        <td>${e.id ? `<button class="btn small" data-del="${e.id}">删</button>` : ''}</td></tr>`).join('')
+        : '<tr><td colspan="6" class="hint">无匹配事件</td></tr>');
+    // 分页条
+    let nav = '';
+    if (d.pages > 1) {
+      if (d.page > 1) nav += `<button class="btn small" onclick="load(${d.page - 1})">上一页</button> `;
+      const s2 = Math.max(1, d.page - 2), e2 = Math.min(d.pages, s2 + 4);
+      for (let i = s2; i <= e2; i++)
+        nav += `<button class="btn small" ${i === d.page ? 'style="font-weight:bold"' : ''} onclick="load(${i})">${i}</button> `;
+      if (d.page < d.pages) nav += `<button class="btn small" onclick="load(${d.page + 1})">下一页</button>`;
+    }
+    $('pageNav').innerHTML = nav;
+    // 事件点击→详情
+    document.querySelectorAll('#mTable [data-ev]').forEach(a =>
+      a.onclick = () => showDetail(JSON.parse(a.dataset.ev)));
     document.querySelectorAll('#mTable [data-del]').forEach(b =>
       b.onclick = async () => {
         if (!confirm('删除该事件?')) return;
-        try { await api('/admin/api/macro/events/' + b.dataset.del, {method: 'DELETE'}); load(); }
+        try { await api('/admin/api/macro/events/' + b.dataset.del, {method: 'DELETE'}); load(curPage); }
         catch (e) { alert(e.message); }
       });
-  } catch (e) { $('mStats').textContent = e.message; }
+  } catch (e) { $('evTotal').textContent = e.message; }
 }
 
-$('btnSearch').onclick = load;
-$('btnReset').onclick = () => {
-  ['fLevel', 'fFrom', 'fTo'].forEach(i => $(i).value = '');
-  ['fType', 'fQ'].forEach(i => $(i).value = '');
-  load();
-};
-$('btnAdd').onclick = async () => {
-  $('addMsg').textContent = '';
-  try {
-    const r = await api('/admin/api/macro/events', {method: 'POST', body: JSON.stringify({
-      date: $('nDate').value, title: $('nTitle').value, level: parseInt($('nLevel').value),
-      type: $('nType').value, source: $('nSource').value, content: $('nContent').value})});
-    $('addMsg').textContent = r.msg;
-    $('nTitle').value = ''; $('nContent').value = '';
-    load();
-  } catch (e) { $('addMsg').textContent = e.message; }
-};
-$('btnImport').onclick = async () => {
-  $('impMsg').textContent = '';
-  let events;
-  try { events = JSON.parse($('impText').value); }
-  catch (e) { $('impMsg').textContent = 'JSON 解析失败: ' + e.message; return; }
-  try {
-    const r = await api('/admin/api/macro/import', {method: 'POST',
-      body: JSON.stringify({events})});
-    $('impMsg').textContent = r.msg;
-    load();
-  } catch (e) { $('impMsg').textContent = e.message; }
-};
+const LV_NAME_COLORS = {5: '#d03b3b', 4: '#e67e22', 3: '#eda100', 2: '#8e44ad', 1: '#898781'};
 
-load();
+function showDetail(e) {
+  const rows = [
+    ['日期', esc(e.date)], ['等级', `<b style="color:${LV_NAME_COLORS[e.level]}">L${e.level}</b>`],
+    ['类型', esc(e.type || '--')], ['来源', esc(e.source || '--')],
+    ['标题', `<b>${esc(e.title)}</b>`],
+    ['内容', esc(e.content || '--')],
+  ];
+  if (e.level >= 2) {
+    rows.push(['AI等级', e.ai_level ? `L${e.ai_level}` : '--']);
+    rows.push(['AI分析', e.ai_impact ? esc(e.ai_impact) : '--']);
+    rows.push(['AI方向', e.ai_direction ? esc(e.ai_direction) : '--']);
+    if (e.ai_reasoning) rows.push(['修正理由', esc(e.ai_reasoning)]);
+  }
+  $('evDetailBody').innerHTML = '<table class="table">' +
+    rows.map(([k, v]) => `<tr><td style="width:80px" class="hint">${k}</td><td>${v}</td></tr>`).join('') + '</table>';
+  $('evDetail').style.display = '';
+  $('evDetail').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+}
+
+$('btnSearch').onclick = () => load(1);
+$('btnReset').onclick = () => {
+  ['fLevel', 'fLevelMin', 'fType'].forEach(i => $(i).value = '');
+  $('fQ').value = '';
+  _defaultDates();
+  load(1);
+};
+_defaultDates();
 
 // ── D1-28 N2: AI配置+进度 ──
 async function loadAiConfig() {
@@ -228,6 +268,15 @@ $('btnAiSave').onclick = async () => {
     $('aiMsg').textContent = r.msg;
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
+$('btnAiPause').onclick = async () => {
+  const paused = $('btnAiPause').textContent.includes('暂停');
+  try {
+    const r = await api('/admin/api/ai/pause', {method: 'POST',
+      body: JSON.stringify({pause: paused})});
+    $('btnAiPause').textContent = paused ? '恢复分析' : '暂停分析';
+    $('aiMsg').textContent = r.msg;
+  } catch (e) { $('aiMsg').textContent = e.message; }
+};
 $('btnAiAll').onclick = async () => {
   $('aiMsg').textContent = '⏳ 全量分析入队中…';
   try {
@@ -253,6 +302,21 @@ $('btnAiAnalyze').onclick = async () => {
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
 loadAiConfig();
+// D1-30b: 新闻抓取运行态
+async function loadNewsRun() {
+  try {
+    const d = await api('/admin/api/macro/news/running');
+    const kinds = Object.keys(d.running || {});
+    const fetching = kinds.some(k => k.includes('backfill'));
+    const analyzing = kinds.some(k => k.includes('analyze'));
+    let st = [];
+    if (fetching) st.push('⏳ 抓取中');
+    if (analyzing) st.push('⏳ AI分析中');
+    $('aiProg').textContent += st.length ? ' · ' + st.join(' · ') : '';
+  } catch (e) {}
+}
+loadNewsRun();
+setInterval(loadNewsRun, 15000);
 
 // ── D1-20 F2: 月度解禁柱状图 ──
 (async () => {
