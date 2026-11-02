@@ -46,8 +46,13 @@ def _attach(conn):
 
 
 def _months(start_ym: str, end_ym: str) -> list:
-    out, y, m = [], int(start_ym[:4]), int(start_ym[4:6])
-    ey, em = int(end_ym[:4]), int(end_ym[4:6])
+    # P4r: 兼容ISO"YYYY-MM"与紧凑"YYYYMM"(D1-19改_shift_month返回ISO后,
+    # [4:6]取到"-0"→int=0→IllegalMonthError, float链全挂)
+    def _parse(ym):
+        return int(ym[:4]), int(ym[5:7]) if "-" in ym else int(ym[4:6])
+    out = []
+    y, m = _parse(start_ym)
+    ey, em = _parse(end_ym)
     while (y, m) <= (ey, em):
         out.append(f"{y:04d}-{m:02d}")
         m += 1

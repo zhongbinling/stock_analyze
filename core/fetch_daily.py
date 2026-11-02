@@ -846,14 +846,20 @@ def main():
     try:                                  # D1-15 I1: 全A/宽基估值聚合日增
         import fetch_mktval
         fetch_mktval.refresh()
-        import fetch_float
-        fetch_float.refresh()          # D1-20: 近6+未来4月解禁滚动修订
-        import fetch_news
-        fetch_news.refresh()           # D1-28 N1: 宏观新闻日增(近3日+em快讯)
-        import analyze_news
-        analyze_news.auto_analyze()    # D1-28 N4: 抓取后自动AI分析(本地→云端)
     except Exception as e:  # noqa: BLE001
         print(f"[mktval] 挂载异常(跳过): {type(e).__name__}: {e}")
+    try:                                  # D1-20: 近6+未来4月解禁滚动修订
+        import fetch_float
+        fetch_float.refresh()
+    except Exception as e:  # noqa: BLE001
+        print(f"[float] 挂载异常(跳过): {type(e).__name__}: {e}")
+    try:                                  # D1-28 N1+N4: 新闻日增+自动AI分析
+        import fetch_news
+        fetch_news.refresh()
+        import analyze_news
+        analyze_news.auto_analyze()
+    except Exception as e:  # noqa: BLE001
+        print(f"[news] 挂载异常(跳过): {type(e).__name__}: {e}")
     fetch_tushare_mood_today()
     fetch_sw_daily()
     if args.ts_backfill:
