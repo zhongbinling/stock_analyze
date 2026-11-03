@@ -166,8 +166,57 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
     return True
 
 
+def refresh_sina(path=None) -> int:
+    """akshare新浪全球快讯(20条快照)"""
+    try:
+        import akshare as ak
+        df = ak.stock_info_global_sina()
+    except Exception as e:
+        print(f"[news] sina失败: {str(e)[:60]}")
+        return -1
+    con = _conn(path)
+    n, now = 0, time.strftime("%Y-%m-%d %H:%M:%S")
+    for _, r in df.iterrows():
+        title = str(r.get("内容") or "").strip()
+        pub = str(r.get("时间") or "")
+        if not title or not pub:
+            continue
+        con.execute(
+            "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
+            " VALUES(?,?,?,?,?,?)",
+            ("sina_flash", pub[:19], title[:500], None, title[:2000], now))
+        n += 1
+    con.commit(); con.close()
+    return n
+
+
+def refresh_ths(path=None) -> int:
+    """akshare同花顺快讯(20条快照)"""
+    try:
+        import akshare as ak
+        df = ak.stock_info_global_ths()
+    except Exception as e:
+        print(f"[news] ths失败: {str(e)[:60]}")
+        return -1
+    con = _conn(path)
+    n, now = 0, time.strftime("%Y-%m-%d %H:%M:%S")
+    for _, r in df.iterrows():
+        title = str(r.get("标题") or "").strip()
+        pub = str(r.get("发布时间") or "")
+        if not title or not pub:
+            continue
+        con.execute(
+            "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
+            " VALUES(?,?,?,?,?,?)",
+            ("ths_flash", pub[:19], title[:500], str(r.get("链接") or "")[:500] or None,
+             str(r.get("内容") or "")[:2000], now))
+        n += 1
+    con.commit(); con.close()
+    return n
+
+
 def refresh(path=None) -> bool:
-    """日增: major_news 近3日 + em快讯; 顺带渐进回补(限额内推10日/天)"""
+    """日增: major_news 近3日 + em/sina/ths三路快讯; 顺带渐进回补(限额内推10日/天)"""
     import datetime as dt
     done = days_done(SRC_MN, path)
     for back in range(3):
@@ -186,6 +235,8 @@ def refresh(path=None) -> bool:
                 filled += 1
         probe -= dt.timedelta(days=1)
     refresh_em(path)
+    refresh_sina(path)                  # D1-28 N1+: 新浪快讯20条
+    refresh_ths(path)                   # D1-28 N1+: 同花顺快讯20条
     _summary(path)
     return True
 
