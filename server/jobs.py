@@ -332,9 +332,9 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
         total_missing = sum(len(a["missing"]) for a in miss_tables)
         append(f"[repair] 窗口{window_days}天/{gaps['trading_days']}交易日, "
                f"{len(miss_tables)}表缺共{total_missing}日")
-        if not miss_tables:
-            append(f"[{utcnow_str()}] [1/1] 无缺口, 完成")
-            return 0
+        # D1-10A2r: 无真缺口也必须跑fetch链 — 今日(pending)数据靠fetch_daily
+        # 拉取, 此前早退致16:35定时更新空跑(11-03实测全表滞留11-02)
+        # fetch_daily幂等(已有日秒跳), 非交易日跑一遍也仅秒级
         # D1-10r-review: fetch链各源本就按日幂等跳过已有 — 单趟全链覆盖全部
         # 缺口表(index/池/板块/SW/两融/日历), 修复后重算评分; [k/3]步进度
         rc = _run([sys.executable, "-u", "fetch_daily.py"], append)   # [1/3] 全链补拉
