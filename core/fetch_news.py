@@ -41,6 +41,8 @@ def ensure_db(path=None):
       UNIQUE(src, pub_time, title))""")
     con.execute("CREATE INDEX IF NOT EXISTS idx_news_pub ON news_raw(pub_time)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_news_src ON news_raw(src)")
+    # P4r: 跨源去重按title查 — 无索引时O(n×m)扫全表, 有索引O(m×log n)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_news_title ON news_raw(title)")
     con.commit()
     con.close()
 
@@ -79,13 +81,8 @@ def fetch_day(day_ymd: str, path=None) -> int:
             pub = str(r.get("pub_time") or "")
             if not title or not pub:
                 continue
-            con.execute(
-                "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
-                " VALUES(?,?,?,?,?,?)",
-                (SRC_MN, pub[:19], title[:500],
-                 str(r.get("url")) if r.get("url") and str(r.get("url")) != "None" else None,
-                 None, now))
-            n += 1
+            url = str(r.get("url")) if r.get("url") and str(r.get("url")) != "None" else None
+            n += _dedup_insert(con, SRC_MN, pub, title, url, None, now)
     con.commit()
     con.close()
     return n
@@ -94,6 +91,7 @@ def fetch_day(day_ymd: str, path=None) -> int:
 def _dedup_insert(con, src, pub, title, url, content, now):
     """跨源去重: 同日同标题已从其他源入库则跳过(东财/同花顺/新浪
     覆盖同一市场事件, 重复入库浪费AI分析算力)"""
+    title = title[:500]                # 与INSERT截断一致(原文>500时查询会漏)
     existing = con.execute(
         "SELECT 1 FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
         (title, pub)).fetchone()
