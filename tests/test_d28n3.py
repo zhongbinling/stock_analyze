@@ -119,4 +119,4 @@ def test_page_cloud_button():
     html = (REPO / "server" / "templates" / "admin" / "macro.html").read_text(encoding="utf-8")
     assert "btnAiCloud" in html
     assert "/admin/api/ai/analyze-cloud" in html
-    assert "云端(L3+)" in html
+    assert "云端精析" in html and "L3+" in html
