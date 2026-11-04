@@ -32,8 +32,12 @@ def generate_html(out=None) -> Path:
     mood = con.execute("SELECT date,score,stage FROM sentiment ORDER BY date DESC LIMIT 2").fetchall()
     mood_prev = mood[1] if len(mood) > 1 else None
     # 2. 板块冷热前5
-    hot = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score DESC LIMIT 5").fetchall()
-    cold = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score ASC LIMIT 5").fetchall()
+    hot_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score DESC LIMIT 5").fetchall()
+    cold_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score ASC LIMIT 5").fetchall()
+    # D1-30r: BK/SW3代码→中文名(简报可读性)
+    name_map = {r[0]: r[1] for r in con.execute("SELECT code, name FROM sectors")}
+    hot = [(name_map.get(c, c), s2) for c, s2 in hot_raw]
+    cold = [(name_map.get(c, c), s2) for c, s2 in cold_raw]
     # 3. 估值水位
     val = con.execute("SELECT date,alla_pe,alla_pb,pe300 FROM mkt_val_daily ORDER BY date DESC LIMIT 1").fetchone()
     # 4. 两融

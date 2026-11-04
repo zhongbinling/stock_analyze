@@ -130,10 +130,11 @@ def analyze_batch(batch_size: int = 5) -> dict:
                     (result["level"], result["type"],
                      f"ai_local:{cfg['model']}", now, existing[0]))
             else:
+                # D1-30r: content存原始新闻摘要(非AI分析, 避免内容=AI分析)
                 con.execute(
                     "INSERT INTO macro_events(title, level, content, source, date, type, created_at, updated_at) "
                     "VALUES(?,?,?,?,?,?,?,?)",
-                    (title, result["level"], result["impact"],
+                    (title, result["level"], content[:500] or title,
                      f"ai_local:{cfg['model']}", date, result["type"], now, now))
             analyzed += 1
         except Exception as e:

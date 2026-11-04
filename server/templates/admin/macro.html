@@ -159,17 +159,19 @@ async function load(page = 1) {
       const el = $('cnt' + lv);
       if (el) el.textContent = (d.stats.by_level || {})[lv] || 0;
     }
-    $('mTable').innerHTML = '<tr><th>日期</th><th>等级</th><th>标题</th><th>类型</th><th>来源</th><th>操作</th></tr>'
+    $('mTable').innerHTML = '<tr><th>日期</th><th>等级</th><th>标题</th><th>类型</th><th>AI概要</th><th>来源</th><th></th></tr>'
       + (d.events.length ? d.events.map(e => `<tr>
         <td class="hint">${esc(e.date)}</td>
         <td>${LV_CLS[e.level] ? `<b style="color:${LV_NAME_COLORS[e.level] || '#555'}">L${e.level}</b>` : 'L' + e.level}</td>
         <td><a href="javascript:void(0)" data-ev="${esc(JSON.stringify(e)).replace(/"/g, '&quot;')}"
           style="color:inherit;text-decoration:underline;cursor:pointer">${esc(e.title)}</a></td>
         <td class="hint">${esc(e.type || '--')}</td>
+        <td class="hint" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+            title="${esc(e.ai_impact || '')}">${esc(e.ai_impact || '--')}</td>
         <td class="hint">${(e.source || '').startsWith('ai_')
           ? `<b style="color:#6250d6">AI</b>` : esc(e.source || '--')}</td>
         <td>${e.id ? `<button class="btn small" data-del="${e.id}">删</button>` : ''}</td></tr>`).join('')
-        : '<tr><td colspan="6" class="hint">无匹配事件</td></tr>');
+        : '<tr><td colspan="7" class="hint">无匹配事件</td></tr>');
     // 分页条
     let nav = '';
     if (d.pages > 1) {
@@ -203,7 +205,8 @@ function showDetail(e) {
   ];
   if (e.level >= 2) {
     rows.push(['AI等级', e.ai_level ? `L${e.ai_level}` : '--']);
-    rows.push(['AI分析', e.ai_impact ? esc(e.ai_impact) : '--']);
+    rows.push(['AI概要', e.ai_impact ? esc(e.ai_impact) : '--']);
+    if (e.ai_reasoning) rows.push(['AI详析', esc(e.ai_reasoning)]);
     rows.push(['AI方向', e.ai_direction ? esc(e.ai_direction) : '--']);
     if (e.ai_reasoning) rows.push(['修正理由', esc(e.ai_reasoning)]);
   }
@@ -282,7 +285,7 @@ $('btnAiAll').onclick = async () => {
   try {
     const r = await api('/admin/api/ai/analyze-all', {method: 'POST', body: '{}'});
     $('aiMsg').textContent = r.msg;
-    poll && setTimeout(loadAiProg, 5000);
+    setTimeout(loadAiProg, 5000);
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
 $('btnAiCloud').onclick = async () => {
@@ -302,6 +305,8 @@ $('btnAiAnalyze').onclick = async () => {
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
 loadAiConfig();
+// D1-30r: AI进度自动刷新(5s轮询, 页面可见时加速)
+setInterval(() => { if (!document.hidden) loadAiProg(); }, 5000);
 // D1-30b: 新闻抓取运行态
 async function loadNewsRun() {
   try {
