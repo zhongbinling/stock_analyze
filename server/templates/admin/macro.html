@@ -93,14 +93,14 @@
     <input class="input" id="aiCloudUrl" placeholder="https://api.deepseek.com/v1" style="width:200px">
     <input class="input" id="aiCloudModel" placeholder="模型名" style="width:120px">
     <input class="input" id="aiCloudKey" type="password" placeholder="API key" style="width:100px">
-    <button class="btn primary small" id="btnAiSave">保存配置</button>
+    <button class="btn primary" id="btnAiSave">保存配置</button>
   </div>
   <div class="row-flex" style="margin-top:8px">
     <span class="hint" id="aiDetail">--</span>
-    <button class="btn small" id="btnAiAnalyze">本地一批</button>
-    <button class="btn small" id="btnAiCloud">云端(L3+)</button>
-    <button class="btn small" id="btnAiPause" title="当前批次完成后停止分析">暂停分析</button>
-    <button class="btn primary small" id="btnAiAll" title="循环本地全量→云端L3+, 异步入队">一键全量</button>
+    <button class="btn primary" id="btnAiAnalyze">本地分析</button>
+    <button class="btn" id="btnAiCloud">云端精析 (L3+)</button>
+    <button class="btn" id="btnAiPause" title="当前批次完成后停止">暂停</button>
+    <button class="btn primary" id="btnAiAll" title="循环本地全量→云端L3+">一键全量分析</button>
     <span class="hint" id="aiMsg"></span>
   </div>
   <div class="row-flex" style="margin-top:6px;gap:4px;flex-wrap:wrap" id="aiLevels"></div>
