@@ -309,7 +309,7 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
              "integrity": "ok" if kind == "sqlite" else "-", "stats": stats}
     with _manifest_lock():                 # 重读最新清单再落, 防并发覆盖他人条目
         m2 = _load_manifest()
-        if not any(e2["file"] == entry_file for e2 in m2["entries"]):
+        if not any(e2.get("file") == entry_file for e2 in m2["entries"]):
             m2["entries"].append(entry)
         _save_manifest(m2)
     fresh = stats.get("sector_scores") or stats.get("sentiment") or ""
