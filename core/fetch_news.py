@@ -91,6 +91,21 @@ def fetch_day(day_ymd: str, path=None) -> int:
     return n
 
 
+def _dedup_insert(con, src, pub, title, url, content, now):
+    """跨源去重: 同日同标题已从其他源入库则跳过(东财/同花顺/新浪
+    覆盖同一市场事件, 重复入库浪费AI分析算力)"""
+    existing = con.execute(
+        "SELECT 1 FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
+        (title, pub)).fetchone()
+    if existing:
+        return 0                       # 跨源重复, 跳过
+    con.execute(
+        "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (src, pub[:19], title[:500], url, content, now))
+    return 1
+
+
 def refresh_em(path=None) -> int:
     """akshare东财快讯增量(latest~200条含摘要), 幂等upsert"""
     try:
@@ -106,12 +121,9 @@ def refresh_em(path=None) -> int:
         pub = str(r.get("发布时间") or "")
         if not title or not pub:
             continue
-        con.execute(
-            "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
-            " VALUES(?,?,?,?,?,?)",
-            (SRC_EM, pub[:19], title[:500], str(r.get("链接") or "")[:500] or None,
-             str(r.get("摘要") or "")[:2000], now))
-        n += 1
+        n += _dedup_insert(con, SRC_EM, pub, title,
+                           str(r.get("链接") or "")[:500] or None,
+                           str(r.get("摘要") or "")[:2000], now)
     con.commit()
     con.close()
     return n
@@ -181,11 +193,7 @@ def refresh_sina(path=None) -> int:
         pub = str(r.get("时间") or "")
         if not title or not pub:
             continue
-        con.execute(
-            "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
-            " VALUES(?,?,?,?,?,?)",
-            ("sina_flash", pub[:19], title[:500], None, title[:2000], now))
-        n += 1
+        n += _dedup_insert(con, "sina_flash", pub, title, None, title[:2000], now)
     con.commit(); con.close()
     return n
 
@@ -205,12 +213,9 @@ def refresh_ths(path=None) -> int:
         pub = str(r.get("发布时间") or "")
         if not title or not pub:
             continue
-        con.execute(
-            "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"
-            " VALUES(?,?,?,?,?,?)",
-            ("ths_flash", pub[:19], title[:500], str(r.get("链接") or "")[:500] or None,
-             str(r.get("内容") or "")[:2000], now))
-        n += 1
+        n += _dedup_insert(con, "ths_flash", pub, title,
+                           str(r.get("链接") or "")[:500] or None,
+                           str(r.get("内容") or "")[:2000], now)
     con.commit(); con.close()
     return n
 
