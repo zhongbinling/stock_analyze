@@ -17,6 +17,7 @@ AI阶段按需重查(content字段按日+标题精确), 避免全史HTML灌库�
 用法: python fetch_news.py [--start 20180601] [--refresh] [--deadline-min 720]
 """
 import argparse
+import re
 import sqlite3
 import sys
 import time
@@ -99,10 +100,32 @@ def fetch_day(day_ymd: str, path=None) -> int:
     return n
 
 
+def _clean_title(raw: str, limit: int = 60) -> str:
+    """快讯标题清洗: em源"标题"字段常为【主题】+全文, sina源拿内容当标题 —
+    【主题】6~40字→取主题, 短前缀(如"快讯")→剥掉用正文; 超长→句边界截断
+    (标题=内容也由此解耦, 全文在content)"""
+    t = re.sub(r"\s+", " ", str(raw or "").strip())
+    m = re.match(r"^【(.+?)】(.*)$", t, re.S)
+    if m:
+        theme, rest = m.group(1).strip(), m.group(2).strip()
+        if 6 <= len(theme) <= 40:
+            return theme[:limit]
+        if rest:                          # 短前缀是噪音(【快讯】/【盘中】)
+            t = rest
+    if len(t) <= limit:
+        return t
+    cut = t[:limit + 10]
+    for p in ("。", "；", ";", "！", "？", "?", "，", "、", ",", " "):
+        i = cut.rfind(p)
+        if i >= 20:
+            return t[:i].rstrip("。，,、；;！!？? ")
+    return t[:limit]
+
+
 def _dedup_insert(con, src, pub, title, url, content, now):
     """跨源去重: 同日同标题已从其他源入库则跳过(东财/同花顺/新浪
-    覆盖同一市场事件, 重复入库浪费AI分析算力)"""
-    title = title[:500]                # 与INSERT截断一致(原文>500时查询会漏)
+    覆盖同一市场事件, 重复入库浪费AI分析算力); 标题先清洗(快讯体全文→主题)"""
+    title = _clean_title(title)[:500]      # 与INSERT截断一致(原文>500时查询会漏)
     existing = con.execute(
         "SELECT 1 FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
         (title, pub)).fetchone()
@@ -189,6 +212,40 @@ def run(start: str = "20180601", end: str = None, path=None, tail: bool = True):
     print(f"[news] 回补轮结束 {time.time()-t0:.0f}s"
           + (f" (限频中断于{i}/{todo})" if rate_capped else ""))
     return "capped" if rate_capped else True
+
+
+def clean_existing(path=None) -> dict:
+    """存量清洗: news_raw与macro_events两侧同步清洗超长标题(>60字快讯体)。
+    同步用同一清洗函数 → _attach_ai_analysis按标题的匹配不断链;
+    news_raw撞UNIQUE(src,pub_time,title)的行跳过(OR IGNORE)。"""
+    con = _conn(path)
+    out = {"news_raw": 0, "macro_events": 0, "skipped": 0}
+    for nid, t in con.execute(
+            "SELECT id, title FROM news_raw WHERE length(title) > 60").fetchall():
+        c = _clean_title(t)
+        if c == t:
+            continue
+        cur = con.execute("UPDATE OR IGNORE news_raw SET title=? WHERE id=?",
+                          (c, nid))
+        if cur.rowcount:
+            out["news_raw"] += 1
+        else:
+            out["skipped"] += 1
+    has_ev = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='macro_events'").fetchone()
+    if has_ev:
+        for eid, t in con.execute(
+                "SELECT id, title FROM macro_events WHERE length(title) > 60").fetchall():
+            c = _clean_title(t)
+            if c == t:
+                continue
+            con.execute("UPDATE macro_events SET title=? WHERE id=?", (c, eid))
+            out["macro_events"] += 1
+    con.commit()
+    con.close()
+    print(f"[news] 存量清洗: news_raw {out['news_raw']}行 / macro_events "
+          f"{out['macro_events']}行" + (f" / UNIQUE跳过{out['skipped']}" if out["skipped"] else ""))
+    return out
 
 
 def refresh_sina(path=None) -> int:
@@ -331,11 +388,15 @@ def main():
     ap.add_argument("--start", default="20180601")
     ap.add_argument("--end", default=None)
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--clean", action="store_true",
+                    help="存量清洗: news_raw/macro_events超长标题(快讯体)两侧同步")
     ap.add_argument("--deadline-min", type=float, default=None,
                     help="驱动模式: 限频自适应多轮回补直至完成/截止(分钟)")
     a = ap.parse_args()
     if a.refresh:
         refresh()
+    elif a.clean:
+        clean_existing()
     elif a.deadline_min:
         run_rounds(a.deadline_min, a.start, a.end)
     else:
