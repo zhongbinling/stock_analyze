@@ -139,7 +139,7 @@ small{{color:#999}}
 </style></head><body>
 <div class="card"><h2>📊 数据简报 · {today} {time.strftime('%H:%M')}</h2>
 <table>{rows_score}{rows_val}{rows_bf}{mg_html}{etf_html}</table></div>
-<div class="card"><h2>🔥 板块冷热 TOP5 ({hot[0][0][:0] or '最新日'})</h2>
+<div class="card"><h2>🔥 板块冷热 TOP5 (最新日)</h2>
 <table style="width:48%;display:inline-table"><tr><th>最热</th><th>分</th></tr>{hot_html}</table>
 <table style="width:48%;display:inline-table;margin-left:2%"><tr><th>最冷</th><th>分</th></tr>{cold_html}</table></div>
 <div class="card"><h2>📰 近24小时事件 (L2+)</h2><table>{ev_rows(ev24)}</table>

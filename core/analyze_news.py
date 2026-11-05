@@ -78,15 +78,17 @@ def _is_paused() -> bool:
         return False
 
 
-def analyze_batch(batch_size: int = 5) -> dict:
-    """取N条待分析 → AI调用 → news_local + macro_events成品upsert"""
+def analyze_batch(batch_size: int = 5, db_path=None, cfg: dict = None) -> dict:
+    """取N条待分析 → AI调用 → news_local + macro_events成品upsert
+
+    db_path/cfg可选参数供测试注入(生产走默认模块级, 同analyze_cloud_batch)"""
     import ai_client
-    cfg = get_ai_config()
+    cfg = cfg or get_ai_config()
     if not cfg["enabled"]:
         return {"analyzed": 0, "msg": "本地AI未启用"}
     if _is_paused():
         return {"analyzed": 0, "msg": "已暂停"}
-    db_path = BASE / "data" / "macro.db"
+    db_path = db_path or BASE / "data" / "macro.db"
     con = sqlite3.connect(str(db_path))
     ensure_tables(con)
     # 取待分析(无news_local记录或status=fail)
