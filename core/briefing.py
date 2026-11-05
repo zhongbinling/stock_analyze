@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
-"""D1-29: 数据简报生成器 — 七模块只读组装 → 移动端友好单页HTML
+"""D1-29+简报增强: 数据简报生成器 — 模块化只读组装 → 移动端友好单页HTML
 
+含简报增强五项: 板块Δ5趋势箭头 / ETF近5日均值环比 / L2+事件AI概要 /
+打印导出PDF(@media print) / 全A PB分位条。
 用法: python briefing.py [--out path.html]
 """
 import argparse
@@ -62,8 +64,9 @@ def generate_html(out=None) -> Path:
     now = _dt.now()
     h24 = (now - _td(hours=24)).strftime("%Y-%m-%d")
     d7 = (now - _td(days=7)).strftime("%Y-%m-%d")
-    ev24 = [e for e in MC.list_events()["events"] if e["date"] >= h24 and e["level"] >= 2]
-    ev7 = [e for e in MC.list_events()["events"] if h24 > e["date"] >= d7 and e["level"] >= 2]
+    _evs = MC.list_events()["events"]              # 单次取全(原ev24/ev7各调一遍)
+    ev24 = [e for e in _evs if e["date"] >= h24 and e["level"] >= 2]
+    ev7 = [e for e in _evs if h24 > e["date"] >= d7 and e["level"] >= 2]
 
     def _fmt_pct(v): return f"{v*100:.0f}%" if v is not None else "--"  # viewer小数→%
     def _pct_bar(v, label=""):
@@ -136,7 +139,7 @@ def generate_html(out=None) -> Path:
             if prev5:
                 chg = (cur5 - prev5) / prev5 * 100
                 c = "#e34448" if chg >= 0 else "#2f5cd6"
-                etf_html += (f"<tr><td class='hint'>近5日均值</td><td><b>{cur5:.0f}</b> 亿"
+                etf_html += (f"<tr><td><small>近5日均值</small></td><td><b>{cur5:.0f}</b> 亿"
                              f" (环比前5日 <b style='color:{c}'>{chg:+.1f}%</b>)</td></tr>")
 
     def ev_rows(evs):
@@ -178,7 +181,7 @@ h2{{font-size:14px;color:#666;margin:0 0 10px}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}
 td{{padding:4px 6px;border-bottom:1px solid #eee}}
 small{{color:#999}}
-@media print {{ body{{background:#fff}} .card{{box-shadow:none;margin:0;padding:6px}} .noprint{{display:none}} }}
+@media print {{ body{{background:#fff}} .card{{box-shadow:none;margin:6px 0;padding:6px}} .noprint{{display:none}} }}
 </style></head><body>
 <div class="card"><h2>📊 数据简报 · {today} {time.strftime('%H:%M')}
 <button class="noprint" onclick="window.print()" style="float:right;font-size:12px;

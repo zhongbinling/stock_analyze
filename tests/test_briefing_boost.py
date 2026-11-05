@@ -105,9 +105,10 @@ def test_sector_trend_short_history_no_crash(benv, tmp_path, monkeypatch):
 
 
 def test_etf_5day_wow(benv):
-    """近5日均值环比前5日: 20→25亿 → +25.0%红"""
+    """近5日均值环比前5日: 20→25亿 → +25.0%红; 标签用<small>(简报无.hint类)"""
     html = _gen(benv)
     assert "近5日均值" in html
+    assert "<small>近5日均值</small>" in html     # review: class='hint'在独立HTML无定义
     assert "<b>25</b> 亿" in html
     assert "+25.0%" in html and "#e34448" in html
 
