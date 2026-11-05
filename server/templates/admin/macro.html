@@ -30,6 +30,12 @@
     <input class="input" id="fQ" placeholder="关键词(标题/内容)" style="width:150px">
     <button class="btn primary" id="btnSearch">检索</button>
     <button class="btn" id="btnReset">重置</button>
+    <span style="border-left:1px solid var(--line,#ddd);height:20px"></span>
+    <button class="btn" id="btnEvCsv" title="按当前筛选条件导出CSV">导出CSV</button>
+    <select class="input" id="purgeLv" style="width:80px" title="批量清理≤该等级的事件(受日期筛选约束)">
+      <option value="1">≤L1</option><option value="2">≤L2</option>
+    </select>
+    <button class="btn" id="btnEvPurge" title="按上方日期范围批量清理低等级噪音">批量清理</button>
   </div>
   <div class="row-flex" style="margin-top:6px;gap:10px;align-items:center">
     <span class="hint" id="evTotal">--</span>
@@ -134,13 +140,26 @@ async function api(url, opts = {}) {
 }
 
 let curPage = 1;
+const FKEY = 'macroFilters';               // 宏观打磨: 筛选持久化(localStorage)
+const FIELDS = ['fLevel', 'fLevelMin', 'fFrom', 'fTo', 'fType', 'fQ'];
 function _defaultDates() {
   const to = new Date(), from = new Date(Date.now() - 7 * 864e5);
   $('fFrom').value = from.toISOString().slice(0, 10);
   $('fTo').value = to.toISOString().slice(0, 10);
 }
-async function load(page = 1) {
-  curPage = page;
+function saveFilters() {
+  const f = {};
+  FIELDS.forEach(id => f[id] = $(id).value);
+  localStorage.setItem(FKEY, JSON.stringify(f));
+}
+function restoreFilters() {
+  try {
+    const f = JSON.parse(localStorage.getItem(FKEY) || 'null');
+    if (!f) return;
+    FIELDS.forEach(id => { if (f[id]) $(id).value = f[id]; });
+  } catch (e) {}
+}
+function filterParams() {
   const p = new URLSearchParams();
   if ($('fLevel').value) p.set('level', $('fLevel').value);
   if ($('fLevelMin').value) p.set('level_min', $('fLevelMin').value);
@@ -148,6 +167,12 @@ async function load(page = 1) {
   if ($('fTo').value) p.set('to', $('fTo').value);
   if ($('fType').value.trim()) p.set('type', $('fType').value.trim());
   if ($('fQ').value.trim()) p.set('q', $('fQ').value.trim());
+  return p;
+}
+async function load(page = 1) {
+  curPage = page;
+  saveFilters();                            // 检索即持久化
+  const p = filterParams();
   p.set('page', page); p.set('limit', 30);
   try {
     const d = await api('/admin/api/macro/events?' + p.toString());
@@ -197,33 +222,72 @@ async function load(page = 1) {
 const LV_NAME_COLORS = {5: '#d03b3b', 4: '#e67e22', 3: '#eda100', 2: '#8e44ad', 1: '#898781'};
 
 function showDetail(e) {
+  // 宏观打磨: 详情即编辑(level/type/date/content/source可改; title只读保AI关联)
   const rows = [
-    ['日期', esc(e.date)], ['等级', `<b style="color:${LV_NAME_COLORS[e.level]}">L${e.level}</b>`],
-    ['类型', esc(e.type || '--')], ['来源', esc(e.source || '--')],
-    ['标题', `<b>${esc(e.title)}</b>`],
-    ['内容', esc(e.content || '--')],
+    ['标题', `<b>${esc(e.title)}</b> <span class="hint">(只读 · AI关联键)</span>`],
+    ['等级', `<select class="input" id="edLevel" style="width:110px">`
+      + [5, 4, 3, 2, 1].map(lv =>
+        `<option value="${lv}" ${lv === e.level ? 'selected' : ''}>${LV_NAME[lv] || 'L' + lv}</option>`).join('')
+      + '</select>'],
+    ['日期', `<input class="input" type="date" id="edDate" value="${esc(e.date)}" style="width:150px">`],
+    ['类型', `<input class="input" id="edType" value="${esc(e.type || '')}" style="width:120px">`],
+    ['来源', `<input class="input" id="edSource" value="${esc(e.source || '')}" style="width:170px">`],
+    ['内容', `<textarea class="input" id="edContent" style="width:100%;height:56px">${esc(e.content || '')}</textarea>`],
   ];
   if (e.level >= 2) {
     rows.push(['AI等级', e.ai_level ? `L${e.ai_level}` : '--']);
     rows.push(['AI概要', e.ai_impact ? esc(e.ai_impact) : '--']);
     if (e.ai_reasoning) rows.push(['AI详析', esc(e.ai_reasoning)]);
     rows.push(['AI方向', e.ai_direction ? esc(e.ai_direction) : '--']);
-    if (e.ai_reasoning) rows.push(['修正理由', esc(e.ai_reasoning)]);
   }
-  $('evDetailBody').innerHTML = '<table class="table">' +
-    rows.map(([k, v]) => `<tr><td style="width:80px" class="hint">${k}</td><td>${v}</td></tr>`).join('') + '</table>';
+  $('evDetailBody').innerHTML = '<table class="table">'
+    + rows.map(([k, v]) => `<tr><td style="width:80px" class="hint">${k}</td><td>${v}</td></tr>`).join('')
+    + '</table>'
+    + '<div class="row-flex" style="margin-top:8px;gap:8px;align-items:center">'
+    + '<button class="btn primary" id="btnEvSave">保存修改</button>'
+    + '<span class="hint" id="edMsg"></span></div>';
   $('evDetail').style.display = '';
   $('evDetail').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+  $('btnEvSave').onclick = async () => {
+    try {
+      await api('/admin/api/macro/events/' + e.id, {method: 'PUT', body: JSON.stringify({
+        level: +$('edLevel').value, date: $('edDate').value,
+        type: $('edType').value.trim(), source: $('edSource').value.trim(),
+        content: $('edContent').value})});
+      $('edMsg').textContent = '✓ 已保存';
+      load(curPage);
+      setTimeout(() => { $('evDetail').style.display = 'none'; }, 600);
+    } catch (err) { $('edMsg').textContent = err.message; }
+  };
 }
 
 $('btnSearch').onclick = () => load(1);
+$('btnEvCsv').onclick = () => {                 // 导出=当前筛选条件的CSV下载
+  window.open('/admin/api/macro/events/export?' + filterParams().toString());
+};
+$('btnEvPurge').onclick = async () => {
+  const lv = $('purgeLv').value;
+  const scope = ($('fFrom').value || $('fTo').value)
+    ? `${$('fFrom').value || '始'} ~ ${$('fTo').value || '今'}` : '全部日期(不限)';
+  if (!confirm(`批量删除等级≤L${lv}的事件\n范围: ${scope}\n\n该操作不可撤销(AI重跑按新闻源重新生成), 确定?`)) return;
+  try {
+    const r = await api('/admin/api/macro/events/bulk-delete', {method: 'POST',
+      body: JSON.stringify({level_max: +lv,
+        from: $('fFrom').value || null, to: $('fTo').value || null})});
+    alert(r.msg);
+    load(1);
+  } catch (e) { alert(e.message); }
+};
 $('btnReset').onclick = () => {
   ['fLevel', 'fLevelMin', 'fType'].forEach(i => $(i).value = '');
   $('fQ').value = '';
+  localStorage.removeItem(FKEY);               // 重置即清除持久化
   _defaultDates();
   load(1);
 };
 _defaultDates();
+restoreFilters();                              // 有持久化则覆盖默认(含上次日期)
+load(1);
 
 // ── D1-28 N2: AI配置+进度 ──
 async function loadAiConfig() {

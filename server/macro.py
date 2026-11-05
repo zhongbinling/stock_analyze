@@ -201,6 +201,98 @@ def delete_event(eid: int, path=None) -> bool:
     return n > 0
 
 
+EDITABLE = ("level", "type", "date", "content", "source")
+
+
+def _has_table(con, name) -> bool:
+    return bool(con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,)).fetchone())
+
+
+def update_event(eid: int, fields: dict, path=None) -> bool:
+    """宏观打磨: 事件编辑 — 可改level/type/date/content/source;
+    title保持只读(_attach_ai_analysis按title关联news_raw, 改名会断AI概要)。
+    若有对应news_local记录(按title匹配), 同步level/type保持列表AI等级一致。
+    校验失败抛ValueError; id不存在返回False"""
+    fields = {k: v for k, v in (fields or {}).items() if k in EDITABLE}
+    if not fields:
+        raise ValueError(f"无可编辑字段(允许: {','.join(EDITABLE)}; title只读保AI关联)")
+    con = _conn(path)
+    row = con.execute("SELECT title, level, date FROM macro_events WHERE id=?",
+                      (int(eid),)).fetchone()
+    if not row:
+        con.close()
+        return False
+    err = _validate({"title": row[0],          # 未传字段用旧值补齐参与校验
+                     "level": fields.get("level", row[1]),
+                     "date": fields.get("date", row[2])}, 0)
+    if err:
+        con.close()
+        raise ValueError(err.split("] ", 1)[-1])
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    sets, args = [], []
+    for k in fields:
+        v = fields[k]
+        if k == "level":
+            v = int(v)
+        elif k == "date":
+            v = str(v).strip()
+        elif k == "type":
+            v = str(v or "")[:32]
+        elif k == "source":
+            v = str(v or "")[:100]
+        else:                                  # content
+            v = str(v or "")[:5000]
+        sets.append(f"{k}=?")
+        args.append(v)
+    sets.append("updated_at=?")
+    args.append(now)
+    args.append(int(eid))
+    with _lock:
+        con.execute(f"UPDATE macro_events SET {', '.join(sets)} WHERE id=?", args)
+        # AI等级/类型修正 → 同步news_local(列表AI概要列与等级口径一致)
+        sync_sets, sync_args = [], []
+        if "level" in fields:
+            sync_sets.append("level=?")
+            sync_args.append(int(fields["level"]))
+        if "type" in fields:
+            sync_sets.append("type=?")
+            sync_args.append(str(fields.get("type") or "")[:16])
+        if sync_sets and _has_table(con, "news_local") and _has_table(con, "news_raw"):
+            con.execute(
+                f"UPDATE news_local SET {', '.join(sync_sets)} "
+                "WHERE news_id IN (SELECT id FROM news_raw WHERE title=?)",
+                sync_args + [row[0]])
+    con.commit()
+    con.close()
+    return True
+
+
+def delete_events(level_max: int, d_from=None, d_to=None, path=None) -> int:
+    """宏观打磨: 按等级批量清理(≤level_max), 可选日期范围缩小爆炸半径;
+    level_max限1-4(L5不允许批量误删)。返回删除条数"""
+    try:
+        lv = int(level_max)
+    except (TypeError, ValueError):
+        raise ValueError("level_max 应为数字")
+    if not 1 <= lv <= 4:
+        raise ValueError("level_max 应为1-4(L5不允许批量清理)")
+    sql, args = "DELETE FROM macro_events WHERE level<=?", [lv]
+    if d_from:
+        sql += " AND date>=?"
+        args.append(str(d_from))
+    if d_to:
+        sql += " AND date<=?"
+        args.append(str(d_to))
+    con = _conn(path)
+    with _lock:
+        n = con.execute(sql, args).rowcount
+    con.commit()
+    con.close()
+    return n
+
+
 def import_events(events: list, path=None) -> dict:
     """批量导入通道(外部工具/第三方数据): 逐条校验, (title,date)去重,
     合法条目整批落库, 返回 {inserted, skipped, errors}"""

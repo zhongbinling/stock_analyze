@@ -428,6 +428,66 @@ def api_macro_del(eid):
     return jsonify({"ok": True, "msg": "已删除"})
 
 
+@bp_admin.put("/api/macro/events/<int:eid>")
+@require_level(7)
+def api_macro_update(eid):
+    """宏观打磨: 事件编辑(level/type/date/content/source, title只读保AI关联)"""
+    from server import macro
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        if not macro.update_event(eid, d):
+            return jsonify({"msg": f"id {eid} 不存在"}), 404
+    except ValueError as e:
+        return jsonify({"msg": str(e)}), 400
+    return jsonify({"ok": True, "msg": "已保存"})
+
+
+@bp_admin.post("/api/macro/events/bulk-delete")
+@require_level(7)
+def api_macro_bulk_del():
+    """宏观打磨: 按等级批量清理(≤level_max, 可选日期范围; L5禁批量)"""
+    from server import macro
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        n = macro.delete_events(d.get("level_max"), d.get("from") or None,
+                                d.get("to") or None)
+    except ValueError as e:
+        return jsonify({"msg": str(e)}), 400
+    return jsonify({"ok": True, "deleted": n, "msg": f"已清理 {n} 条"})
+
+
+@bp_admin.get("/api/macro/events/export")
+@require_level(7)
+def api_macro_export():
+    """宏观打磨: 检索结果导出CSV(同列表筛选条件; BOM头兼容Excel中文)"""
+    import csv
+    import io
+    from flask import Response
+    from server import macro
+    r = macro.list_events(
+        level=request.args.get("level", "").strip() or None,
+        level_min=request.args.get("level_min", "").strip() or None,
+        d_from=request.args.get("from", "").strip() or None,
+        d_to=request.args.get("to", "").strip() or None,
+        type_=request.args.get("type", "").strip() or None,
+        q=request.args.get("q", "").strip() or None,
+        limit="50000", page="1")
+    si = io.StringIO()
+    si.write("﻿")                     # Excel中文兼容(BOM头)
+    w = csv.writer(si)
+    w.writerow(["日期", "等级", "类型", "标题", "内容", "来源",
+                "AI等级", "AI概要", "AI方向", "AI详析", "更新时间"])
+    for e in r["events"]:
+        w.writerow([e["date"], f"L{e['level']}", e.get("type") or "",
+                    e["title"], e.get("content") or "", e.get("source") or "",
+                    f"L{e['ai_level']}" if e.get("ai_level") else "",
+                    e.get("ai_impact") or "", e.get("ai_direction") or "",
+                    e.get("ai_reasoning") or "", e.get("updated_at") or ""])
+    fname = f"macro_events_{datetime.now():%Y%m%d_%H%M}.csv"
+    return Response(si.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
 @bp_admin.get("/api/macro/buffett")
 @require_level(7)
 def api_macro_buffett():
