@@ -6,10 +6,14 @@
 news接口无权限(40203), cls类接口名不存在 → 双源: tushare major_news
 (深史回补) + akshare东财快讯stock_info_global_em(增量, 含摘要)。
 
+D1-28新闻回补实测(2026-11-05): 官方口径限频40次/天, 但与夜间链共享
+token预算时burst后即触发(实测4-5连调即40203), 窗口语义不明(非整点
+滚动) → run_rounds()自适应退避探测恢复, 不假设重置时刻。
+
 N1只存标题层(title/pub_time/src/url, em源含摘要) — 海量正文由N2的
 AI阶段按需重查(content字段按日+标题精确), 避免全史HTML灌库。
 
-用法: python fetch_news.py [--start 20180601] [--refresh] [--sample]
+用法: python fetch_news.py [--start 20180601] [--refresh] [--deadline-min 720]
 """
 import argparse
 import sqlite3
@@ -26,6 +30,7 @@ import tushare_api as T                                    # noqa: E402
 MACRO_DB = BASE / "data" / "macro.db"
 PAGE = 800                     # 实测单页上限
 RATE_LIMIT_PER_MIN = 18        # 实测20次/分钟(留余量)
+MAX_EMPTY_ROUNDS = 5           # run_rounds: 连续零进展轮上限(配额窗口未恢复→退出)
 SRC_MN = "major_news"          # tushare官方宏观(深史)
 SRC_EM = "em_flash"            # akshare东财快讯(增量)
 
@@ -68,7 +73,9 @@ def fetch_day(day_ymd: str, path=None) -> int:
                 break
     except Exception as e:                                 # noqa: BLE001
         if "频率超限" in str(e):
-            print(f"[news] {day_ymd} 频率超限(30次/小时), 跳过本轮")
+            # 打印API原始限额文本(40次/天|20次/分钟), 便于判断窗口语义
+            lim = str(e).split("频率超限")[-1].split("，")[0][:20]
+            print(f"[news] {day_ymd} 频率超限{lim}, 跳过本轮")
             return -2                       # 调用方可判断是否继续
         print(f"[news] {day_ymd} 拉取失败: {str(e)[:80]}")
         return -1
@@ -136,8 +143,11 @@ def days_done(src: str, path=None) -> set:
     return out
 
 
-def run(start: str = "20180601", end: str = None, path=None) -> bool:
-    """全史回补: 逐自然日幂等(已覆盖日跳过), 支持断点续传"""
+def run(start: str = "20180601", end: str = None, path=None):
+    """全史回补: 逐自然日幂等(已覆盖日跳过), 支持断点续传
+
+    返回: True=区间全覆盖完成 / "capped"=限频中断(真值, fetch_daily
+    backfill协议把False当自报失败, 故限频不用False)"""
     if not T.has_token():
         print("[news] 无 token, 跳过")
         return True
@@ -156,14 +166,14 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
     interval = 60.0 / RATE_LIMIT_PER_MIN          # 均匀限速(18次/分≈3.3s间隔)
     rate_capped = False
     while cur <= d2:
-        if rate_capped:                           # 小时限频(30/h)耗尽 → 本轮到此
+        if rate_capped:                           # 限频(40次/天)耗尽 → 本轮到此
             break
         iso = cur.isoformat()
         if iso not in done:
             time.sleep(interval)
             n = fetch_day(cur.strftime("%Y%m%d"), path)
-            if n == -2:                           # 小时限频 → 不再空转(曾空转500日×3.3s)
-                print(f"  ⏳ 小时限频(30/h)耗尽于{iso}, 本轮结束(渐进回补次轮续)")
+            if n == -2:                           # 限频 → 不再空转(曾空转500日×3.3s)
+                print(f"  ⏳ 限频耗尽于{iso}, 本轮结束(渐进回补次轮续)")
                 rate_capped = True
             i += 1
             if i % 30 == 0:
@@ -173,7 +183,7 @@ def run(start: str = "20180601", end: str = None, path=None) -> bool:
     _summary(path)
     print(f"[news] 回补轮结束 {time.time()-t0:.0f}s"
           + (f" (限频中断于{i}/{todo})" if rate_capped else ""))
-    return True
+    return "capped" if rate_capped else True
 
 
 def refresh_sina(path=None) -> int:
@@ -244,6 +254,46 @@ def refresh(path=None) -> bool:
     return True
 
 
+def _mn_days(path=None) -> int:
+    """major_news已覆盖日数(驱动轮间进展度量)"""
+    return len(days_done(SRC_MN, path))
+
+
+def run_rounds(deadline_min: float = 720, start: str = "20180601",
+               end: str = None, path=None) -> bool:
+    """D1-28新闻回补: 限频自适应驱动 — run()至限频→指数退避→续传, 直至完成/截止/连续空轮
+
+    限频窗口语义不明(官方口径40次/天, 实测与夜间链共享预算burst即触发,
+    非整点滚动) → 不假设重置时刻: 退避5→10→20→40→60min封顶探测恢复;
+    有进展即重置退避; 空轮容忍随截止时长放大(长驱动可等到日内/午夜
+    窗口恢复, 60min退避下探测成本仅1次/小时), 短驱动快速退出防空转。
+    """
+    t0 = time.time()
+    empty, backoff = 0, 5 * 60
+    bail = max(MAX_EMPTY_ROUNDS, int(deadline_min // 60) + 1)
+    while time.time() - t0 < deadline_min * 60:
+        before = _mn_days(path)
+        r = run(start, end, path)
+        if r is True:
+            print(f"[news] ✓ 全史回补完成 ({time.time()-t0:.0f}s)")
+            return True
+        if _mn_days(path) > before:            # 本轮有新覆盖日 → 重置退避
+            empty, backoff = 0, 5 * 60
+            print(f"[news] 本轮有进展, 立即续传下一轮")
+            continue
+        empty += 1
+        if empty >= bail:
+            print(f"[news] 连续{empty}轮零进展(配额窗口未恢复), 驱动退出"
+                  f" — 断点已保存, 稍后重跑或等夜间渐进10日/天")
+            return False
+        print(f"[news] 限频未恢复, 退避{backoff//60}min后重试"
+              f" (空轮{empty}/{bail})", flush=True)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 60 * 60)
+    print(f"[news] 截止{deadline_min:.0f}min到, 驱动退出(断点已保存, 重跑续传)")
+    return False
+
+
 def _summary(path=None):
     con = _conn(path)
     rows = con.execute(
@@ -272,8 +322,15 @@ def main():
     ap.add_argument("--start", default="20180601")
     ap.add_argument("--end", default=None)
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--deadline-min", type=float, default=None,
+                    help="驱动模式: 限频自适应多轮回补直至完成/截止(分钟)")
     a = ap.parse_args()
-    refresh() if a.refresh else run(a.start, a.end)
+    if a.refresh:
+        refresh()
+    elif a.deadline_min:
+        run_rounds(a.deadline_min, a.start, a.end)
+    else:
+        run(a.start, a.end)
     return 0
 
 
