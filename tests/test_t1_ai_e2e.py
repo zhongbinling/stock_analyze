@@ -5,10 +5,8 @@ E2E语义: 用生产配置(app.db的ai_local_*/ai_cloud_*)打真模型 —
 Ollama未启用/不可达时整文件skip(不假绿); 云端未配置skip(0成本空转)。
 锚定用例来自AI分析质量批的校准结论(特朗普/美联储→L2, 降准→L3)。
 """
-import json
 import sqlite3
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -53,7 +51,8 @@ def cfg():
 def test_analyze_news_structure(cfg):
     """真实调用: 返回四字段结构, level钳位1-5, direction合法"""
     r = ai_client.analyze_news(cfg["base_url"], cfg["model"], cfg["api_key"],
-                               "某上市公司发布新一代办公软件产品", "产品发布会新闻稿")
+                               "某上市公司发布新一代办公软件产品", "产品发布会新闻稿",
+                               timeout=120)   # Ollama并发繁忙时留足余量
     assert set(r) >= {"level", "type", "impact", "direction"}
     assert isinstance(r["level"], int) and 1 <= r["level"] <= 5
     assert r["direction"] in ("利多", "利空", "中性")
@@ -63,14 +62,16 @@ def test_analyze_news_structure(cfg):
 def test_anchor_fed_min_l2(cfg):
     """机构锚定(校准结论): 特朗普/美联储对A股影响 → 最低L2"""
     r = ai_client.analyze_news(cfg["base_url"], cfg["model"], cfg["api_key"],
-                               "特朗普称美联储应立即降息", "美国总统施压美联储货币政策")
+                               "特朗普称美联储应立即降息", "美国总统施压美联储货币政策",
+                               timeout=120)
     assert r["level"] >= 2, f"美联储锚定失效: {r}"
 
 
 def test_anchor_rrr_min_l3(cfg):
     """幅度区分(校准结论): 央行降准0.5个百分点 → L3(政策转向)"""
     r = ai_client.analyze_news(cfg["base_url"], cfg["model"], cfg["api_key"],
-                               "央行宣布降准0.5个百分点，释放长期资金约1万亿元", "")
+                               "央行宣布降准0.5个百分点，释放长期资金约1万亿元", "",
+                               timeout=120)
     assert r["level"] >= 3, f"降准幅度区分失效: {r}"
 
 
@@ -121,6 +122,8 @@ def test_cloud_batch_e2e(tmp_path):
     ccfg = AN.get_cloud_config()
     if not (ccfg["enabled"] and ccfg["base_url"] and ccfg["api_key"]):
         pytest.skip("云端AI未配置/未启用 — E2E跳过")
+    if AN._is_paused():
+        pytest.skip("AI已暂停(ai_pause=1) — 尊重运行态")
     db = tmp_path / "macro.db"
     con = sqlite3.connect(str(db))
     con.execute("""CREATE TABLE news_raw(
