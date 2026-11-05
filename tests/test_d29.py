@@ -19,7 +19,7 @@ def test_briefing_html_generated(tmp_path, monkeypatch):
     out = tmp_path / "b.html"
     p = BR.generate_html(str(out))
     html = out.read_text(encoding="utf-8")
-    for mk in ("数据简报", "情绪分", "全A PE/PB", "巴菲特", "两融", "宽基ETF",
+    for mk in ("数据简报", "情绪分", "全A PE", "全A PB", "巴菲特", "两融", "宽基ETF",
                "近24小时事件", "板块冷热"):
         assert mk in html, f"缺模块: {mk}"
 

@@ -73,12 +73,14 @@ def benv(tmp_path, monkeypatch):
         {"date": _today(), "level": 1, "title": "某公司发布新品公告"},
         {"date": _today(10), "level": 2, "title": "十天前的旧事件"},
     ]})
-    # viewer payload打桩: 分位小数→%(D1-30r口径); 5年条用的是alla_pe_pct5
+    # viewer payload打桩: 分位小数→%(D1-30r口径); 5年条用的是alla_*_pct5
     stub_v = types.ModuleType("viewer")
     stub_v.build_payload = lambda cfg: {
         "dates": [_today(1), _today()],
         "mval": {"alla_pe_pct": [0.5, 0.807],       # →81% 红
                  "alla_pe_pct5": [0.5, 0.19],       # →19% 蓝
+                 "alla_pb_pct": [0.5, 0.62],        # →62% (简报增强PB分位条)
+                 "alla_pb_pct5": [0.5, 0.08],       # →8%
                  "pe300_pct": [0.5, 0.50]}}         # →50% 灰
     stub_s = types.ModuleType("score")
     stub_s.load_cfg = lambda: {}
@@ -106,11 +108,13 @@ def test_sector_hot_cold_with_cn_names(benv):
 
 
 def test_valuation_numbers_and_pct_bars(benv):
-    """原始值直显 + viewer小数分位×100转%(81%红/19%蓝/50%灰)"""
+    """原始值直显 + viewer小数分位×100转%(81%红/19%蓝/50%灰) + PB分位条(62%/8%)"""
     html = _gen(benv)
-    assert "18.5 / 1.85" in html and "12.3" in html
+    assert "全A PE" in html and "18.5" in html and "12.3" in html
+    assert "全A PB" in html and "1.85" in html       # 简报增强: PE/PB分行
     assert "81%" in html and "#e34448" in html       # ≥80红
     assert "19%" in html and "#2f5cd6" in html       # ≤20蓝
+    assert "62%" in html and "8%" in html            # PB全史/5年分位条
     assert "50%" in html                             # 中间灰
 
 

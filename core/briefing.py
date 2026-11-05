@@ -19,6 +19,12 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 SENT_DB = BASE / "data" / "sentiment.db"
 
 
+def _esc(s) -> str:
+    """HTML转义(事件标题/AI概要来自DB, 静态页也应转义)"""
+    return (str(s or "").replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
 def _conn():
     return sqlite3.connect(f"file:{SENT_DB.as_posix()}?mode=ro", uri=True)
 
@@ -31,19 +37,23 @@ def generate_html(out=None) -> Path:
     # 1. 情绪温度
     mood = con.execute("SELECT date,score,stage FROM sentiment ORDER BY date DESC LIMIT 2").fetchall()
     mood_prev = mood[1] if len(mood) > 1 else None
-    # 2. 板块冷热前5
-    hot_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score DESC LIMIT 5").fetchall()
-    cold_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=(SELECT MAX(date) FROM sector_scores) ORDER BY score ASC LIMIT 5").fetchall()
-    # D1-30r: BK/SW3代码→中文名(简报可读性)
+    # 2. 板块冷热前5 + 5日趋势(简报增强: Δ5升降温箭头)
+    sdates = [r[0] for r in con.execute(
+        "SELECT DISTINCT date FROM sector_scores ORDER BY date DESC LIMIT 6")]
+    latest_d = sdates[0] if sdates else None
+    d5 = sdates[5] if len(sdates) >= 6 else None     # 5个交易日前
+    prev_scores = {c: s for c, s in con.execute(
+        "SELECT code, score FROM sector_scores WHERE date=?", (d5,))} if d5 else {}
+    hot_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=? ORDER BY score DESC LIMIT 5", (latest_d,)).fetchall() if latest_d else []
+    cold_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=? ORDER BY score ASC LIMIT 5", (latest_d,)).fetchall() if latest_d else []
+    # D1-30r: BK/SW3代码→中文名(简报可读性; 映射移至hot/cold构建处带代码)
     name_map = {r[0]: r[1] for r in con.execute("SELECT code, name FROM sectors")}
-    hot = [(name_map.get(c, c), s2) for c, s2 in hot_raw]
-    cold = [(name_map.get(c, c), s2) for c, s2 in cold_raw]
     # 3. 估值水位
     val = con.execute("SELECT date,alla_pe,alla_pb,pe300 FROM mkt_val_daily ORDER BY date DESC LIMIT 1").fetchone()
     # 4. 两融
     mg = con.execute("SELECT date,rzrqye FROM margin_daily ORDER BY date DESC LIMIT 6").fetchall()
-    # 5. ETF近5日
-    etf = con.execute("SELECT date,SUM(amount)/1e5 FROM etf_daily GROUP BY date ORDER BY date DESC LIMIT 5").fetchall()
+    # 5. ETF近5日 + 环比前5日(简报增强)
+    etf = con.execute("SELECT date,SUM(amount)/1e5 FROM etf_daily GROUP BY date ORDER BY date DESC LIMIT 10").fetchall()
     con.close()
     # 6. 巴菲特
     bf = MC.buffett()["latest"]
@@ -87,13 +97,17 @@ def generate_html(out=None) -> Path:
             mval = vd.get("mval", {})
             i = len(vd["dates"]) - 1
             pe_pct = mval.get("alla_pe_pct", [None] * (i + 1))[i]
-            pb_pct = mval.get("alla_pb_pct", [None] * (i + 1))[i]
             pe_pct5 = mval.get("alla_pe_pct5", [None] * (i + 1))[i]
+            pb_pct = mval.get("alla_pb_pct", [None] * (i + 1))[i]
+            pb_pct5 = mval.get("alla_pb_pct5", [None] * (i + 1))[i]
             r300_pct = mval.get("pe300_pct", [None] * (i + 1))[i]
         except Exception:
-            pe_pct = pb_pct = pe_pct5 = r300_pct = None
-        rows_val = (f"<tr><td>全A PE/PB</td><td>{val[1]:.1f} / {val[2]:.2f}</td>"
+            pe_pct = pb_pct = pe_pct5 = pb_pct5 = r300_pct = None
+        # 简报增强: PE/PB分行各带全史+5年分位条(PB原取而未渲染)
+        rows_val = (f"<tr><td>全A PE</td><td>{val[1]:.1f}</td>"
                     f"<td>{_pct_bar(pe_pct, '全史')} {_pct_bar(pe_pct5, '5年')}</td></tr>"
+                    f"<tr><td>全A PB</td><td>{val[2]:.2f}</td>"
+                    f"<td>{_pct_bar(pb_pct, '全史')} {_pct_bar(pb_pct5, '5年')}</td></tr>"
                     f"<tr><td>沪深300 PE</td><td>{val[3]:.1f}</td>"
                     f"<td>{_pct_bar(r300_pct, '全史')}</td></tr>")
 
@@ -113,18 +127,46 @@ def generate_html(out=None) -> Path:
 
     etf_html = ""
     if etf:
-        etf_r = list(reversed(etf))
+        etf_r = list(reversed(etf))                    # 时间升序
         etf_html = "<tr><td>宽基ETF总量</td><td>" + " → ".join(
-            f"<b>{v:.0f}</b>" for _, v in etf_r) + " 亿</td></tr>"
+            f"<b>{v:.0f}</b>" for _, v in etf_r[-5:]) + " 亿</td></tr>"
+        if len(etf_r) >= 10:                           # 简报增强: 近5日均值环比前5日
+            cur5 = sum(v for _, v in etf_r[-5:]) / 5
+            prev5 = sum(v for _, v in etf_r[-10:-5]) / 5
+            if prev5:
+                chg = (cur5 - prev5) / prev5 * 100
+                c = "#e34448" if chg >= 0 else "#2f5cd6"
+                etf_html += (f"<tr><td class='hint'>近5日均值</td><td><b>{cur5:.0f}</b> 亿"
+                             f" (环比前5日 <b style='color:{c}'>{chg:+.1f}%</b>)</td></tr>")
 
     def ev_rows(evs):
         if not evs:
             return '<tr><td colspan="3" style="color:#999">无</td></tr>'
-        return "".join(f'<tr><td>{e["date"][5:]}</td><td>{_lv_badge(e["level"])}</td>'
-                       f'<td>{e["title"][:40]}</td></tr>' for e in sorted(evs, key=lambda x: -x["level"])[:15])
+        # 简报增强: L2+事件附AI概要(灰字小号, 自包含不点开也有判断)
+        return "".join(
+            f'<tr><td>{e["date"][5:]}</td><td>{_lv_badge(e["level"])}</td>'
+            f'<td>{_esc(e["title"][:40])}'
+            + (f'<br><small style="color:#898781">{_esc(e.get("ai_impact","")[:30])}</small>'
+               if e.get("ai_impact") else '')
+            + '</td></tr>'
+            for e in sorted(evs, key=lambda x: -x["level"])[:15])
 
-    hot_html = "".join(f'<tr><td>{c}</td><td style="color:#e34448">{s:+.1f}</td></tr>' for c, s in hot)
-    cold_html = "".join(f'<tr><td>{c}</td><td style="color:#2f5cd6">{s:+.1f}</td></tr>' for c, s in cold)
+    def _trend(code, score):
+        """简报增强: 5日分差箭头(升=红↑热度升, 降=蓝↓); prev_scores按代码键控"""
+        p = prev_scores.get(code)
+        if p is None or score is None:
+            return ""
+        d = score - p
+        if abs(d) < 0.05:
+            return ' <small style="color:#898781">→持平</small>'
+        return (f' <small style="color:{"#e34448" if d > 0 else "#2f5cd6"}">'
+                f'{"↑" if d > 0 else "↓"}{abs(d):.1f}</small>')
+
+    # (名称, 分, 代码) — 显示用名称, 趋势按代码查5日前
+    hot = [(name_map.get(c, c), s2, c) for c, s2 in hot_raw]
+    cold = [(name_map.get(c, c), s2, c) for c, s2 in cold_raw]
+    hot_html = "".join(f'<tr><td>{nm}{_trend(code, s)}</td><td style="color:#e34448">{s:+.1f}</td></tr>' for nm, s, code in hot)
+    cold_html = "".join(f'<tr><td>{nm}{_trend(code, s)}</td><td style="color:#2f5cd6">{s:+.1f}</td></tr>' for nm, s, code in cold)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -136,8 +178,11 @@ h2{{font-size:14px;color:#666;margin:0 0 10px}}
 table{{width:100%;border-collapse:collapse;font-size:13px}}
 td{{padding:4px 6px;border-bottom:1px solid #eee}}
 small{{color:#999}}
+@media print {{ body{{background:#fff}} .card{{box-shadow:none;margin:0;padding:6px}} .noprint{{display:none}} }}
 </style></head><body>
-<div class="card"><h2>📊 数据简报 · {today} {time.strftime('%H:%M')}</h2>
+<div class="card"><h2>📊 数据简报 · {today} {time.strftime('%H:%M')}
+<button class="noprint" onclick="window.print()" style="float:right;font-size:12px;
+padding:2px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer">🖨 导出PDF/打印</button></h2>
 <table>{rows_score}{rows_val}{rows_bf}{mg_html}{etf_html}</table></div>
 <div class="card"><h2>🔥 板块冷热 TOP5 (最新日)</h2>
 <table style="width:48%;display:inline-table"><tr><th>最热</th><th>分</th></tr>{hot_html}</table>
