@@ -34,6 +34,7 @@ def test_fetch_day_paginates_and_upserts(env, monkeypatch):
         _mn_df([("尾部", "2026-10-28 15:00:00", "央广", "http://x")]),
     ]
     calls = []
+    monkeypatch.setattr("time.sleep", lambda s: None)   # 翻页限速旁路(测试提速)
 
     def fake(api, fields="", **kw):
         calls.append(kw)
