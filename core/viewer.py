@@ -154,10 +154,17 @@ def _read_aux(dates):
 
 
 # D1-18 M3: 宏观事件读取 — macro.db(独立库) → 情绪图标注序列
-def _read_events() -> list:
-    """全量事件(按日期升序), 日期吸附最近交易日由前端做。
-    macro.db 缺失/未建 → 空列表(标注面板自动隐藏), 不拖累视图生成。"""
+# 情绪图AI标注: L2+默认(L1日常新闻回补后海量, 入图纯噪音) + 载荷上限
+EV_LEVEL_MIN = 2
+EV_CAP = 3000
+
+
+def _read_events(level_min=None) -> list:
+    """情绪图标注事件(日期升序; 默认L2+, AI概要经标题匹配附加 — 复用
+    server.macro._attach_ai_analysis与宏观页同口径)。macro.db 缺失/未建
+    → 空列表(标注面板自动隐藏), 不拖累视图生成。"""
     import sqlite3
+    lv = EV_LEVEL_MIN if level_min is None else int(level_min)
     p = BASE / "data" / "macro.db"
     if not p.exists():
         return []
@@ -165,12 +172,20 @@ def _read_events() -> list:
         con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True)
         rows = con.execute(
             "SELECT date, level, title, type, source, content FROM macro_events "
-            "ORDER BY date, id").fetchall()
+            "WHERE level>=? ORDER BY date DESC, id DESC LIMIT ?",
+            (lv, EV_CAP)).fetchall()
+        rows = list(reversed(rows))            # 取最新N条后恢复升序
+        events = [{"date": r[0], "level": r[1], "title": r[2], "type": r[3],
+                   "source": r[4], "content": r[5]} for r in rows]
+        try:                                   # AI概要附加(表缺/导入失败不拖累)
+            from server.macro import _attach_ai_analysis
+            _attach_ai_analysis(con, events)
+        except Exception:                                  # noqa: BLE001
+            pass
         con.close()
     except sqlite3.Error:
         return []
-    return [{"date": r[0], "level": r[1], "title": r[2], "type": r[3],
-             "source": r[4], "content": r[5]} for r in rows]
+    return events
 
 
 def build_payload(cfg, years=None):
@@ -364,7 +379,6 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" class="ckEvt" value="4" checked> L4</label>
   <label><input type="checkbox" class="ckEvt" value="3" checked> L3</label>
   <label><input type="checkbox" class="ckEvt" value="2"> L2</label>
-  <label><input type="checkbox" class="ckEvt" value="1"> L1</label>
 </div>
 <footer>
   鼠标在图上移动查看当日构成 · 滚轮缩放 · 底部滑块选区间 ·
@@ -500,12 +514,14 @@ const baseOption = {
       if (pbA) lvBits.push(`PB ${pbA}` + (pb5 ? `/${pb5}` : ''));
       if (lvBits.length)
         h += `<br/><span style="color:#898781;font-size:11px">全A水位·全史/近5年 ${lvBits.join(' · ')}</span>`;
-      // D1-18 M3: 事件标注详情(轴悬停覆盖标记日时)
+      // D1-18 M3: 事件标注详情(轴悬停覆盖标记日时); 情绪图AI标注: 附AI概要
       for (const p of ps.filter(x => x.seriesId === 'evIdx' || x.seriesId === 'evScore')) {
         const e = p.data && p.data.evt;
         if (!e) continue;
         h += `<br/><span style="color:${EV_COLORS[e.level] || '#555'}">◆ L${e.level}${e.type ? '·' + escE(e.type) : ''} ${escE(e.title)}</span>`;
-        if (e.content) h += `<br/><span style="color:#898781;font-size:11px">${escE(e.content).slice(0, 90)}</span>`;
+        if (e.ai_impact)
+          h += `<br/><span style="color:#6250d6;font-size:11px">AI ${e.ai_level ? 'L' + e.ai_level + ' ' : ''}${escE(e.ai_impact).slice(0, 60)}</span>`;
+        else if (e.content) h += `<br/><span style="color:#898781;font-size:11px">${escE(e.content).slice(0, 90)}</span>`;
       }
       return h;
     },
@@ -836,7 +852,7 @@ function render(i) {
       h += `<table style="margin-top:8px"><tr><th>时间区事件</th><th>等级</th><th>标题</th></tr>`
         + vis.map(o => `<tr><td class="hint">${o.e.date.slice(5)}</td>
             <td><b style="color:${EV_COLORS[o.e.level] || '#555'}">L${o.e.level}</b></td>
-            <td>${escE(o.e.title)}</td></tr>`).join('') + `</table>`;
+            <td>${(o.e.source || '').startsWith('ai_') ? '<b style="color:#6250d6">AI</b> ' : ''}${escE(o.e.title)}</td></tr>`).join('') + `</table>`;
   }
   document.getElementById("panel").innerHTML = h;
 }

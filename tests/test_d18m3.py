@@ -40,9 +40,10 @@ def test_read_events_from_fixture(tmp_path, monkeypatch):
 def test_html_event_annotation_wired():
     import viewer as VW
     h = VW.HTML
-    # 控件: 五级勾选, 默认L3-L5
-    assert h.count('class="ckEvt"') == 5
+    # 控件: 四级勾选(情绪图AI标注: L1海量日常新闻不入图, 后端默认L2+), 默认L3-L5
+    assert h.count('class="ckEvt"') == 4
     assert 'class="ckEvt" value="5" checked' in h and 'class="ckEvt" value="2"' in h
+    assert 'value="1"' not in h                        # L1勾选已移除
     # 机制: 二分吸附/双grid/按id增量/勾选刷新/转义
     for marker in ("EV_COLORS", "evSeriesData", "setEvents", "evIdx", "evScore",
                    "D.evOn", "escE", "时间区事件", "slice(-12).reverse()"):
