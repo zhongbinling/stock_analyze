@@ -120,27 +120,31 @@ def list_events(level=None, d_from=None, d_to=None, type_=None, q=None,
 
 
 def _attach_ai_analysis(con, events, path=None):
-    """D1-30a: 按标题匹配附加AI分析(本地impact/云端reasoning)"""
+    """D1-30a: 按标题匹配附加AI分析(本地impact/云端reasoning);
+    IN列表按500分块 — 大批量(导出/回补后)会撞SQLite变量上限(999~32766),
+    且被下方except吞掉 → AI列静默消失"""
     try:
         titles = [e["title"] for e in events if e["level"] >= 2]
         if not titles:
             return
-        ph = ",".join("?" * len(titles))
         ai = {}
-        for r in con.execute(f"""
-            SELECT n.title, l.level, l.type, l.impact, l.direction,
-                   COALESCE(c.analysis_json, l.analysis_json) as best_json
-            FROM news_raw n
-            JOIN news_local l ON l.news_id = n.id
-            LEFT JOIN news_cloud c ON c.news_id = n.id
-            WHERE n.title IN ({ph})""", titles):
-            ej = {}
-            try:
-                ej = json.loads(r[5]) if r[5] else {}
-            except (ValueError, TypeError):
-                pass
-            ai[r[0]] = {"ai_level": r[1], "ai_type": r[2], "ai_impact": r[3],
-                        "ai_direction": r[4], "ai_reasoning": ej.get("reasoning", "")}
+        for i in range(0, len(titles), 500):
+            chunk = titles[i:i + 500]
+            ph = ",".join("?" * len(chunk))
+            for r in con.execute(f"""
+                SELECT n.title, l.level, l.type, l.impact, l.direction,
+                       COALESCE(c.analysis_json, l.analysis_json) as best_json
+                FROM news_raw n
+                JOIN news_local l ON l.news_id = n.id
+                LEFT JOIN news_cloud c ON c.news_id = n.id
+                WHERE n.title IN ({ph})""", chunk):
+                ej = {}
+                try:
+                    ej = json.loads(r[5]) if r[5] else {}
+                except (ValueError, TypeError):
+                    pass
+                ai[r[0]] = {"ai_level": r[1], "ai_type": r[2], "ai_impact": r[3],
+                            "ai_direction": r[4], "ai_reasoning": ej.get("reasoning", "")}
         for e in events:
             if e["title"] in ai:
                 e.update(ai[e["title"]])

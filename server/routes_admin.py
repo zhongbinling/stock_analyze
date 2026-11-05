@@ -474,15 +474,21 @@ def api_macro_export():
         limit="50000", page="1")
     si = io.StringIO()
     si.write("﻿")                     # Excel中文兼容(BOM头)
+
+    def _csv_safe(v):                     # 公式注入防护: =+-@开头补'前缀
+        v = str(v or "")
+        return "'" + v if v[:1] in ("=", "+", "-", "@") else v
+
     w = csv.writer(si)
     w.writerow(["日期", "等级", "类型", "标题", "内容", "来源",
                 "AI等级", "AI概要", "AI方向", "AI详析", "更新时间"])
     for e in r["events"]:
-        w.writerow([e["date"], f"L{e['level']}", e.get("type") or "",
-                    e["title"], e.get("content") or "", e.get("source") or "",
+        w.writerow([_csv_safe(e["date"]), f"L{e['level']}", _csv_safe(e.get("type")),
+                    _csv_safe(e["title"]), _csv_safe(e.get("content")),
+                    _csv_safe(e.get("source")),
                     f"L{e['ai_level']}" if e.get("ai_level") else "",
-                    e.get("ai_impact") or "", e.get("ai_direction") or "",
-                    e.get("ai_reasoning") or "", e.get("updated_at") or ""])
+                    _csv_safe(e.get("ai_impact")), _csv_safe(e.get("ai_direction")),
+                    _csv_safe(e.get("ai_reasoning")), _csv_safe(e.get("updated_at"))])
     fname = f"macro_events_{datetime.now():%Y%m%d_%H%M}.csv"
     return Response(si.getvalue(), mimetype="text/csv; charset=utf-8",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})

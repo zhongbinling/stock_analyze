@@ -27,12 +27,14 @@ def env(tmp_path, monkeypatch):
 
 
 def _news_tables(env):
-    """补news_raw/news_local(模拟AI链已分析的关联表)"""
+    """补news_raw/news_local/news_cloud(模拟AI链已分析的关联表)"""
     con = sqlite3.connect(str(env["db"]))
     con.execute("CREATE TABLE IF NOT EXISTS news_raw(id INTEGER PRIMARY KEY, src TEXT, pub_time TEXT, title TEXT)")
     con.execute("""CREATE TABLE IF NOT EXISTS news_local(id INTEGER PRIMARY KEY AUTOINCREMENT,
       news_id INTEGER, status TEXT, level INTEGER, type TEXT, impact TEXT,
       direction TEXT, analysis_json TEXT, model TEXT, analyzed_at TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS news_cloud(id INTEGER PRIMARY KEY AUTOINCREMENT,
+      news_id INTEGER, status TEXT, analysis_json TEXT)""")
     con.commit()
     con.close()
 
@@ -168,9 +170,42 @@ def test_export_csv_api(server_app, tmp_path, monkeypatch):
     assert data.startswith("﻿")                     # BOM(Excel中文)
     assert "日期" in data and "导出L2事件" in data and "降准" in data
     assert "导出L1事件" not in data                    # 筛选条件生效
+    # 公式注入防护: =+-@开头单元格补'前缀(Excel打开不执行)
+    con = sqlite3.connect(str(tmp_path / "macro.db"))
+    con.execute("INSERT INTO macro_events(title,level,date) "
+                "VALUES('=HYPERLINK(\"http://evil\",\"x\")',2,'2026-11-01')")
+    con.commit(); con.close()
+    data_i = c.get("/admin/api/macro/events/export?level=2").get_data(as_text=True)
+    assert "'=HYPERLINK" in data_i
     # 全量导出含L1
     data2 = c.get("/admin/api/macro/events/export").get_data(as_text=True)
     assert "导出L1事件" in data2
+
+
+# ── _attach分块(导出/回补后大量事件不撞SQLite变量上限) ──
+
+def test_attach_ai_chunked_merge(env):
+    """1200条L2(≥3个500块) → 分块查询合并后AI字段全数附加, 无丢失"""
+    _news_tables(env)
+    MC = env["MC"]
+    con = sqlite3.connect(str(env["db"]))
+    rows_ev, rows_raw, rows_local = [], [], []
+    for i in range(1200):
+        t = f"分块事件{i}"
+        rows_ev.append((t, 2, "2026-11-01"))
+        rows_raw.append(("t", "2026-11-01 09:00", t))
+    con.executemany("INSERT INTO macro_events(title,level,date) VALUES(?,?,?)", rows_ev)
+    con.executemany("INSERT INTO news_raw(src,pub_time,title) VALUES(?,?,?)", rows_raw)
+    nid0 = con.execute("SELECT id FROM news_raw WHERE title='分块事件0'").fetchone()[0]
+    for i in range(1200):
+        rows_local.append((nid0 + i, "done", 2, "货币", f"AI概要{i}", "利多"))
+    con.executemany("INSERT INTO news_local(news_id,status,level,type,impact,direction)"
+                    " VALUES(?,?,?,?,?,?)", rows_local)
+    con.commit(); con.close()
+    r = MC.list_events(q="分块事件", limit=50000)
+    assert r["total"] == 1200
+    attached = [e for e in r["events"] if e.get("ai_impact", "").startswith("AI概要")]
+    assert len(attached) == 1200           # 跨块无丢失(旧版单IN超变量上限会静默全丢)
 
 
 # ── UI接线 ──
