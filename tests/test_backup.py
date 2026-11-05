@@ -428,3 +428,83 @@ def test_migrate_legacy_flat_files(env):
     assert B.verify("--all") is True
     # 幂等: 再跑无操作
     assert B.migrate_legacy() == 0
+
+
+# ── 备份修复: manifest净化/残缺last纵深/孤儿重建 ──
+
+def _full_entry(env, asset="sentiment", f="daily_20261105_223500/sentiment.db"):
+    e = {"file": f, "asset": asset, "kind": "sqlite", "sha256": "a" * 64,
+         "src_sha256": "b" * 64, "size": 100, "time": "2026-11-05 22:35:00",
+         "date": "20261105", "type": "daily", "integrity": "ok", "stats": {}}
+    _append(e)
+    return e
+
+
+def test_load_manifest_purges_incomplete(env):
+    """残缺条目(缺sha256/file等)被_load_manifest丢弃, 完整条目保留"""
+    _full_entry(env)
+    _append({"asset": "app", "type": "daily"})                       # 只有2键
+    _append({"asset": "realtime", "file": "x.zip/realtime.db", "type": "daily"})
+    m = B._load_manifest()
+    assert len(m["entries"]) == 1 and m["entries"][0]["asset"] == "sentiment"
+
+
+def test_snapshot_survives_incomplete_last(env, monkeypatch):
+    """净化+纵深: 残缺last在load时被丢弃 → 正常快照; 绕过净化的残缺last
+    (注入_load_manifest)也不炸(262行.get) — 日备7连败复现场景"""
+    _append({"asset": "sentiment", "type": "daily"})                 # 残缺last
+    e = B.snapshot("sentiment", "manual", compress=False)            # 净化后照常
+    assert e is not None and e["asset"] == "sentiment"
+    # 纵深兜底: 残缺last绕过净化直接进内存(262行.get不炸)
+    conn = sqlite3.connect(str(env["sent"]))
+    conn.execute("INSERT INTO sentiment VALUES('2026-10-01', 10.0, '中性', NULL, NULL)")
+    conn.commit(); conn.close()                                      # 正当内容变化
+    orig = B._load_manifest
+    monkeypatch.setattr(B, "_load_manifest",
+                        lambda: {**orig(), "entries": orig()["entries"] + [{"asset": "sentiment", "type": "daily"}]})
+    e2 = B.snapshot("sentiment", "manual", compress=False)
+    assert e2 is not None and e2["asset"] == "sentiment"
+
+
+def test_rebuild_orphans_recovers_zips(env):
+    """孤儿找回: 盘上zip成员重建条目(sha现算), 幂等, 坏zip跳过"""
+    import zipfile
+    B.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    zpath = B.BACKUP_DIR / "daily_20261101_220000.zip"
+    import tempfile, os
+    _fd, mini = tempfile.mkstemp(suffix=".db")
+    os.close(_fd)
+    mc = sqlite3.connect(mini)
+    mc.execute("CREATE TABLE sentiment(date TEXT PRIMARY KEY, score REAL)")
+    mc.commit(); mc.close()
+    with zipfile.ZipFile(zpath, "w") as zf:
+        zf.writestr("sentiment.db", open(mini, "rb").read())         # 真sqlite(verify要过integrity)
+        zf.writestr("secret.key", b"orphan-secret")
+    os.unlink(mini)
+    # 非备份命名/损坏zip: 跳过
+    (B.BACKUP_DIR / "junk.zip").write_bytes(b"not a zip")
+    n = B.rebuild_orphans()
+    assert n == 2
+    ents = {e["file"]: e for e in _entries()}
+    e1 = ents["daily_20261101_220000.zip/sentiment.db"]
+    assert e1["asset"] == "sentiment" and e1["kind"] == "sqlite"
+    assert e1["type"] == "daily" and e1["rebuilt"] is True
+    assert e1["src_sha256"] is None
+    assert ents["daily_20261101_220000.zip/secret.key"]["asset"] == "secret"
+    assert B.rebuild_orphans() == 0                                  # 幂等
+    # 重建条目可verify(sha比对+integrity通过)
+    assert B.verify("daily_20261101_220000.zip/sentiment.db")
+    assert B.verify("daily_20261101_220000.zip/secret.key")
+
+
+def test_rebuilt_entries_survive_next_snapshot(env):
+    """重建条目含全部必备键 → 不被净化丢弃; prune可滚动"""
+    import zipfile
+    B.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(B.BACKUP_DIR / "daily_20261101_220000.zip", "w") as zf:
+        zf.writestr("sentiment.db", b"orphan-bytes")
+    B.rebuild_orphans()
+    m = B._load_manifest()                                           # 再读不丢
+    assert len(m["entries"]) == 1
+    B.prune()                                                        # 不炸
+    assert len(_entries()) == 1

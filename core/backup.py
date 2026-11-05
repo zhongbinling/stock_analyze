@@ -96,13 +96,31 @@ def _sha256(p: Path) -> str:
     return h.hexdigest()
 
 
+# 条目必备键(缺一即残缺): snapshot/prune/verify/list/restore 的bare访问集
+_ENTRY_REQ = ("file", "asset", "kind", "sha256", "size", "time", "date",
+              "type", "integrity")
+
+
 def _load_manifest() -> dict:
     if MANIFEST.exists():
         m = json.loads(MANIFEST.read_text(encoding="utf-8"))
-        for e in m.get("entries", []):        # 旧版兼容: tag→type 归一
-            if "type" not in e:
+        raw = m.get("entries", [])
+        if not isinstance(raw, list):
+            raw = []
+        ents, dropped = [], 0
+        for e in raw:                        # 旧版兼容: tag→type 归一(可修复先补)
+            if isinstance(e, dict) and "type" not in e:
                 t = e.get("tag") or ""
                 e["type"] = "pre" if t.startswith("pre") else (t if t in TYPES else "daily")
+            if isinstance(e, dict) and all(k in e for k in _ENTRY_REQ):
+                ents.append(e)
+            else:
+                dropped += 1                 # 半截条目丢弃 — 日备连续KeyError
+                                              # ('realtime'/'file'/'sha256')实测根因:
+                                              # 残缺条目作资产last, 262行bare访问炸
+        if dropped:
+            _log(f"⚠ manifest净化: 丢弃 {dropped} 条残缺条目(下次写入自愈落盘)")
+        m["entries"] = ents
         return m
     return {"entries": []}
 
@@ -259,13 +277,13 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
         tmp.replace(outdir / fname)               # .part → 原名
 
     sha = _sha256(outdir / fname)
-    if last and last["sha256"] == sha:      # raw(.z)压缩后到此才可比对
+    if last and last.get("sha256") == sha:    # raw(.z)压缩后到此才可比对(纵深:残缺条目缺键不炸)
         shutil.rmtree(outdir, ignore_errors=True)
         if last.get("src_sha256") != src_sha:   # 旧条目回填源sha, 下次走快速路径
             with _manifest_lock():
                 m2 = _load_manifest()
                 for e2 in m2["entries"]:
-                    if e2["file"] == last["file"]:
+                    if e2.get("file") == last.get("file"):
                         e2["src_sha256"] = src_sha
                         break
                 _save_manifest(m2)
@@ -472,6 +490,69 @@ def _delete_entry_file(f: str):
         shutil.rmtree(rootp, ignore_errors=True)
 
 
+_FOLDER_RE = None                    # lazy: 目录名 type_YYYYMMDD_HHMMSS 解析
+
+
+def rebuild_orphans() -> int:
+    """孤儿找回: 扫描备份目录, 磁盘上存在但manifest缺失的zip成员重建条目。
+
+    残缺/覆盖丢失条目后磁盘zip仍在但清单不可见 → verify/restore失明
+    (实测: manifest仅剩6条而盘上~250个zip)。条目从 zip成员+目录名
+    (type_YYYYMMDD_HHMMSS) 完整重建, sha现算; 幂等(已有file跳过)。
+    重建后可跑 prune 应用滚动保留(清多余孤儿, 释放磁盘)。
+    """
+    import re as _re
+    global _FOLDER_RE
+    if _FOLDER_RE is None:
+        _FOLDER_RE = _re.compile(
+            r"^(" + "|".join(t.replace("-", r"\-") for t in TYPES) + r")_(\d{8})_(\d{6})")
+    file_asset = {v: k for k, v in ASSET_FILES.items()}
+    file_asset["raw_daily.db.z"] = "raw_daily"          # 压缩成员反查
+    m = _load_manifest()
+    have = {e["file"] for e in m["entries"]}
+    added = []
+    for zp in sorted(BACKUP_DIR.glob("*.zip")):
+        mm = _FOLDER_RE.match(zp.stem)
+        if not mm:
+            continue
+        btype, ds, ts2 = mm.groups()
+        try:
+            with zipfile.ZipFile(zp) as zf:
+                for info in zf.infolist():
+                    name = info.filename.rsplit("/", 1)[-1]
+                    asset = file_asset.get(name)
+                    key = f"{zp.stem}.zip/{info.filename}"
+                    if not asset or key in have:
+                        continue
+                    h = hashlib.sha256()
+                    with zf.open(info) as fi:
+                        for chunk in iter(lambda: fi.read(1 << 20), b""):
+                            h.update(chunk)
+                    kind = ASSETS[asset][0]
+                    added.append({"file": key, "asset": asset, "kind": kind,
+                                  "sha256": h.hexdigest(), "src_sha256": None,
+                                  "size": info.file_size,
+                                  "time": (f"{ds[:4]}-{ds[4:6]}-{ds[6:8]} "
+                                           f"{ts2[:2]}:{ts2[2:4]}:{ts2[4:6]}"),
+                                  "date": ds, "type": btype,
+                                  "integrity": "-", "stats": {}, "rebuilt": True})
+                    have.add(key)
+        except (zipfile.BadZipFile, OSError, KeyError) as ex:
+            _log(f"⚠ rebuild跳过 {zp.name}: {ex}")
+            continue
+    if added:
+        with _manifest_lock():
+            m2 = _load_manifest()                       # 锁内重读合并(并发+净化)
+            have2 = {e["file"] for e in m2["entries"]}
+            for e in added:
+                if e["file"] not in have2:
+                    m2["entries"].append(e)
+            _save_manifest(m2)
+    _log(f"rebuild: 重建 {len(added)} 条孤儿条目"
+         + (f" (共{len(added) + 0}项, 可跑prune应用滚动保留)" if added else ""))
+    return len(added)
+
+
 def _entry_exists(f: str) -> bool:
     if "/" not in f:
         return (BACKUP_DIR / f).exists()
@@ -642,7 +723,8 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="核心资产备份")
     ap.add_argument("cmd", choices=["now", "daily", "weekly", "prune", "list",
-                                    "verify", "restore", "migrate-legacy"])
+                                    "verify", "restore", "migrate-legacy",
+                                    "rebuild"])
     ap.add_argument("-t", "--tag", default="manual", help="备份类型 daily|weekly|manual")
     ap.add_argument("target", nargs="?", default=None,
                     help="verify/restore 的备份文件名; verify 省略时校验全部")
@@ -658,6 +740,8 @@ def main():
         prune()
     elif args.cmd == "migrate-legacy":
         migrate_legacy()
+    elif args.cmd == "rebuild":
+        rebuild_orphans()
     elif args.cmd == "list":
         m = _load_manifest()
         for e in sorted(m["entries"], key=lambda x: (x["date"], x["asset"]), reverse=True):
