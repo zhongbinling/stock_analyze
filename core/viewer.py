@@ -520,7 +520,7 @@ const baseOption = {
         if (!e) continue;
         h += `<br/><span style="color:${EV_COLORS[e.level] || '#555'}">◆ L${e.level}${e.type ? '·' + escE(e.type) : ''} ${escE(e.title)}</span>`;
         if (e.ai_impact)
-          h += `<br/><span style="color:#6250d6;font-size:11px">AI ${e.ai_level ? 'L' + e.ai_level + ' ' : ''}${escE(e.ai_impact).slice(0, 60)}</span>`;
+          h += `<br/><span style="color:#6250d6;font-size:11px">AI ${e.ai_level ? 'L' + e.ai_level + ' ' : ''}${escE(String(e.ai_impact).slice(0, 60))}</span>`;
         else if (e.content) h += `<br/><span style="color:#898781;font-size:11px">${escE(e.content).slice(0, 90)}</span>`;
       }
       return h;
