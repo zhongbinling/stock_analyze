@@ -79,6 +79,6 @@ def test_nightly_chain_wires_auto_analyze():
 
 def test_page_gates():
     html = (REPO / "server" / "templates" / "admin" / "macro.html").read_text(encoding="utf-8")
-    for mk in ("btnAiAll", "aiLevels", "/admin/api/ai/summary", "一键全量",
+    for mk in ("btnAiAll", "aiLevels", "/admin/api/ai/summary", "一键分析",   # 批量控制: 原'一键全量'改名
                "L${lv} ${ai + mn}", "startsWith('ai_')"):
         assert mk in html, f"缺: {mk}"

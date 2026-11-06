@@ -294,31 +294,37 @@ def api_ai_summary():
 @bp_admin.post("/api/ai/analyze-all")
 @require_level(7)
 def api_ai_analyze_all():
-    """D1-28 N4: 一键全量分析(本地全量→云端L3+, 异步入队)"""
+    """D1-28 N4 + 批量控制: 一键分析(最新优先, 本次≤limit条, 上限1000;
+    本地→云端L3+, 异步入队)。历史积压再多也不会饿死新新闻(pub_time DESC)。"""
     from server import jobs as J
     if J.get_setting("ai_local_enabled", "0") != "1":
         return jsonify({"msg": "本地AI未启用, 请先配置"}), 400
+    d = request.get_json(force=True, silent=True) or {}
+    try:
+        limit = max(1, min(int(d.get("limit", 1000)), 1000))
+    except (TypeError, ValueError):
+        limit = 1000
 
     def fn(append):
         import analyze_news as AN
-        append(f"全量分析开始(本地→云端)")
-        total_local = total_cloud = 0
-        MAX_BATCHES = 50                              # 安全上限(50×20=1000条)
-        for i in range(MAX_BATCHES):
-            r = AN.analyze_batch(20)
-            total_local += r.get("analyzed", 0)
-            append(f"  本地[{i+1}]: +{r.get('analyzed', 0)} (待{r.get('pending', 0)})")
-            if r.get("analyzed", 0) == 0:
+        append(f"分析开始(最新优先, 本次≤{limit}条; 本地→云端)")
+        total_local = 0
+        while total_local < limit:
+            r = AN.analyze_batch(min(20, limit - total_local))
+            n = r.get("analyzed", 0)
+            total_local += n
+            append(f"  本地: +{n} (累计{total_local}, 待{r.get('pending', 0)})")
+            if n == 0:                        # 无待分析/已暂停/连续失败
                 break
-        else:
-            append(f"  ⚠ 达批次上限{MAX_BATCHES}, 剩余待下轮(待{r.get('pending', 0)})")
+        if total_local >= limit:
+            append(f"  ⚠ 达本次上限{limit}条, 剩余待下轮再点")
         r2 = AN.analyze_cloud_batch(20)
         total_cloud = r2.get("analyzed", 0)
         append(f"  云端批次: +{total_cloud}")
-        append(f"全量分析完成: 本地{total_local} 云端{total_cloud}")
+        append(f"分析结束: 本次本地{total_local} 云端{total_cloud}")
         return 0
-    ok, msg = J.enqueue("analyze_all", fn, target="AI全量分析", trigger="manual")
-    return jsonify({"ok": ok, "msg": msg + " — 已入队"})
+    ok, msg = J.enqueue("analyze_all", fn, target=f"AI分析(≤{limit}条)", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + f" — 已入队(最新优先≤{limit}条)"})
 
 
 @bp_admin.post("/api/ai/analyze-cloud")

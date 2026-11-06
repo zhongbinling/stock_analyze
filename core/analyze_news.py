@@ -330,8 +330,10 @@ def level_counts() -> dict:
     return out
 
 
-def auto_analyze(local_batch: int = 20, cloud_batch: int = 10) -> dict:
-    """N4: 自动分析(夜间链挂载) — 先本地全量, 后云端L3+"""
+def auto_analyze(local_batch: int = 100, cloud_batch: int = 10) -> dict:
+    """N4: 自动分析(夜间链挂载) — 先本地, 后云端L3+
+    AI分析批量控制: 20→100/晚(em快讯日增~200, 20/晚会积压饿死新新闻;
+    27B口径100条≈17分钟, 夜间窗口可承受)"""
     r1 = analyze_batch(local_batch)
     r2 = analyze_cloud_batch(cloud_batch)
     return {"local": r1, "cloud": r2}

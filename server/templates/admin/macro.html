@@ -106,7 +106,11 @@
     <button class="btn primary" id="btnAiAnalyze">本地分析</button>
     <button class="btn" id="btnAiCloud">云端精析 (L3+)</button>
     <button class="btn" id="btnAiPause" title="当前批次完成后停止">暂停</button>
-    <button class="btn primary" id="btnAiAll" title="循环本地全量→云端L3+">一键全量分析</button>
+    <select class="input" id="aiLimit" style="width:86px" title="本次一键分析的条数上限(最新优先, 历史积压不饿死新新闻)">
+      <option value="200">200条</option><option value="500">500条</option>
+      <option value="1000" selected>1000条</option>
+    </select>
+    <button class="btn primary" id="btnAiAll" title="本地最新优先N条→云端L3+">一键分析</button>
     <span class="hint" id="aiMsg"></span>
   </div>
   <div class="row-flex" style="margin-top:6px;gap:4px;flex-wrap:wrap" id="aiLevels"></div>
@@ -345,9 +349,10 @@ $('btnAiPause').onclick = async () => {
   } catch (e) { $('aiMsg').textContent = e.message; }
 };
 $('btnAiAll').onclick = async () => {
-  $('aiMsg').textContent = '⏳ 全量分析入队中…';
+  $('aiMsg').textContent = `⏳ 一键分析入队中(最新优先≤${$('aiLimit').value}条)…`;
   try {
-    const r = await api('/admin/api/ai/analyze-all', {method: 'POST', body: '{}'});
+    const r = await api('/admin/api/ai/analyze-all', {method: 'POST',
+      body: JSON.stringify({limit: +$('aiLimit').value})});
     $('aiMsg').textContent = r.msg;
     setTimeout(loadAiProg, 5000);
   } catch (e) { $('aiMsg').textContent = e.message; }
