@@ -82,6 +82,21 @@ def test_heal_state_guards(env, monkeypatch):
     assert env._open_gap_healed[TODAY] is True               # 当日不再试
 
 
+def test_heal_threshold_semantics(env, monkeypatch):
+    """阈值语义(字符串比较): 09:30:05起步=健康不拉源; 09:35:00起步=晚启动
+    (缺09:30~09:34)触发自愈 — 与backfill的09:35:00口径一致"""
+    env._state.update(date=TODAY, samples=[{"t": "09:30:05", "close": 1.0}])
+
+    def boom(amt):
+        raise AssertionError("健康起步不应拉分钟源")
+    monkeypatch.setattr(env, "_minute_samples", boom)
+    assert env._heal_open_gap(NOW_IN, {}) is False
+    env._state["samples"] = [{"t": "09:35:00", "close": 1.0}]
+    _mock_deps(monkeypatch, [_minute(m) for m in range(30, 36)])
+    assert env._heal_open_gap(NOW_IN, {}) is True
+    assert env._state["samples"][0]["t"] == "09:30"     # 补齐09:30~09:34
+
+
 def test_heal_persisted_to_db(env, monkeypatch):
     """自愈结果落库(重启水合可见)"""
     env._state.update(date=TODAY, samples=[{"t": "09:45:22", "close": 3627.0,
