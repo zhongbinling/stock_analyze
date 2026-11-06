@@ -88,10 +88,74 @@ def tick(now: datetime = None) -> str:
             _state["samples"].append(sample)
             _state["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
             _persist_locked()
+        _heal_open_gap(now, snap)               # 盘中缺口自愈(内部一次性)
         return "ok"
     except Exception as e:                      # noqa: BLE001
         print(f"[rt] tick失败(轮询继续): {e}")
         return "err"
+
+
+_open_gap_healed = {}                           # date -> bool 当日只试一次
+
+
+def _heal_open_gap(now: datetime = None, snap: dict = None) -> bool:
+    """盘中缺口自愈: 服务器晚于开盘启动(重启/挂了重拉)时tick首样本>09:35 —
+    用分钟线源补开盘段前缀(09:30~首样本), 排序自然衔接。一次性: 补后首样本
+    ≤09:35不再触发, 失败当日不重试(防每20s刷屏); 收盘后backfill仍重建全日
+    (带终值锚定), 本函数只救盘中体验。"""
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    if _open_gap_healed.get(today):
+        return False
+    hm = now.hour * 60 + now.minute
+    if hm < 9 * 60 + 40:                        # 09:40前不判(tick起步留余量)
+        return False
+    with _lock:
+        _hydrate_locked()
+        s = _state["samples"]
+        if _state["date"] != today or not s:
+            return False
+        first = s[0]["t"]
+        stage = s[-1].get("stage")
+        if first <= "09:35":
+            return False                        # 健康(tick从早盘起步)
+    try:
+        minutes = _minute_samples((snap or {}).get("amount1") or 0)
+        prefix = [m for m in minutes if m["t"] < first]
+        if not prefix:
+            _open_gap_healed[today] = True
+            return False
+        import rt_score
+        from db import connect
+        conn = connect()
+        try:                                    # 开盘段逐分钟情绪(框架改末行)
+            scores = rt_score.rt_series(conn, snap or {}, prefix)
+        finally:
+            conn.close()
+        for m, sc in zip(prefix, scores):
+            if sc is not None:
+                m["score"] = m["v1"] = sc
+            if m.get("stage") is None and stage:
+                m["stage"] = stage
+        etf = _fetch_etf_amount_yi()            # ETF分钟累计(失败容忍)
+        if etf:
+            em = _minute_etf(etf)
+            for m in prefix:
+                if m["t"] in em:
+                    m["etf"] = em[m["t"]]
+        with _lock:
+            if (_state["date"] == today and _state["samples"]
+                    and _state["samples"][0]["t"] >= first):   # 期间无人补过
+                _state["samples"][:0] = prefix
+                _state["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                _persist_locked()
+                print(f"[rt] 盘中缺口自愈: 补开盘前缀{len(prefix)}点(至{first})")
+        _open_gap_healed[today] = True
+        return True
+    except Exception as e:                      # noqa: BLE001
+        print(f"[rt] 盘中缺口自愈失败: {e}")
+        _open_gap_healed[today] = True
+        return False
 
 
 def _sample_from(t: str, snap: dict, rt: dict, etf) -> dict:
