@@ -134,6 +134,19 @@ def test_fixed_axis_ui_markers():
         assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
 
 
+def test_heal_duplicate_anchor_single_insert(env, monkeypatch):
+    """review修复回归: 重复t锚点(手动tick与轮询同秒) → 补块只插一次"""
+    env._state.update(date=TODAY, samples=[
+        {"t": "10:00:00", "close": 1.0},
+        {"t": "10:00:00", "close": 1.0},          # 同秒重复锚点
+        {"t": "10:30:00", "close": 2.0}])
+    _mock_deps(monkeypatch, [_minute(10, m) for m in range(0, 31)])
+    n = env._heal_gaps(datetime(2026, 11, 6, 10, 31), {})
+    assert n == 30                                 # 10:00~10:29 仅一份
+    s = [x["t"] for x in env._state["samples"]]
+    assert s.count("10:01") == 1 and s.count("10:29") == 1
+
+
 def test_heal_persisted_and_prefix_count(env, monkeypatch):
     """自愈落库(重启水合可见) + 早于09:40不判"""
     env._state.update(date=TODAY, samples=[{"t": "09:45:22", "close": 3627.0,

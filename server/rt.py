@@ -181,7 +181,7 @@ def _heal_gaps(now: datetime = None, snap: dict = None) -> int:
                 return 0
             out = []
             for x in _state["samples"]:
-                blk = blocks.get(x["t"])
+                blk = blocks.pop(x["t"], None)    # pop: 重复t锚点只插一次
                 if blk:
                     out.extend(blk)
                     added += len(blk)
