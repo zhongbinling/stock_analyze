@@ -47,7 +47,20 @@ function render(data) {
   const cummax = (arr) => { let m = -Infinity; return arr.map(v =>
     v == null ? null : (m = Math.max(m, v))); };
   const S = (data.samples || []).filter(x => x.t >= '09:30' && x.t <= '15:01');
-  // D1-27: 同花顺式时间轴 — 半小时刻度(:00/:30) + 竖虚线, 15s采样取每分首点
+  // 定轴断块: 全日固定242分钟槽(09:30~11:30 + 13:00~15:00, 剔午休·同花顺
+  // 口径) — 轴恒满幅, 曲线到当前时点自然截止; 同分钟多tick取末值对齐槽
+  const SLOTS = (() => {
+    const out = [];
+    for (let t = 9 * 60 + 30; t <= 11 * 60 + 30; t++)
+      out.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`);
+    for (let t = 13 * 60; t <= 15 * 60; t++)
+      out.push(`${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`);
+    return out;
+  })();
+  const bySlot = new Map();                     // 槽 → 该分钟末值样本
+  for (const x of S) bySlot.set(x.t.slice(0, 5), x);
+  const A = SLOTS.map(t => bySlot.get(t) || {t});   // 242槽对齐数组(缺槽null字段)
+  // D1-27: 同花顺式时间轴 — 半小时刻度(:00/:30) + 竖虚线
   const TICKS = new Set(['09:30', '10:00', '10:30', '11:00', '11:30',
                          '13:00', '13:30', '14:00', '14:30', '15:00']);
   const thsIv = (i, v) => TICKS.has(v.slice(0, 5))
@@ -58,21 +71,23 @@ function render(data) {
     splitLine: { show: visible, interval: thsIv,
                  lineStyle: { color: theme() === 'dark' ? '#2a2d33' : '#e8e8e8', type: 'dashed' } }});
 
-  const ts = S.map(x => x.t);
+  const ts = SLOTS;
   const last = S[S.length - 1] || {};
   const meta = data.meta || {};
   // ── 图1: 上证分时(上价格/下量额双grid, 同花顺式 D1-23b) ──
-  const vols = [];                                   // 分钟量(万手, cumvol差分, 红涨绿跌)
-  for (let i = 0; i < S.length; i++) {
-    const v0 = i > 0 && S[i - 1].cumvol != null ? S[i - 1].cumvol : 0;
-    const up = i > 0 && S[i - 1].close != null && S[i].close >= S[i - 1].close;
-    vols.push(S[i].cumvol != null && i > 0   // i==0的cumvol为开盘累计, 差分=假尖峰
-      ? {value: [S[i].t, Math.max(0, (S[i].cumvol - v0) / 1e4)],
-         itemStyle: {color: up ? '#e34448' : '#1baf7a'}}
-      : {value: [S[i].t, null]});
+  const vols = [];                                   // 分钟量(万手, cumvol差分跨缺槽携带)
+  let pv = null, pc = null;
+  for (const x of A) {
+    if (x.cumvol != null) {
+      vols.push(pv != null                           // 首样本cumvol为开盘累计, 差分=假尖峰
+        ? {value: [x.t, Math.max(0, (x.cumvol - pv) / 1e4)],
+           itemStyle: {color: x.close != null && pc != null && x.close >= pc ? '#e34448' : '#1baf7a'}}
+        : {value: [x.t, null]});
+      pv = x.cumvol; pc = x.close;
+    } else vols.push({value: [x.t, null]});
   }
   const yd = (meta.yday && meta.yday.points) || null;   // 昨日累计额(官方额锚定)
-  const ydLine = S.map(x => yd ? (yd[x.t.slice(0, 5)] ?? null) : null);
+  const ydLine = A.map(x => yd ? (yd[x.t] ?? null) : null);
   charts.main = charts.main || echarts.init($('chartMain'), theme());
   charts.main.setOption({
     ...chartOpt(),
@@ -94,14 +109,14 @@ function render(data) {
              axisLabel: {color: '#898781'}, splitLine: {show: false}}],
     series: [
       {name: '上证', type: 'line', xAxisIndex: 0, yAxisIndex: 0,
-       data: S.map(x => x.close), showSymbol: false,
+       data: A.map(x => x.close ?? null), showSymbol: false,
        lineStyle: {width: 1.6, color: '#2f5cd6'}, itemStyle: {color: '#2f5cd6'},
        markLine: meta.prev_close ? {silent: true, symbol: 'none',
          label: {formatter: '昨收 {c}', fontSize: 10},
          lineStyle: {type: 'dashed', color: '#e34448'},
          data: [{yAxis: meta.prev_close}]} : undefined},
       {name: '今日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
-       data: cummax(S.map(x => x.cumamt)), showSymbol: false,
+       data: cummax(A.map(x => x.cumamt ?? null)), showSymbol: false,
        lineStyle: {width: 1.4, color: '#eda100'}, itemStyle: {color: '#eda100'}},
       {name: '昨日累计额(亿)', type: 'line', xAxisIndex: 1, yAxisIndex: 1,
        data: cummax(ydLine), showSymbol: false, connectNulls: true,
@@ -111,7 +126,7 @@ function render(data) {
        data: vols, barMaxWidth: 3}],
   }, true);
   // ── 图2: 实时情绪双图(全幅 + 开盘基准±20放大镜) ──
-  const scoreData = S.map(x => x.score);
+  const scoreData = A.map(x => x.score ?? null);
   const scOpen = scoreData.find(v => v != null);
   charts.score = charts.score || echarts.init($('chartScore'), theme());
   charts.score.setOption({
@@ -151,7 +166,7 @@ function render(data) {
   charts.etf = charts.etf || echarts.init($('chartEtf'), theme());
   const etfNow = last.etf, etfPrev = meta.prev_etf_yi;
   const yde = (meta.yday_etf && meta.yday_etf.points) || null;
-  const ydeLine = S.map(x => yde ? (yde[x.t.slice(0, 5)] ?? null) : null);
+  const ydeLine = A.map(x => yde ? (yde[x.t] ?? null) : null);
   charts.etf.setOption({
     ...chartOpt(), grid: {left: 44, right: 14, top: 26, bottom: 40},
     title: {text: '宽基ETF累计成交(亿) vs 昨日', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
@@ -159,7 +174,7 @@ function render(data) {
     xAxis: thsX(true),
     yAxis: {type: 'value', scale: true, ...axisCommon()},
     series: [
-      {name: '当日累计', type: 'line', data: cummax(S.map(x => x.etf)), showSymbol: false,
+      {name: '当日累计', type: 'line', data: cummax(A.map(x => x.etf ?? null)), showSymbol: false,
        lineStyle: {width: 1.8, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'},
        areaStyle: {opacity: 0.08},
        markLine: etfPrev ? {silent: true, symbol: 'none',

@@ -10,7 +10,7 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -88,74 +88,114 @@ def tick(now: datetime = None) -> str:
             _state["samples"].append(sample)
             _state["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
             _persist_locked()
-        _heal_open_gap(now, snap)               # 盘中缺口自愈(内部一次性)
+        _heal_gaps(now, snap)                   # 盘中断块自愈(前缀+中间缺口)
         return "ok"
     except Exception as e:                      # noqa: BLE001
         print(f"[rt] tick失败(轮询继续): {e}")
         return "err"
 
 
-_open_gap_healed = {}                           # date -> bool 当日只试一次
+_gap_cooldown = {"until": None}                 # 断块自愈失败冷却(源恢复重试)
+_GAP_MIN = 3                                    # 相邻样本间隔>N交易分钟=断块
 
 
-def _heal_open_gap(now: datetime = None, snap: dict = None) -> bool:
-    """盘中缺口自愈: 服务器晚于开盘启动(重启/挂了重拉)时tick首样本>09:35 —
-    用分钟线源补开盘段前缀(09:30~首样本), 排序自然衔接。一次性: 补后首样本
-    ≤09:35不再触发, 失败当日不重试(防每20s刷屏); 收盘后backfill仍重建全日
-    (带终值锚定), 本函数只救盘中体验。"""
+def _tmin(t: str) -> int:
+    """'HH:MM[:SS]' → 交易分钟序号(09:30=0; 剔午休, 上午121分钟)"""
+    mo = int(t[:2]) * 60 + int(t[3:5])
+    if mo < 12 * 60:
+        return mo - (9 * 60 + 30)
+    return mo - 13 * 60 + 121
+
+
+def _heal_gaps(now: datetime = None, snap: dict = None) -> int:
+    """盘中断块自愈(定轴断块批): 开盘前缀(tick晚启动) + **中间缺口**(服务器
+    盘中停机重启)统一处理 — 相邻样本交易分钟间隔>GAP_MIN 或首样本>09:35
+    → 分钟线源拉缺失块原位拼接(严格介于两侧样本之间的整分钟, 不与tick重叠)
+    + rt_series逐块情绪 + ETF分钟映射。检测O(n)内存级每tick可跑, 网络仅
+    检出时; 失败冷却10分钟(源恢复重试); 午休边界(11:30→13:00)经交易分钟
+    序号化后间隔=1不算缺口; 补后缺口闭合天然幂等。返回补入点数。"""
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
-    if _open_gap_healed.get(today):
-        return False
+    cu = _gap_cooldown.get("until")
+    if cu is not None and now < cu:
+        return 0
     hm = now.hour * 60 + now.minute
     if hm < 9 * 60 + 40:                        # 09:40前不判(tick起步留余量)
-        return False
+        return 0
     with _lock:
         _hydrate_locked()
-        s = _state["samples"]
-        if _state["date"] != today or not s:
-            return False
-        first = s[0]["t"]
-        stage = s[-1].get("stage")
-        if first <= "09:35":
-            return False                        # 健康(tick从早盘起步)
+        cur = _state["samples"]
+        if _state["date"] != today or not cur:
+            return 0
+        cur = list(cur)
+    # 锁外检测: 开盘前缀 + 相邻间隔断块
+    segs = []                                    # [(lo|None, hi)] hi=锚样本t
+    if cur[0]["t"] > "09:35":
+        segs.append((None, cur[0]["t"]))
+    prev = None
+    for x in cur:
+        if prev is not None and _tmin(x["t"]) - _tmin(prev["t"]) > _GAP_MIN:
+            segs.append((prev["t"], x["t"]))
+        prev = x
+    if not segs:
+        return 0
+    stage = cur[-1].get("stage")
     try:
         minutes = _minute_samples((snap or {}).get("amount1") or 0)
-        prefix = [m for m in minutes if m["t"] < first]
-        if not prefix:
-            _open_gap_healed[today] = True
-            return False
+        if not minutes:
+            raise RuntimeError("分钟源空")
+        blocks = {}                              # hi锚 → 补入块(严格介于)
+        for lo, hi in segs:
+            lo5 = lo[:5] if lo else None
+            blk = [dict(m) for m in minutes
+                   if (lo5 is None or m["t"] > lo5) and m["t"] < hi[:5]]
+            if not blk:
+                continue
+            blocks[hi] = blk
+        if not blocks:
+            _gap_cooldown["until"] = now + timedelta(minutes=10)
+            return 0
         import rt_score
         from db import connect
         conn = connect()
-        try:                                    # 开盘段逐分钟情绪(框架改末行)
-            scores = rt_score.rt_series(conn, snap or {}, prefix)
+        try:
+            for blk in blocks.values():         # 逐块情绪(框架改末行)
+                scores = rt_score.rt_series(conn, snap or {}, blk)
+                for m, sc in zip(blk, scores):
+                    if sc is not None:
+                        m["score"] = m["v1"] = sc
+                    if m.get("stage") is None and stage:
+                        m["stage"] = stage
         finally:
             conn.close()
-        for m, sc in zip(prefix, scores):
-            if sc is not None:
-                m["score"] = m["v1"] = sc
-            if m.get("stage") is None and stage:
-                m["stage"] = stage
         etf = _fetch_etf_amount_yi()            # ETF分钟累计(失败容忍)
         if etf:
             em = _minute_etf(etf)
-            for m in prefix:
-                if m["t"] in em:
-                    m["etf"] = em[m["t"]]
+            for blk in blocks.values():
+                for m in blk:
+                    if m["t"] in em:
+                        m["etf"] = em[m["t"]]
+        added = 0
         with _lock:
-            if (_state["date"] == today and _state["samples"]
-                    and _state["samples"][0]["t"] >= first):   # 期间无人补过
-                _state["samples"][:0] = prefix
-                _state["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
-                _persist_locked()
-                print(f"[rt] 盘中缺口自愈: 补开盘前缀{len(prefix)}点(至{first})")
-        _open_gap_healed[today] = True
-        return True
+            if _state["date"] != today or not _state["samples"]:
+                return 0
+            out = []
+            for x in _state["samples"]:
+                blk = blocks.get(x["t"])
+                if blk:
+                    out.extend(blk)
+                    added += len(blk)
+                out.append(x)
+            _state["samples"] = out
+            _state["updated_at"] = now.strftime("%Y-%m-%d %H:%M:%S")
+            _persist_locked()
+            print(f"[rt] 盘中断块自愈: 补{added}点({len(blocks)}块)")
+        _gap_cooldown["until"] = None
+        return added
     except Exception as e:                      # noqa: BLE001
-        print(f"[rt] 盘中缺口自愈失败: {e}")
-        _open_gap_healed[today] = True
-        return False
+        print(f"[rt] 盘中断块自愈失败: {e}")
+        _gap_cooldown["until"] = now + timedelta(minutes=10)
+        return 0
 
 
 def _sample_from(t: str, snap: dict, rt: dict, etf) -> dict:
