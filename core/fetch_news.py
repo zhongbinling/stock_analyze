@@ -102,17 +102,18 @@ def fetch_day(day_ymd: str, path=None) -> int:
 
 def _clean_title(raw: str, limit: int = 60) -> str:
     """快讯标题清洗: em源"标题"字段常为【主题】+全文, sina源拿内容当标题 —
-    【主题】6~40字→取主题, 短前缀(如"快讯")→剥掉用正文; 超长→句边界截断
-    (标题=内容也由此解耦, 全文在content)"""
+    【主题】6~40字→取主题, 短主题(如"央行")→拼接保留不丢主语;
+    超70字→句边界截断(≤70字视为合格直接放行 — 幂等, 二次清洗不再缩短);
+    标题=内容由清洗解耦, 全文在content"""
     t = re.sub(r"\s+", " ", str(raw or "").strip())
     m = re.match(r"^【(.+?)】(.*)$", t, re.S)
     if m:
         theme, rest = m.group(1).strip(), m.group(2).strip()
         if 6 <= len(theme) <= 40:
             return theme[:limit]
-        if rest:                          # 短前缀是噪音(【快讯】/【盘中】)
-            t = rest
-    if len(t) <= limit:
+        if rest:                          # 短前缀: 噪音(快讯)或主语(央行)都不丢
+            t = f"{theme}：{rest}" if len(theme) >= 2 else rest
+    if len(t) <= limit + 10:
         return t
     cut = t[:limit + 10]
     for p in ("。", "；", ";", "！", "？", "?", "，", "、", ",", " "):

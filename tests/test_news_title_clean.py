@@ -34,14 +34,25 @@ def test_clean_title_bracket_theme():
 
 
 def test_clean_title_sentence_boundary():
-    """无【】: 超长→句边界截断(优先句号); ≤60原样; 短【】(如'【快讯】')剥前缀用正文"""
+    """无【】: >70字→句边界截断(优先句号); ≤70原样(幂等); 短【】拼接保留主语"""
     long_sina = "央行今日开展3000亿元中期借贷便利操作，中标利率维持不变。" \
                 "业内认为这体现了货币政策稳健中性的取向，市场流动性保持合理充裕，后续仍需关注跨年资金面变化情况。"
     t = FN._clean_title(long_sina)
     assert len(t) <= 35 and t.endswith("维持不变")   # 句号边界
     assert FN._clean_title("央行降准0.5个百分点") == "央行降准0.5个百分点"   # 短标题原样
+    # 短【】主题拼接保留(不丢主语): 噪音前缀与主语前缀统一处理
     assert FN._clean_title("【快讯】今日市场表现平稳各大指数涨跌互现") \
-        == "今日市场表现平稳各大指数涨跌互现"        # 短前缀剥离
+        == "快讯：今日市场表现平稳各大指数涨跌互现"
+    assert FN._clean_title("【央行】开展3000亿元MLF操作") \
+        == "央行：开展3000亿元MLF操作"
+
+
+def test_clean_title_idempotent():
+    """幂等: 句边界截断产物(61~70字)二次清洗不再缩短"""
+    raw = "甲" * 63 + "，" + "乙" * 12 + "。后面还有很长的尾巴内容应该被截掉"
+    t1 = FN._clean_title(raw)                     # 边界" ,"在63 → 61~70区间
+    assert 60 < len(t1) <= 70 and t1 == "甲" * 63
+    assert FN._clean_title(t1) == t1              # 二次清洗不变(≤70放行)
 
 
 def test_clean_title_whitespace_and_empty():
