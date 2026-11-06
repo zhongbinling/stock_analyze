@@ -142,7 +142,7 @@ def test_heal_duplicate_anchor_single_insert(env, monkeypatch):
         {"t": "10:30:00", "close": 2.0}])
     _mock_deps(monkeypatch, [_minute(10, m) for m in range(0, 31)])
     n = env._heal_gaps(datetime(2026, 11, 6, 10, 31), {})
-    assert n == 30                                 # 10:00~10:29 仅一份
+    assert n == 29                                 # 10:01~10:29 仅一份(严格介于)
     s = [x["t"] for x in env._state["samples"]]
     assert s.count("10:01") == 1 and s.count("10:29") == 1
 
