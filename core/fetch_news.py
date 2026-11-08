@@ -60,12 +60,17 @@ def _conn(path=None):
     return sqlite3.connect(str(path or MACRO_DB))
 
 
-def fetch_day(day_ymd: str, path=None) -> int:
-    """单日 major_news(分页拉全, 轻量字段), 幂等upsert; 返回入库行数/-1失败"""
+def fetch_day(day_ymd: str, path=None, with_content: bool = False) -> int:
+    """单日 major_news(分页拉全, 轻量字段), 幂等upsert; 返回入库行数/-1失败
+
+    with_content: 近期日增量拉content字段(富化事件详情 — 轻量层设计下
+    content为空导致macro_events内容=标题; 稀疏日载荷可忽略)。已存在的
+    同日同标题薄行顺带回填content(不重复插入)。"""
+    fields = "title,content,pub_time,src,url" if with_content else "title,pub_time,src,url"
     frames, offset = [], 0
     try:
         while True:
-            df = T.call("major_news", "title,pub_time,src,url",
+            df = T.call("major_news", fields,
                         start_date=day_ymd, end_date=day_ymd,
                         limit=PAGE, offset=offset)
             frames.append(df)
@@ -94,7 +99,20 @@ def fetch_day(day_ymd: str, path=None) -> int:
             if not title or not pub:
                 continue
             url = str(r.get("url")) if r.get("url") and str(r.get("url")) != "None" else None
-            n += _dedup_insert(con, SRC_MN, pub, title, url, None, now)
+            ctext = str(r.get("content") or "").strip() or None if with_content else None
+            title = _clean_title(title)
+            if ctext:                                # 富化: 已有薄行回填content
+                rid = con.execute(
+                    "SELECT id FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
+                    (title, pub)).fetchone()
+                if rid:                              # 跨源已有(em摘要版更优, 不覆盖)
+                    cur = con.execute(
+                        "UPDATE news_raw SET content=? WHERE id=? AND COALESCE(content,'')=''",
+                        (ctext[:2000], rid[0]))
+                    if cur.rowcount:
+                        n += 1
+                    continue
+            n += _dedup_insert(con, SRC_MN, pub, title, url, ctext, now)
     con.commit()
     con.close()
     return n
@@ -292,12 +310,12 @@ def refresh_ths(path=None) -> int:
 
 
 def refresh(path=None) -> bool:
-    """日增: major_news 近3日 + em/sina/ths三路快讯; 顺带渐进回补(限额内推10日/天)"""
+    """日增: major_news 近3日(含content富化) + em/sina/ths三路快讯; 顺带渐进回补"""
     import datetime as dt
     done = days_done(SRC_MN, path)
     for back in range(3):
         d = (dt.date.today() - dt.timedelta(days=back)).strftime("%Y%m%d")
-        fetch_day(d, path)
+        fetch_day(d, path, with_content=True)      # 近期稀疏日顺带拉content
     # 渐进回补: 从最近未覆盖日往前推10日(多层限频下安全余量, -2即止)
     probe = dt.date.today() - dt.timedelta(days=4)
     filled = 0

@@ -330,10 +330,42 @@ def level_counts() -> dict:
     return out
 
 
+def sync_event_content(path=None) -> int:
+    """macro_events内容对齐: content==title(薄回退)且news_raw已有富文本 → 更新。
+    事件详情页"内容与标题相同"的治理 — major_news轻量层经refresh(with_content)
+    富化后, 已分析过的事件内容同步跟上。幂等(富化后不再命中)。"""
+    db_path = Path(path or BASE / "data" / "macro.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path))
+    try:
+        ensure_tables(con)
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        cur = con.execute("""
+            UPDATE macro_events SET content = (
+                SELECT nr.content FROM news_raw nr
+                WHERE nr.title = macro_events.title
+                  AND COALESCE(nr.content, '') != ''
+                  AND nr.content != nr.title
+                LIMIT 1), updated_at = ?
+            WHERE content = title AND EXISTS (
+                SELECT 1 FROM news_raw nr
+                WHERE nr.title = macro_events.title
+                  AND COALESCE(nr.content, '') != ''
+                  AND nr.content != nr.title)""", (now,))
+        n = cur.rowcount
+        con.commit()
+        return n
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+
+
 def auto_analyze(local_batch: int = 100, cloud_batch: int = 10) -> dict:
     """N4: 自动分析(夜间链挂载) — 先本地, 后云端L3+
     AI分析批量控制: 20→100/晚(em快讯日增~200, 20/晚会积压饿死新新闻;
     27B口径100条≈17分钟, 夜间窗口可承受)"""
+    sync_event_content()                          # 内容对齐(富化后事件详情跟上)
     r1 = analyze_batch(local_batch)
     r2 = analyze_cloud_batch(cloud_batch)
     return {"local": r1, "cloud": r2}
