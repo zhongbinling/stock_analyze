@@ -361,11 +361,34 @@ def sync_event_content(path=None) -> int:
         con.close()
 
 
+def dedup_events(path=None) -> int:
+    """macro_events按(title,date)去重(组内保留最新id=云端覆盖态)。
+    根因: 清洗前em【主题】全文与sina纯文本为异题各成事件, 标题清洗后
+    收敛同题 → 情绪图同一事件显示多个菱形标记。跨源去重已防新增,
+    本函数清存量并挂夜间链自愈。幂等。"""
+    db_path = Path(path or BASE / "data" / "macro.db")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(db_path))
+    try:
+        ensure_tables(con)
+        cur = con.execute(
+            "DELETE FROM macro_events WHERE id NOT IN "
+            "(SELECT MAX(id) FROM macro_events GROUP BY title, date)")
+        n = cur.rowcount
+        con.commit()
+        return n
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+
+
 def auto_analyze(local_batch: int = 100, cloud_batch: int = 10) -> dict:
     """N4: 自动分析(夜间链挂载) — 先本地, 后云端L3+
     AI分析批量控制: 20→100/晚(em快讯日增~200, 20/晚会积压饿死新新闻;
     27B口径100条≈17分钟, 夜间窗口可承受)"""
     sync_event_content()                          # 内容对齐(富化后事件详情跟上)
+    dedup_events()                                # (title,date)去重(清洗收敛暴露的存量)
     r1 = analyze_batch(local_batch)
     r2 = analyze_cloud_batch(cloud_batch)
     return {"local": r1, "cloud": r2}

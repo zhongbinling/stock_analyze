@@ -514,6 +514,8 @@ def task_generate(def_id, scheduled=False):
             cmd = [sys.executable, "-u", "sector_viewer.py", "--out", str(out)]
             if params.get("years"):
                 cmd += ["--years", str(int(params["years"]))]
+        elif vd.type == "briefing":          # 修复: 简报走briefing.py(原落入else生成情绪图)
+            cmd = [sys.executable, "-u", "briefing.py", "--out", str(out)]
         else:
             cmd = [sys.executable, "-u", "viewer.py", "--out", str(out)]
             if params.get("years"):
