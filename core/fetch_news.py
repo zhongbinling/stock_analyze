@@ -143,12 +143,18 @@ def _clean_title(raw: str, limit: int = 60) -> str:
 
 def _dedup_insert(con, src, pub, title, url, content, now):
     """跨源去重: 同日同标题已从其他源入库则跳过(东财/同花顺/新浪
-    覆盖同一市场事件, 重复入库浪费AI分析算力); 标题先清洗(快讯体全文→主题)"""
+    覆盖同一市场事件, 重复入库浪费AI分析算力); 标题先清洗(快讯体全文→主题)。
+    内容升级: 已有行content为空(major_news轻量层/短快讯)且新源带富文本
+    (em摘要) → 回填 — 实测major_news接口无content值, 富化靠跨源回流。"""
     title = _clean_title(title)[:500]      # 与INSERT截断一致(原文>500时查询会漏)
     existing = con.execute(
-        "SELECT 1 FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
+        "SELECT id FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
         (title, pub)).fetchone()
     if existing:
+        if content and len(content) > len(title):      # 富文本才值得升级
+            con.execute(
+                "UPDATE news_raw SET content=? WHERE id=? AND COALESCE(content,'')=''",
+                (content[:2000], existing[0]))
         return 0                       # 跨源重复, 跳过
     con.execute(
         "INSERT OR IGNORE INTO news_raw(src,pub_time,title,url,content,fetched_at)"

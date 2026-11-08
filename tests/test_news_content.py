@@ -104,6 +104,28 @@ def test_sync_event_content(env):
     assert AN.sync_event_content(env) == 0         # 幂等
 
 
+def test_dedup_insert_upgrades_thin_content(env):
+    """跨源内容升级: em富文本遇已有薄行(major_news先入) → 回填content(跨源回流)"""
+    FN.ensure_db(env)
+    con = sqlite3.connect(str(env))
+    now = "2026-11-08 22:00:00"
+    FN._dedup_insert(con, "major_news", "2026-11-08 09:00:00", "央行MLF操作", None, None, now)
+    n = FN._dedup_insert(con, "em_flash", "2026-11-08 09:05:00", "央行MLF操作",
+                         None, "央行开展3000亿元MLF操作中标利率不变维稳意图明显", now)
+    ct = con.execute("SELECT content FROM news_raw").fetchone()[0]
+    total = con.execute("SELECT COUNT(*) FROM news_raw").fetchone()[0]
+    con.commit()
+    con.close()
+    assert n == 0 and total == 1                     # 仍去重不重复插
+    assert ct == "央行开展3000亿元MLF操作中标利率不变维稳意图明显"
+    # 富文本行不被薄源降级(已有content不为空 → UPDATE不命中)
+    n2 = FN._dedup_insert(con2 := sqlite3.connect(str(env)), "sina_flash",
+                          "2026-11-08 10:00:00", "央行MLF操作", None, None, now)
+    ct2 = con2.execute("SELECT content FROM news_raw").fetchone()[0]
+    con2.close()
+    assert n2 == 0 and ct2 == "央行开展3000亿元MLF操作中标利率不变维稳意图明显"
+
+
 def test_auto_analyze_wires_sync(monkeypatch):
     """夜间链auto_analyze先内容对齐再分析"""
     called = []
