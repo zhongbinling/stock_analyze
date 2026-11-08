@@ -29,8 +29,32 @@
   <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加</p>
 </section>
 <section class="card">
+  <h2>前十大流通股东 <span class="hint" id="hdState">选择股票后展示</span>
+    <select class="input" id="hdPeriod" style="width:130px;float:right"></select></h2>
+  <div id="hdTable">--</div>
+  <div id="chartHnum" style="height:200px"></div>
+  <p class="hint">季度切换 · 持股占比降序 · 环比=较上期占比变化(pp) · 类型标记(北向/国家队/公募/私募) · 户数持续增加=筹码分散(风险信号)</p>
+</section>
+<section class="card">
+  <h2>两融余额 <span class="hint" id="mgState">选择股票后展示</span></h2>
+  <div id="chartMargin" style="height:260px"></div>
+  <p class="hint">左轴融资余额(亿, 核心杠杆) · 右轴融券余额(亿) · 融资占流通市值比见标题态</p>
+</section>
+<section class="card">
+  <h2>季度净利润(扣非) <span class="hint" id="pfState">
+    <label class="chk"><input type="radio" name="pfMode" value="single" checked> 单季</label>
+    <label class="chk"><input type="radio" name="pfMode" value="cum"> 累计</label></span></h2>
+  <div id="chartProfit" style="height:260px"></div>
+  <p class="hint">扣非口径(剔除非经常损益) · 柱=净利润(亿) · 折线=同比% · 单季识别业绩变脸更灵敏</p>
+</section>
+<section class="card">
+  <h2>季度估值 PE/PB <span class="hint" id="valState">选择股票后展示</span></h2>
+  <div id="chartVal" style="height:260px"></div>
+  <p class="hint">季度末PE_TTM(滚动)/PB · 标注近3年/5年分位 · 亏损期PE不展示(负值)</p>
+</section>
+<section class="card">
   <h2>后续模块</h2>
-  <p class="hint">A2 十大流通股东/两融/季度净利/PE,PB · A3 解禁与个股大事件(K线标记) · A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
+  <p class="hint">A3 解禁与个股大事件(K线标记) · A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -105,8 +129,133 @@ async function load(code) {
     renderK(d);
     $('stState').textContent = '● 就绪';
     loadPool();
+    loadA2(d.code);                       // A2四模块并行
   } catch (e) { $('stState').textContent = '✗ ' + e.message; }
 }
+
+// ── A2模块渲染 ──
+const chH = echarts.init($('chartHnum')), chM = echarts.init($('chartMargin')),
+      chP = echarts.init($('chartProfit')), chV = echarts.init($('chartVal'));
+window.addEventListener('resize', () => [chH, chM, chP, chV].forEach(c => c.resize()));
+const AX = {axisLabel: {color: '#898781'}, splitLine: {lineStyle: {color: '#eee'}}};
+
+function renderHolders(d) {
+  const sel = $('hdPeriod');
+  const cur = sel.value;
+  const QN = {1: '一季报', 2: '中报', 3: '三季报', 4: '年报'};
+  sel.innerHTML = d.periods.map(p => `<option value="${p}">${p.slice(0, 4)}${QN[Math.ceil(+p.slice(5, 7) / 3)] || p}</option>`).join('');
+  if (d.periods.includes(cur)) sel.value = cur;
+  const show = () => {
+    const item = d.data.find(x => x.end_date === sel.value) || d.data[0];
+    if (!item) return;
+    $('hdTable').innerHTML = '<table class="table"><tr><th>股东</th><th>类型</th>'
+      + '<th>持股(万股)</th><th>占比%</th><th>环比pp</th></tr>'
+      + item.holders.map(h => `<tr><td style="text-align:left">${esc(h.name)}</td>
+          <td><span class="hint">${esc(h.tag)}</span></td><td>${h.amount ? (h.amount / 1e4).toFixed(0) : '--'}</td>
+          <td>${h.ratio ?? '--'}</td>
+          <td style="color:${h.chg == null ? '#898781' : h.chg >= 0 ? '#e34448' : '#1baf7a'}">${h.chg == null ? '--' : (h.chg > 0 ? '+' : '') + h.chg}</td></tr>`).join('')
+      + '</table>';
+    $('hdState').textContent = `${sel.value} · 户数 ${item.holder_num ? (item.holder_num / 1e4).toFixed(2) + '万' : '--'}`;
+  };
+  sel.onchange = show;
+  show();
+  // 户数趋势(倒序转正序)
+  const hn = d.data.slice().reverse().filter(x => x.holder_num);
+  chH.setOption({
+    animation: false, backgroundColor: 'transparent',
+    title: {text: '股东户数(万)', left: 4, top: 2, textStyle: {fontSize: 11, color: '#898781'}},
+    tooltip: {trigger: 'axis'}, grid: {left: 50, right: 14, top: 26, bottom: 24},
+    xAxis: {type: 'category', data: hn.map(x => x.end_date.slice(2)), ...AX},
+    yAxis: {type: 'value', scale: true, ...AX},
+    series: [{type: 'line', data: hn.map(x => +(x.holder_num / 1e4).toFixed(2)),
+              showSymbol: true, symbolSize: 4,
+              lineStyle: {width: 1.6, color: '#6250d6'}, itemStyle: {color: '#6250d6'}}]
+  }, true);
+}
+
+function renderMargin(d) {
+  if (!d.n) { $('mgState').textContent = '无两融数据'; chM.clear(); return; }
+  $('mgState').textContent = `最新 ${d.latest.date} · 融资余额 ${d.latest.rzye}亿 · 占流通市值 ${d.latest.ratio ?? '--'}%`;
+  chM.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['融资余额(亿)', '融券余额(亿)'], textStyle: {fontSize: 11}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 56, right: 56, top: 28, bottom: 40},
+    xAxis: {type: 'category', data: d.dates, ...AX},
+    yAxis: [{type: 'value', scale: true, name: '融资(亿)', ...AX},
+            {type: 'value', scale: true, name: '融券(亿)', ...AX, splitLine: {show: false}}],
+    dataZoom: [{type: 'inside'}],
+    series: [
+      {name: '融资余额(亿)', type: 'line', data: d.rzye, showSymbol: false,
+       lineStyle: {width: 1.5, color: '#e34448'}, itemStyle: {color: '#e34448'}},
+      {name: '融券余额(亿)', type: 'line', yAxisIndex: 1, data: d.rqye, showSymbol: false,
+       lineStyle: {width: 1.2, color: '#1baf7a'}, itemStyle: {color: '#1baf7a'}}]
+  }, true);
+}
+
+function renderProfit(d, mode) {
+  if (!d.dates.length) { $('pfState').textContent = '无财务数据'; chP.clear(); return; }
+  const vals = mode === 'cum' ? d.cum : d.single;
+  const yoys = mode === 'cum' ? d.cum_yoy : d.single_yoy;
+  const up = '#e34448', dn = '#1baf7a';
+  chP.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['净利润(亿)', '同比%'], textStyle: {fontSize: 11}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 56, right: 56, top: 28, bottom: 40},
+    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
+    yAxis: [{type: 'value', name: '亿', ...AX},
+            {type: 'value', name: '%', ...AX, splitLine: {show: false}}],
+    series: [
+      {name: '净利润(亿)', type: 'bar', data: vals.map(v =>
+         ({value: v, itemStyle: {color: v == null ? '#ccc' : v >= 0 ? up : dn}})),
+       barMaxWidth: 12},
+      {name: '同比%', type: 'line', yAxisIndex: 1, data: yoys, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1.3, color: '#6250d6'},
+       itemStyle: {color: '#6250d6'}}]
+  }, true);
+}
+
+function renderVal(d) {
+  if (!d.dates.length) { $('valState').textContent = '无估值数据'; chV.clear(); return; }
+  const last = d.dates.length - 1;
+  const fmtP = v => v == null ? '亏损/--' : v + '%';
+  $('valState').textContent = `PE ${d.pe[last] ?? '亏损'} (3年分位${fmtP(d.pe_p3[last])} · 5年${fmtP(d.pe_p5[last])})`
+    + ` · PB ${d.pb[last] ?? '--'} (3年${fmtP(d.pb_p3[last])} · 5年${fmtP(d.pb_p5[last])})`;
+  chV.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['PE_TTM', 'PB'], textStyle: {fontSize: 11}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 56, right: 56, top: 28, bottom: 40},
+    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
+    yAxis: [{type: 'value', scale: true, name: 'PE', ...AX},
+            {type: 'value', scale: true, name: 'PB', ...AX, splitLine: {show: false}}],
+    series: [
+      {name: 'PE_TTM', type: 'line', data: d.pe, showSymbol: false, connectNulls: true,
+       lineStyle: {width: 1.5, color: '#e34448'}, itemStyle: {color: '#e34448'}},
+      {name: 'PB', type: 'line', yAxisIndex: 1, data: d.pb, showSymbol: false,
+       connectNulls: true, lineStyle: {width: 1.2, color: '#2f5cd6'},
+       itemStyle: {color: '#2f5cd6'}}]
+  }, true);
+}
+
+async function loadA2(code) {
+  const enc = encodeURIComponent(code);
+  for (const [mod, fn] of [["holders", renderHolders], ["margin", renderMargin],
+                           ["profit", d => renderProfit(d, document.querySelector('input[name=pfMode]:checked').value)],
+                           ["val", renderVal]]) {
+    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
+    catch (e) { $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
+              : mod === 'profit' ? 'pfState' : 'valState').textContent = '✗ ' + e.message; }
+  }
+}
+document.querySelectorAll('input[name=pfMode]').forEach(r =>
+  r.onchange = async () => {
+    if (!curCode) return;
+    try { renderProfit(await api('/admin/api/stock/profit?code=' + encodeURIComponent(curCode)),
+                       document.querySelector('input[name=pfMode]:checked').value); }
+    catch (e) {}
+  });
 
 async function loadPool() {
   /* 池chips动态刷新: 新入池股票即时可见(review修复, 原为死代码) */

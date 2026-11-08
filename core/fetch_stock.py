@@ -43,6 +43,26 @@ def _conn(path=None):
         ts_code TEXT, trade_date TEXT, open REAL, high REAL, low REAL,
         close REAL, vol REAL, amount REAL, adj_factor REAL,
         PRIMARY KEY(ts_code, trade_date));
+      CREATE TABLE IF NOT EXISTS stock_finance(          -- A2: 季度财务(fina_indicator)
+        ts_code TEXT, end_date TEXT, ann_date TEXT,
+        profit_dedt REAL, netprofit_yoy REAL, or_yoy REAL,
+        grossprofit_margin REAL, roe REAL, debt_to_assets REAL,
+        PRIMARY KEY(ts_code, end_date));
+      CREATE TABLE IF NOT EXISTS stock_holders(          -- A2: 十大流通股东
+        ts_code TEXT, end_date TEXT, holder_name TEXT,
+        hold_amount REAL, ratio REAL,
+        PRIMARY KEY(ts_code, end_date, holder_name));
+      CREATE TABLE IF NOT EXISTS stock_holdernum(        -- A2: 股东户数
+        ts_code TEXT, end_date TEXT, holder_num REAL,
+        PRIMARY KEY(ts_code, end_date));
+      CREATE TABLE IF NOT EXISTS stock_margin(           -- A2: 两融明细
+        ts_code TEXT, trade_date TEXT, rzye REAL, rqye REAL,
+        rzmre REAL, rqyl REAL,
+        PRIMARY KEY(ts_code, trade_date));
+      CREATE TABLE IF NOT EXISTS stock_val(              -- A2: 每日估值(daily_basic)
+        ts_code TEXT, trade_date TEXT, pe_ttm REAL, pb REAL,
+        total_mv REAL, circ_mv REAL,
+        PRIMARY KEY(ts_code, trade_date));
     """)
     con.commit()
     return con
@@ -262,6 +282,291 @@ def pool_list(path=None) -> list:
     con.close()
     return [{"code": r[0], "name": r[1], "added_at": r[2], "last_daily": r[3]}
             for r in rows]
+
+
+# ══════════ A2: 财务/股东/两融/估值 ══════════
+
+def _f(v):
+    try:
+        x = float(v)
+        return x if x == x else None            # NaN→None
+    except (TypeError, ValueError):
+        return None
+
+
+def refresh_finance(code: str, path=None) -> int:
+    """季度财务(fina_indicator全史单call): 扣非/增速/毛利率/ROE/负债率"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("fina_indicator",
+                    "ts_code,end_date,ann_date,profit_dedt,netprofit_yoy,or_yoy,"
+                    "grossprofit_margin,roe,debt_to_assets",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 财务失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["end_date"]), _iso(r.get("ann_date")),
+             _f(r.get("profit_dedt")), _f(r.get("netprofit_yoy")),
+             _f(r.get("or_yoy")), _f(r.get("grossprofit_margin")),
+             _f(r.get("roe")), _f(r.get("debt_to_assets")))
+            for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany(
+        "INSERT INTO stock_finance VALUES(?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(ts_code,end_date) DO UPDATE SET ann_date=excluded.ann_date,"
+        "profit_dedt=excluded.profit_dedt,netprofit_yoy=excluded.netprofit_yoy,"
+        "or_yoy=excluded.or_yoy,grossprofit_margin=excluded.grossprofit_margin,"
+        "roe=excluded.roe,debt_to_assets=excluded.debt_to_assets", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def refresh_holders(code: str, path=None) -> int:
+    """十大流通股东(top10_floatholders全史) + 股东户数(stk_holdernumber)"""
+    ts_code = _norm_code(code)
+    rows, hnums = [], []
+    try:
+        df = T.call("top10_floatholders", "ts_code,end_date,holder_name,hold_amount,hold_ratio",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+        rows = [(ts_code, _iso(r["end_date"]), str(r["holder_name"]).strip(),
+                 _f(r.get("hold_amount")), _f(r.get("hold_ratio")))
+                for _, r in df.iterrows()]
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 十大流通失败 {ts_code}: {str(e)[:60]}")
+    try:
+        dfn = T.call("stk_holdernumber", "ts_code,end_date,holder_num",
+                     ts_code=ts_code, start_date="19900000",
+                     end_date=time.strftime("%Y%m%d"))
+        hnums = [(ts_code, _iso(r["end_date"]), _f(r.get("holder_num")))
+                 for _, r in dfn.iterrows()]
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 股东户数失败 {ts_code}: {str(e)[:60]}")
+    con = _conn(path)
+    if rows:
+        con.executemany("INSERT INTO stock_holders VALUES(?,?,?,?,?) "
+                        "ON CONFLICT(ts_code,end_date,holder_name) DO UPDATE SET "
+                        "hold_amount=excluded.hold_amount,ratio=excluded.ratio", rows)
+    if hnums:
+        con.executemany("INSERT INTO stock_holdernum VALUES(?,?,?) "
+                        "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
+                        "holder_num=excluded.holder_num", hnums)
+    con.commit()
+    con.close()
+    return len(rows) + len(hnums)
+
+
+def refresh_margin(code: str, path=None) -> int:
+    """两融明细(margin_detail全史, 分页防行数上限)"""
+    ts_code = _norm_code(code)
+    frames, offset = [], 0
+    try:
+        while True:
+            df = T.call("margin_detail", "ts_code,trade_date,rzye,rqye,rzmre,rqyl",
+                        ts_code=ts_code, start_date="19900000",
+                        end_date=time.strftime("%Y%m%d"),
+                        limit=4000, offset=offset)
+            frames.append(df)
+            if len(df) < 4000:
+                break
+            offset += 4000
+            if offset >= 40000:
+                break
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 两融失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["trade_date"]), _f(r.get("rzye")), _f(r.get("rqye")),
+             _f(r.get("rzmre")), _f(r.get("rqyl")))
+            for df in frames for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany("INSERT INTO stock_margin VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,trade_date) DO UPDATE SET "
+                    "rzye=excluded.rzye,rqye=excluded.rqye,"
+                    "rzmre=excluded.rzmre,rqyl=excluded.rqyl", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def refresh_val(code: str, path=None) -> int:
+    """每日估值(daily_basic全史单call): PE_TTM/PB/总市值/流通市值"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("daily_basic", "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 估值失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["trade_date"]), _f(r.get("pe_ttm")), _f(r.get("pb")),
+             _f(r.get("total_mv")), _f(r.get("circ_mv"))) for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany("INSERT INTO stock_val VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,trade_date) DO UPDATE SET "
+                    "pe_ttm=excluded.pe_ttm,pb=excluded.pb,"
+                    "total_mv=excluded.total_mv,circ_mv=excluded.circ_mv", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+HOLDER_TAGS = (  # (关键词, 标签) — 股东类型启发式标记(避雷可读性)
+    (("香港中央结算", "陆股通"), "北向"),
+    (("中央汇金", "中国证券金融", "社保基金", "国家集成电路"), "国家队"),
+    (("基金", "资管", "集合理财"), "公募/资管"),
+    (("私募", "资产管理"), "私募"),
+    (("质押", "银行", "信托"), "金融机构"),
+)
+
+
+def _holder_tag(name: str) -> str:
+    for keys, tag in HOLDER_TAGS:
+        if any(k in name for k in keys):
+            return tag
+    return "其他"
+
+
+def holders_payload(code: str, path=None) -> dict:
+    """模块②: 期末列表(倒序) + 各期十大流通(占比降序+类型标记+环比变化) + 户数"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    periods = [r[0] for r in con.execute(
+        "SELECT DISTINCT end_date FROM stock_holders WHERE ts_code=? "
+        "ORDER BY end_date DESC", (ts_code,))]
+    prev_ratio = {}                                 # 上期占比(算环比)
+    allp = {}
+    for end_date in periods:
+        allp[end_date] = con.execute(
+            "SELECT holder_name, hold_amount, ratio FROM stock_holders "
+            "WHERE ts_code=? AND end_date=? ORDER BY ratio DESC",
+            (ts_code, end_date)).fetchall()
+    hnum = {r[0]: r[1] for r in con.execute(
+        "SELECT end_date, holder_num FROM stock_holdernum WHERE ts_code=?",
+        (ts_code,))}
+    con.close()
+    out = []
+    for end_date in reversed(periods):        # 旧→新累积prev_ratio(环比=较上期)
+        rows = []
+        for name, amt, ratio in allp[end_date]:
+            chg = None
+            p = prev_ratio.get(name)
+            if p is not None and ratio is not None:
+                chg = round(ratio - p, 2)
+            rows.append({"name": name, "amount": amt, "ratio": ratio,
+                         "chg": chg, "tag": _holder_tag(name)})
+            prev_ratio[name] = ratio
+        out.append({"end_date": end_date, "holder_num": hnum.get(end_date),
+                    "holders": rows})
+    out.reverse()                              # 输出恢复倒序(最新在前)
+    return {"ok": True, "code": ts_code, "periods": periods, "data": out}
+
+
+def margin_payload(code: str, path=None) -> dict:
+    """模块③: 融资/融券余额(双轴) + 融资余额占流通市值比%(join stock_val)"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    m = con.execute("SELECT trade_date, rzye, rqye FROM stock_margin "
+                    "WHERE ts_code=? ORDER BY trade_date", (ts_code,)).fetchall()
+    val = {r[0]: r[1] for r in con.execute(
+        "SELECT trade_date, circ_mv FROM stock_val WHERE ts_code=?", (ts_code,))}
+    con.close()
+    # 单位实测(2026-11-09茅台): margin_detail.rzye为**元**(150亿=1.5e10),
+    # daily_basic.circ_mv为万元 → 亿=元/1e8; 占比=rz元/(circ_mv万元×1e4)×100
+    dates, rzye, rqye, ratio = [], [], [], []
+    last_mv = None
+    for d, rz, rq in m:
+        if d in val and val[d]:
+            last_mv = val[d]
+        dates.append(d)
+        rzye.append(round(rz / 1e8, 2) if rz else None)      # 元→亿
+        rqye.append(round(rq / 1e8, 2) if rq else None)
+        ratio.append(round(rz / (last_mv * 1e4) * 100, 2)
+                     if rz and last_mv else None)
+    return {"ok": True, "code": ts_code, "n": len(dates), "dates": dates,
+            "rzye": rzye, "rqye": rqye, "ratio": ratio,
+            "latest": {"date": dates[-1] if dates else None,
+                       "rzye": rzye[-1] if rzye else None,
+                       "ratio": ratio[-1] if ratio else None}}
+
+
+def _single_quarters(cum: list) -> list:
+    """累计值→单季值: 同年内逐期差分(0331=原值, 0630-H1, 0930-9M, 1231-FY)"""
+    out, prev = [], {}
+    for date, v in cum:
+        year, md = date[:4], date[5:]
+        base = prev.get(year)                    # 年内上一累计
+        out.append((date, round(v - base, 2) if v is not None and base is not None
+                    and md != "03-31" else v))
+        prev[year] = v
+    return out
+
+
+def profit_payload(code: str, path=None) -> dict:
+    """模块④: 季度扣非净利润(单季/累计两口径) + 本地同比"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    rows = con.execute("SELECT end_date, profit_dedt FROM stock_finance "
+                       "WHERE ts_code=? AND profit_dedt IS NOT NULL "
+                       "ORDER BY end_date", (ts_code,)).fetchall()
+    con.close()
+    cum = [(r[0], r[1] / 1e8 if r[1] else r[1]) for r in rows]      # 元→亿
+    single = _single_quarters(cum)
+
+    def yoy(series):                             # 同期(年+月日)上年对比
+        by = {d: v for d, v in series}
+        out = []
+        for d, v in series:
+            py = str(int(d[:4]) - 1) + d[4:]
+            pv = by.get(py)
+            out.append(round((v - pv) / abs(pv) * 100, 1)
+                       if v is not None and pv not in (None, 0) else None)
+        return out
+
+    return {"ok": True, "code": ts_code,
+            "dates": [d for d, _ in cum],
+            "cum": [v for _, v in cum], "cum_yoy": yoy(cum),
+            "single": [v for _, v in single], "single_yoy": yoy(single)}
+
+
+def val_payload(code: str, path=None) -> dict:
+    """模块⑤: 季度末PE_TTM/PB + 近3/5年分位(负PE标'亏损')"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    vals = con.execute("SELECT trade_date, pe_ttm, pb FROM stock_val "
+                       "WHERE ts_code=? ORDER BY trade_date",
+                       (ts_code,)).fetchall()
+    con.close()
+    # 季度末交易日: 按季度分组取组内最大日(尾部次季初噪声天然剔除)
+    byq = {}
+    for d, *_ in vals:
+        q = d[:4] + "Q" + str((int(d[5:7]) - 1) // 3 + 1)
+        if d > byq.get(q, ""):
+            byq[q] = d
+    qend = [byq[k] for k in sorted(byq)]
+    by = {d: (pe, pb) for d, pe, pb in vals}
+    dates, pes, pbs, pe_p3, pe_p5, pb_p3, pb_p5 = [], [], [], [], [], [], []
+
+    def _pct(window, x):
+        xs = [v for v in window if v is not None and v > 0]
+        if x is None or x <= 0 or len(xs) < 4:
+            return None
+        return round(sum(1 for v in xs if v <= x) / len(xs) * 100)
+
+    series = [(d, *by[d]) for d in qend]
+    for i, (d, pe, pb) in enumerate(series):
+        dates.append(d)
+        pes.append(round(pe, 1) if pe else None)             # 负/None→None(前端标亏损)
+        pbs.append(round(pb, 2) if pb else None)
+        w3 = [v for _, v, _ in series[max(0, i - 11):i + 1]]
+        w5 = [v for _, v, _ in series[max(0, i - 19):i + 1]]
+        w3b = [v for _, _, v in series[max(0, i - 11):i + 1]]
+        w5b = [v for _, _, v in series[max(0, i - 19):i + 1]]
+        pe_p3.append(_pct(w3, pe)); pe_p5.append(_pct(w5, pe))
+        pb_p3.append(_pct(w3b, pb)); pb_p5.append(_pct(w5b, pb))
+    return {"ok": True, "code": ts_code, "dates": dates, "pe": pes, "pb": pbs,
+            "pe_p3": pe_p3, "pe_p5": pe_p5, "pb_p3": pb_p3, "pb_p5": pb_p5}
 
 
 def main():

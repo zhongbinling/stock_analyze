@@ -217,6 +217,36 @@ def api_stock_daily_refresh():
     return jsonify({"ok": n >= 0, "rows": n, "msg": f"日增 {n} 行"})
 
 
+# ── 避雷针A2: 财务/股东/两融/估值(首访自动拉取, 自选池语义) ──
+
+def _stock_module(code, mod):
+    """A2模块统一入口: 空数据先refresh再出载荷"""
+    import fetch_stock as FS
+    ts_code = FS._norm_code(code)
+    refresher = {"holders": FS.refresh_holders, "margin": FS.refresh_margin,
+                 "val": FS.refresh_val, "finance": FS.refresh_finance}.get(mod)
+    payload = {"holders": FS.holders_payload, "margin": FS.margin_payload,
+               "profit": FS.profit_payload, "val": FS.val_payload}[mod]
+    p = payload(ts_code)
+    if mod == "profit" and not p.get("dates"):           # profit依赖finance
+        FS.refresh_finance(ts_code)
+        p = payload(ts_code)
+    elif mod in ("holders", "margin", "val") and (
+            not p.get("data") and not p.get("dates") and not p.get("n")):
+        refresher(ts_code)
+        p = payload(ts_code)
+    return p
+
+
+@bp_admin.get("/api/stock/<mod>")
+@require_level(7)
+def api_stock_module(mod):
+    """A2四模块载荷: holders|margin|profit|val (非法mod 400)"""
+    if mod not in ("holders", "margin", "profit", "val"):
+        return jsonify({"msg": "mod 应为 holders|margin|profit|val"}), 400
+    return jsonify(_stock_module(request.args.get("code", ""), mod))
+
+
 @bp_admin.get("/api/rt/latest")
 @require_level(7)
 def api_rt_latest():
