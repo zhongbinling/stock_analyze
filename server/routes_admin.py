@@ -161,6 +161,64 @@ def realtime_page():
     return render_template("admin/realtime.html")
 
 
+# ── 避雷针A1: 个股分析页与API ──
+
+@bp_admin.get("/stock")
+@require_level(7)
+def stock_page():
+    """避雷针: 个股K线+多均线+量额(A1); A2~A5逐步扩展"""
+    from server import jobs as J
+    import fetch_stock as FS
+    return render_template("admin/stock.html", pool=FS.pool_list(),
+                           rt_enabled=J.get_setting("rt_enabled", "1") == "1")
+
+
+@bp_admin.get("/api/stock/search")
+@require_level(7)
+def api_stock_search():
+    """代码/名称搜索(基础信息缓存)"""
+    import fetch_stock as FS
+    q = request.args.get("q", "").strip()
+    if len(q) < 2:
+        return jsonify({"items": []})
+    return jsonify({"items": FS.search(q)})
+
+
+@bp_admin.get("/api/stock/kline")
+@require_level(7)
+def api_stock_kline():
+    """K线载荷(前/后/不复权); 不在池自动入池(自选池语义: 查过即落地)"""
+    import fetch_stock as FS
+    code = request.args.get("code", "").strip()
+    adj = request.args.get("adj", "qfq")
+    if adj not in ("qfq", "hfq", "none"):
+        adj = "qfq"
+    r = FS.kline(code, adj)
+    if not r.get("ok"):                       # 不在池 → 自动入池再取
+        r2 = FS.add_stock(code)
+        if r2.get("ok"):
+            r = FS.kline(code, adj)
+        else:
+            return jsonify({"msg": r2.get("msg", r.get("msg"))}), 404
+    return jsonify(r)
+
+
+@bp_admin.get("/api/stock/pool")
+@require_level(7)
+def api_stock_pool():
+    import fetch_stock as FS
+    return jsonify({"pool": FS.pool_list()})
+
+
+@bp_admin.post("/api/stock/daily")
+@require_level(7)
+def api_stock_daily_refresh():
+    """池内日增(回看7日幂等) — 同步秒级(分钟档接口无配额风险, 实测45连发OK)"""
+    import fetch_stock as FS
+    n = FS.refresh_daily()
+    return jsonify({"ok": n >= 0, "rows": n, "msg": f"日增 {n} 行"})
+
+
 @bp_admin.get("/api/rt/latest")
 @require_level(7)
 def api_rt_latest():

@@ -41,6 +41,8 @@ ASSETS = {
     "realtime": ("sqlite", BASE / "data" / "realtime.db"),
     # D1-18 M1: 宏观舆情独立库(缺失优雅跳过 — 首次访问自动建库播种)
     "macro": ("sqlite", BASE / "data" / "macro.db"),
+    # 避雷针A1: 个股独立库(自选池; 缺失优雅跳过 — 首次查询自动建库)
+    "stock": ("sqlite", BASE / "data" / "stock.db"),
     "app": ("sqlite", ROOT / "data" / "app.db"),
     "secret": ("file", ROOT / "data" / "secret.key"),
     "token": ("file", BASE / "data" / "tushare_token.txt"),
@@ -64,7 +66,9 @@ ASSET_FILES = {"sentiment": "sentiment.db", "app": "app.db", "secret": "secret.k
                "token": "tushare_token.txt", "cfg_core": "config.yaml",
                "cfg_server": "server.yaml", "raw_daily": "raw_daily.db",
                # D1-21: 批次6/7注册的资产漏登本表 → 日备KeyError('realtime')实测
-               "realtime": "realtime.db", "macro": "macro.db"}
+               "realtime": "realtime.db", "macro": "macro.db",
+               # 避雷针A1: 个股库
+               "stock": "stock.db"}
 
 
 def _norm_type(btype: str) -> str:

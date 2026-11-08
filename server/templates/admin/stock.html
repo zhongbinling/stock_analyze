@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}避雷针 · 个股分析 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>避雷针 · 个股分析 <span class="hint" id="stState">A股个股风险体检(A1: K线+均线+量额)</span></h2>
+  <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
+    <input class="input" id="stQ" placeholder="代码/名称搜索(≥2字)" style="width:200px" autocomplete="off">
+    <div id="stSug" style="position:relative"></div>
+    <select class="input" id="stAdj" style="width:100px" title="前复权=分红除权后历史连续; 后复权=向上累积; 不复权=原始价">
+      <option value="qfq" selected>前复权</option>
+      <option value="hfq">后复权</option>
+      <option value="none">不复权</option>
+    </select>
+    <button class="btn primary" id="btnStLoad">查看</button>
+    <button class="btn" id="btnStDaily" title="池内全部股票回看7日增量(幂等)">池日增</button>
+    <span class="hint" id="stMsg"></span>
+  </div>
+  <div class="row-flex" style="margin-top:6px;gap:8px;flex-wrap:wrap;align-items:center">
+    <span class="hint">自选池({{ pool|length }}):</span>
+    {% for p in pool[:12] %}
+    <a href="javascript:void(0)" class="btn small" data-code="{{ p.code }}">{{ p.name }}</a>
+    {% endfor %}
+    {% if pool|length > 12 %}<span class="hint">…共{{ pool|length }}只</span>{% endif %}
+  </div>
+  <p class="hint" id="stSummary">输入代码或名称搜索 → 选中自动入池并展示全史K线</p>
+  <div id="chartK" style="height:600px"></div>
+  <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加</p>
+</section>
+<section class="card">
+  <h2>后续模块</h2>
+  <p class="hint">A2 十大流通股东/两融/季度净利/PE,PB · A3 解禁与个股大事件(K线标记) · A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
+</section>
+
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const chart = echarts.init($('chartK'));
+const MA_COLORS = {ma5:'#e34448', ma10:'#eda100', ma20:'#6250d6', ma30:'#1baf7a',
+                   ma60:'#2f5cd6', ma180:'#eb6834', ma250:'#898781'};
+let curCode = null;
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})}));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+
+function renderK(d) {
+  curCode = d.code;
+  $('stSummary').innerHTML = `<b>${esc(d.name)}</b> (${esc(d.code)}) · ${d.n}交易日 · `
+    + `最新 ${d.last.date} 收 <b>${d.last.close}</b> [${d.adj}]`;
+  const mas = Object.entries(d.mas || {}).map(([k, v]) => ({
+    name: k.toUpperCase(), type: 'line', data: v, showSymbol: false,
+    lineStyle: {width: 1, color: MA_COLORS[k]}, itemStyle: {color: MA_COLORS[k]},
+    connectNulls: true}));
+  const up = '#e34448', dn = '#1baf7a';     // 同花顺: 涨红跌绿
+  const volBars = d.vol.map((v, i) => {
+    const c = d.k[i];
+    const rising = c && c[1] >= c[0];
+    return {value: v, itemStyle: {color: rising ? up : dn}};
+  });
+  chart.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['K线', ...mas.map(m => m.name), '成交额(亿)'],
+             textStyle: {fontSize: 11}, top: 0},
+    tooltip: {trigger: 'axis', axisPointer: {type: 'cross'}},
+    axisPointer: {link: [{xAxisIndex: 'all'}]},
+    grid: [{left: 60, right: 20, top: 30, height: 380},
+           {left: 60, right: 20, top: 440, height: 130}],
+    xAxis: [
+      {type: 'category', data: d.dates, gridIndex: 0, axisLabel: {show: false}},
+      {type: 'category', data: d.dates, gridIndex: 1, axisLabel: {color: '#898781'}}],
+    yAxis: [{type: 'value', scale: true, gridIndex: 0, axisLabel: {color: '#898781'}},
+            {type: 'value', gridIndex: 1, axisLabel: {color: '#898781'},
+             splitLine: {show: false}}],
+    dataZoom: [
+      {type: 'inside', xAxisIndex: [0, 1]},
+      {type: 'slider', xAxisIndex: [0, 1], bottom: 2, height: 18,
+       start: Math.max(0, 100 - (250 / d.n) * 100)}],
+    series: [
+      {name: 'K线', type: 'candlestick', data: d.k, xAxisIndex: 0, yAxisIndex: 0,
+       barMaxWidth: 10,
+       itemStyle: {color: up, color0: dn, borderColor: up, borderColor0: dn}},
+      ...mas,
+      {name: '成交量(手)', type: 'bar', data: volBars, xAxisIndex: 1, yAxisIndex: 1,
+       barMaxWidth: 10},
+      {name: '成交额(亿)', type: 'line', data: d.amount, xAxisIndex: 1, yAxisIndex: 1,
+       showSymbol: false, lineStyle: {width: 1, color: '#eda100'},
+       itemStyle: {color: '#eda100'}}]
+  }, true);
+  window.addEventListener('resize', () => chart.resize());
+}
+
+async function load(code) {
+  $('stState').textContent = '加载中…';
+  try {
+    const d = await api('/admin/api/stock/kline?code=' + encodeURIComponent(code)
+                        + '&adj=' + $('stAdj').value);
+    renderK(d);
+    $('stState').textContent = '● 就绪';
+    loadPool();
+  } catch (e) { $('stState').textContent = '✗ ' + e.message; }
+}
+
+async function loadPool() {
+  try {
+    const d = await api('/admin/api/stock/pool');
+    const el = document.querySelectorAll('#poolChips')[0];
+    if (el) el.innerHTML = '';
+  } catch (e) {}
+}
+
+// 搜索建议
+let sugTimer = null;
+$('stQ').addEventListener('input', () => {
+  clearTimeout(sugTimer);
+  const q = $('stQ').value.trim();
+  if (q.length < 2) { $('stSug').innerHTML = ''; return; }
+  sugTimer = setTimeout(async () => {
+    try {
+      const d = await api('/admin/api/stock/search?q=' + encodeURIComponent(q));
+      $('stSug').innerHTML = d.items.length
+        ? '<div class="hint" style="position:absolute;top:2px;left:0;background:var(--bg,#fff);'
+          + 'border:1px solid var(--line,#ddd);border-radius:6px;z-index:9;min-width:230px">'
+          + d.items.map((it, i) =>
+            `<div data-i="${i}" style="padding:4px 10px;cursor:pointer"
+                  onmouseover="this.style.background='#f0f0f0'"
+                  onmouseout="this.style.background=''">${esc(it.code)} ${esc(it.name)} <span class="hint">${esc(it.industry || '')}</span></div>`).join('')
+          + '</div>' : '';
+      window._sug = d.items;
+      document.querySelectorAll('#stSug [data-i]').forEach(el =>
+        el.onclick = () => {
+          const it = window._sug[+el.dataset.i];
+          $('stQ').value = it.code + ' ' + it.name;
+          $('stSug').innerHTML = '';
+          load(it.code);
+        });
+    } catch (e) {}
+  }, 250);
+});
+
+$('btnStLoad').onclick = () => {
+  const v = $('stQ').value.trim().split(/\s+/)[0];
+  if (!v) { alert('请输入代码或名称'); return; }
+  load(v);
+};
+$('stAdj').onchange = () => { if (curCode) load(curCode); };
+$('btnStDaily').onclick = async () => {
+  $('stMsg').textContent = '⏳ 日增中…';
+  try {
+    const r = await api('/admin/api/stock/daily', {method: 'POST', body: '{}'});
+    $('stMsg').textContent = r.msg;
+    if (curCode) load(curCode);
+  } catch (e) { $('stMsg').textContent = e.message; }
+};
+document.querySelectorAll('[data-code]').forEach(a =>
+  a.onclick = () => { $('stQ').value = a.dataset.code; load(a.dataset.code); });
+</script>
+{% endblock %}
