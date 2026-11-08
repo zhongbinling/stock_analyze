@@ -627,7 +627,8 @@ def refresh_float(code: str, path=None) -> int:
                     "float_ratio=excluded.float_ratio", (ts_code, _ann(r.get("ann_date")),
                     fd, share, ratio, hn))
         fr.append((ts_code, fd, "float",
-                   f"{hn}解禁{round(share / 1e8, 2)}亿股({ratio}%)",
+                   f"{hn}解禁{round(share / 1e8, 2) if share else '--'}亿股"
+                   f"({ratio if ratio is not None else '--'}%)",
                    f"解禁股东: {hn}", _float_risk(ratio)))
     con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
@@ -672,15 +673,15 @@ def refresh_events(code: str, path=None) -> int:
                     ts_code=ts_code, start_date="20180101",
                     end_date=time.strftime("%Y%m%d"))
         for _, r in df.iterrows():
-            vol = _f(r.get("change_vol"))
-            cr = _f(r.get("change_ratio"))
-            if vol is None or abs(vol) < 50:                 # <50万股噪音滤除
+            vol = _f(r.get("change_vol"))                   # 单位=股(实测:
+            cr = _f(r.get("change_ratio"))                  # 0.0011%×12.56亿≈1.38万股=13800股)
+            if vol is None or abs(vol) < 5e5:               # <50万股噪音滤除
                 continue
             down = vol < 0
             hn = str(r.get("holder_name") or "").strip()[:18]
             risk = "high" if down and (cr is not None and abs(cr) >= 1) else "mid"
             ev.append((ts_code, _ann(r.get("ann_date")), "holdertrade",
-                       f"{hn}{'减持' if down else '增持'}{abs(round(vol, 0))}万股",
+                       f"{hn}{'减持' if down else '增持'}{abs(round(vol / 1e4, 0))}万股",
                        f"变动占比{cr}%", risk))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 增减持失败: {str(e)[:50]}")

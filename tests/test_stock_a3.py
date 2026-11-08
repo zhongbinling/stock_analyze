@@ -85,9 +85,9 @@ def test_refresh_events_risk_grading(env, monkeypatch):
         if api == "stk_holdertrade":
             return pd.DataFrame([
                 {"ts_code": "X", "ann_date": "20261020", "holder_name": "大股东A公司",
-                 "holder_type": "G", "change_vol": -800.0, "change_ratio": -2.5},
+                 "holder_type": "G", "change_vol": -8.0e6, "change_ratio": -2.5},
                 {"ts_code": "X", "ann_date": "20260901", "holder_name": "小股东",
-                 "holder_type": "P", "change_vol": -3.0, "change_ratio": -0.01}])  # 噪音
+                 "holder_type": "P", "change_vol": -3.0e4, "change_ratio": -0.01}])  # 3万股噪音
         if api == "suspend":
             return pd.DataFrame([{"ts_code": "X", "suspend_date": "20200301",
                                   "resume_date": "20200310"}])
@@ -181,3 +181,31 @@ def test_a3_ui_markers():
                             "new Function(process.argv[1])", main],
                            capture_output=True, text=True, timeout=120)
         assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
+
+
+def test_holdertrade_share_unit():
+    """review修复回归: change_vol单位=股(实测锚定), 标题万股换算+50万股噪音"""
+    import pandas as pd
+    df = pd.DataFrame([
+        {"ts_code": "X", "ann_date": "20261020", "holder_name": "大股东A",
+         "holder_type": "G", "change_vol": -2.0e7, "change_ratio": -3.0},   # 2000万股
+        {"ts_code": "X", "ann_date": "20261021", "holder_name": "散户",
+         "holder_type": "P", "change_vol": 4.0e5, "change_ratio": 0.05},    # 40万股噪音
+    ])
+    import fetch_stock as FS
+    import sqlite3, tempfile
+    from pathlib import Path
+    db = Path(tempfile.mkdtemp()) / "s.db"
+
+    def fake(api, fields="", **kw):
+        return df if api == "stk_holdertrade" else pd.DataFrame()
+    orig = FS.T.call
+    FS.T.call = fake
+    try:
+        FS.refresh_events("600519", db)
+    finally:
+        FS.T.call = orig
+    ev = FS.events_payload("600519", db)["events"]
+    titles = [e["title"] for e in ev]
+    assert any("减持2000.0万股" in t for t in titles)
+    assert not any("散户" in t for t in titles)          # 40万股噪音
