@@ -66,13 +66,22 @@ def benv(tmp_path, monkeypatch):
     # 巴菲特: 78.5%, 全史分位85(红), 5年分位15(蓝)
     monkeypatch.setattr("server.macro.buffett",
                         lambda: {"latest": {"ratio": 78.5, "pct_all": 85, "pct_5y": 15}})
-    # 事件: L3今天/ L2三天前 入选; L1今天、L2十天前 出局
-    monkeypatch.setattr("server.macro.list_events", lambda **kw: {"events": [
-        {"date": _today(), "level": 3, "title": "央行降准0.5个百分点"},
-        {"date": _today(3), "level": 2, "title": "证监会座谈会"},
-        {"date": _today(), "level": 1, "title": "某公司发布新品公告"},
-        {"date": _today(10), "level": 2, "title": "十天前的旧事件"},
-    ]})
+    # 事件桩(模拟服务端语义: level_min/d_from过滤由list_events承担 — 简报
+    # 按窗口直查后不再客户端过滤等级/下界)
+    def _le(**kw):
+        evs = [
+            {"date": _today(), "level": 3, "title": "央行降准0.5个百分点"},
+            {"date": _today(3), "level": 2, "title": "证监会座谈会"},
+            {"date": _today(), "level": 1, "title": "某公司发布新品公告"},
+            {"date": _today(10), "level": 2, "title": "十天前的旧事件"},
+        ]
+        lm, df = kw.get("level_min"), kw.get("d_from")
+        if lm:
+            evs = [e for e in evs if e["level"] >= lm]
+        if df:
+            evs = [e for e in evs if e["date"] >= df]
+        return {"events": evs}
+    monkeypatch.setattr("server.macro.list_events", _le)
     # viewer payload打桩: 分位小数→%(D1-30r口径); 5年条用的是alla_*_pct5
     stub_v = types.ModuleType("viewer")
     stub_v.build_payload = lambda cfg: {

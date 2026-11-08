@@ -139,6 +139,23 @@ def test_event_ai_impact_rendered(benv):
     assert "<small" not in html.split("无AI分析事件")[1].split("</td>")[0]
 
 
+def test_event_window_queries_by_range(benv, monkeypatch):
+    """review修复回归: 事件窗口按level_min=2+d_from直查(摆脱list_events
+    默认最新500条截断 — 总量2526+时7天窗口丢日), 不再客户端过滤等级"""
+    import datetime as dt2
+    cap = {}
+
+    def _le(**kw):
+        cap.update(kw)
+        return {"events": []}
+    monkeypatch.setattr("server.macro.list_events", _le)
+    _gen(benv)
+    assert cap.get("level_min") == 2
+    d_from = cap.get("d_from")
+    assert d_from == (dt2.date.today() - dt2.timedelta(days=7)).isoformat()
+    assert cap.get("limit", 0) >= 2000
+
+
 def test_print_pdf_button(benv):
     """导出PDF/打印按钮 + @media print样式(打印时隐藏按钮/去阴影)"""
     html = _gen(benv)

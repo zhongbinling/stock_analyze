@@ -59,14 +59,15 @@ def generate_html(out=None) -> Path:
     con.close()
     # 6. 巴菲特
     bf = MC.buffett()["latest"]
-    # 7. 新闻事件
+    # 7. 新闻事件 — 按窗口直查(L2+·d_from起): 原list_events()默认最新500条,
+    # 事件总量2526+时7天窗口被截断丢日(实测11-02~11-05全丢/11-06截半)
     from datetime import datetime as _dt, timedelta as _td
     now = _dt.now()
     h24 = (now - _td(hours=24)).strftime("%Y-%m-%d")
     d7 = (now - _td(days=7)).strftime("%Y-%m-%d")
-    _evs = MC.list_events()["events"]              # 单次取全(原ev24/ev7各调一遍)
-    ev24 = [e for e in _evs if e["date"] >= h24 and e["level"] >= 2]
-    ev7 = [e for e in _evs if h24 > e["date"] >= d7 and e["level"] >= 2]
+    _evs = MC.list_events(level_min=2, d_from=d7, limit=5000)["events"]
+    ev24 = [e for e in _evs if e["date"] >= h24]
+    ev7 = [e for e in _evs if h24 > e["date"]]
 
     def _fmt_pct(v): return f"{v*100:.0f}%" if v is not None else "--"  # viewer小数→%
     def _pct_bar(v, label=""):

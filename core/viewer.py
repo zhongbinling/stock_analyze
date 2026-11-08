@@ -849,10 +849,10 @@ function render(i) {
     const vis = D.evIdx.filter(o => o.i >= lo && o.i <= hi && D.evOn[o.e.level])
       .slice(-12).reverse();
     if (vis.length)
-      h += `<table style="margin-top:8px"><tr><th>时间区事件</th><th>等级</th><th>标题</th></tr>`
+      h += `<table style="margin-top:8px"><tr><th>时间区事件</th><th>等级</th><th style="text-align:left">标题</th></tr>`
         + vis.map(o => `<tr><td class="hint">${o.e.date.slice(5)}</td>
             <td><b style="color:${EV_COLORS[o.e.level] || '#555'}">L${o.e.level}</b></td>
-            <td>${(o.e.source || '').startsWith('ai_') ? '<b style="color:#6250d6">AI</b> ' : ''}${escE(o.e.title)}</td></tr>`).join('') + `</table>`;
+            <td style="text-align:left">${(o.e.source || '').startsWith('ai_') ? '<b style="color:#6250d6">AI</b> ' : ''}${escE(o.e.title)}</td></tr>`).join('') + `</table>`;
   }
   document.getElementById("panel").innerHTML = h;
 }

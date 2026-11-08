@@ -93,7 +93,7 @@ def test_cap_keeps_newest(env):
 
 
 def test_frontend_ai_rendering():
-    """前端接线: 悬停AI概要行(紫色) + 时间区事件AI徽标 + L1勾选移除"""
+    """前端接线: 悬停AI概要行(紫色) + 时间区事件AI徽标 + 标题列左对齐 + L1勾选移除"""
     h = VW.HTML
     assert "e.ai_impact" in h and "AI ${e.ai_level" in h          # 悬停AI概要
     assert "startsWith('ai_')" in h and '<b style="color:#6250d6">AI</b> ' in h
@@ -101,3 +101,6 @@ def test_frontend_ai_rendering():
     i_if, i_else = h.index("if (e.ai_impact)"), h.index("else if (e.content)")
     assert i_if < i_else
     assert 'value="1"' not in h
+    # review: 事件表标题列左对齐(全局td默认right, 仅首列豁免)
+    assert '<th style="text-align:left">标题</th>' in h
+    assert '<td style="text-align:left">${(o.e.source' in h
