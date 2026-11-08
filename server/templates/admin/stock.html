@@ -16,11 +16,13 @@
     <span class="hint" id="stMsg"></span>
   </div>
   <div class="row-flex" style="margin-top:6px;gap:8px;flex-wrap:wrap;align-items:center">
-    <span class="hint">自选池({{ pool|length }}):</span>
-    {% for p in pool[:12] %}
-    <a href="javascript:void(0)" class="btn small" data-code="{{ p.code }}">{{ p.name }}</a>
-    {% endfor %}
-    {% if pool|length > 12 %}<span class="hint">…共{{ pool|length }}只</span>{% endif %}
+    <span class="hint">自选池(<span id="poolN">{{ pool|length }}</span>):</span>
+    <span id="poolChips" style="display:inline-flex;gap:6px;flex-wrap:wrap">
+      {% for p in pool[:12] %}
+      <a href="javascript:void(0)" class="btn small" data-code="{{ p.code }}">{{ p.name }}</a>
+      {% endfor %}
+      {% if pool|length > 12 %}<span class="hint">…</span>{% endif %}
+    </span>
   </div>
   <p class="hint" id="stSummary">输入代码或名称搜索 → 选中自动入池并展示全史K线</p>
   <div id="chartK" style="height:600px"></div>
@@ -107,10 +109,15 @@ async function load(code) {
 }
 
 async function loadPool() {
+  /* 池chips动态刷新: 新入池股票即时可见(review修复, 原为死代码) */
   try {
     const d = await api('/admin/api/stock/pool');
-    const el = document.querySelectorAll('#poolChips')[0];
-    if (el) el.innerHTML = '';
+    $('poolN').textContent = d.pool.length;
+    $('poolChips').innerHTML = d.pool.slice(0, 12).map(p =>
+      `<a href="javascript:void(0)" class="btn small" data-code="${esc(p.code)}">${esc(p.name)}</a>`).join('')
+      + (d.pool.length > 12 ? '<span class="hint">…</span>' : '');
+    document.querySelectorAll('#poolChips [data-code]').forEach(a =>
+      a.onclick = () => { $('stQ').value = a.dataset.code; load(a.dataset.code); });
   } catch (e) {}
 }
 

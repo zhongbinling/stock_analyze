@@ -167,10 +167,8 @@ def realtime_page():
 @require_level(7)
 def stock_page():
     """避雷针: 个股K线+多均线+量额(A1); A2~A5逐步扩展"""
-    from server import jobs as J
     import fetch_stock as FS
-    return render_template("admin/stock.html", pool=FS.pool_list(),
-                           rt_enabled=J.get_setting("rt_enabled", "1") == "1")
+    return render_template("admin/stock.html", pool=FS.pool_list())
 
 
 @bp_admin.get("/api/stock/search")

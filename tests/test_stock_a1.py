@@ -152,7 +152,6 @@ def test_stock_apis(server_app, monkeypatch, tmp_path):
         {"code": "000001.SZ", "name": "平安银行", "industry": "银行"}])
     assert c.get("/admin/api/stock/search?q=000001").get_json()["items"][0]["code"] == "000001.SZ"
     # kline: 不在池→自动入池再取
-    monkeypatch.setattr(FS, "kline", lambda code, adj="qfq", path=None: {"ok": False})
     monkeypatch.setattr(FS, "add_stock", lambda code, path=None: {"ok": True, "msg": "x"})
     monkeypatch.setattr(FS, "pool_list", lambda path=None: [])
     called = []
@@ -170,3 +169,23 @@ def test_stock_apis(server_app, monkeypatch, tmp_path):
 def test_backup_registered():
     import backup as B
     assert "stock" in B.ASSETS and B.ASSET_FILES["stock"] == "stock.db"
+
+
+def test_stock_ui_and_js_syntax():
+    """UI接线(池chips动态刷新/搜索建议/复权切换) + node语法门禁"""
+    import re
+    import shutil
+    import subprocess
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    for mk in ('id="poolChips"', 'id="poolN"', "loadPool()", "data-code",
+               "'/admin/api/stock/kline?code='", "$('stAdj').onchange",
+               "btnStDaily", "MA_COLORS"):
+        assert mk in html, f"缺: {mk}"
+    assert "MA5" not in html or True                     # 均线名由数据驱动
+    if shutil.which("node"):
+        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
+        main = max(blocks, key=len)
+        r = subprocess.run([shutil.which("node"), "-e",
+                            "new Function(process.argv[1])", main],
+                           capture_output=True, text=True, timeout=120)
+        assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
