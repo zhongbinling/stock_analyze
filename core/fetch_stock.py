@@ -306,7 +306,10 @@ def refresh_finance(code: str, path=None) -> int:
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 财务失败 {ts_code}: {str(e)[:60]}")
         return -1
-    rows = [(ts_code, _iso(r["end_date"]), _iso(r.get("ann_date")),
+    def _ann(v):
+        s = str(v or "").strip()
+        return _iso(s) if s and s not in ("nan", "None") else None
+    rows = [(ts_code, _iso(r["end_date"]), _ann(r.get("ann_date")),
              _f(r.get("profit_dedt")), _f(r.get("netprofit_yoy")),
              _f(r.get("or_yoy")), _f(r.get("grossprofit_margin")),
              _f(r.get("roe")), _f(r.get("debt_to_assets")))
@@ -492,13 +495,18 @@ def margin_payload(code: str, path=None) -> dict:
 
 
 def _single_quarters(cum: list) -> list:
-    """累计值→单季值: 同年内逐期差分(0331=原值, 0630-H1, 0930-9M, 1231-FY)"""
+    """累计值→单季值: 同年内逐期差分(0331=原值, 0630-H1, 0930-9M, 1231-FY)。
+    年内缺基期(如有Q2无Q1)时该期单季不可知 → None(不拿累计值冒充单季)。"""
     out, prev = [], {}
     for date, v in cum:
         year, md = date[:4], date[5:]
-        base = prev.get(year)                    # 年内上一累计
-        out.append((date, round(v - base, 2) if v is not None and base is not None
-                    and md != "03-31" else v))
+        base = prev.get(year)
+        if md == "03-31":
+            out.append((date, v))
+        elif v is not None and base is not None:
+            out.append((date, round(v - base, 2)))
+        else:
+            out.append((date, None))
         prev[year] = v
     return out
 

@@ -169,3 +169,17 @@ def test_a2_ui_markers():
                             "new Function(process.argv[1])", main],
                            capture_output=True, text=True, timeout=120)
         assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
+
+
+def test_single_quarters_missing_base_none():
+    """年内缺基期(有Q2无Q1) → 单季不可知=None(不拿累计冒充单季)"""
+    s = FS._single_quarters([("2026-06-30", 3.0), ("2026-09-30", 6.0)])
+    assert s == [("2026-06-30", None), ("2026-09-30", 3.0)]     # Q2无基期None, Q3有基期差分
+
+
+def test_pfmsg_not_pfstate():
+    """UI: 消息写pfMsg(独立span), 不再覆盖pfMode单选(review修复)"""
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    assert 'id="pfMsg"' in html
+    assert "$('pfMsg').textContent" in html
+    assert "$('pfState').textContent" not in html

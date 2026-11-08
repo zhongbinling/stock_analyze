@@ -41,9 +41,10 @@
   <p class="hint">左轴融资余额(亿, 核心杠杆) · 右轴融券余额(亿) · 融资占流通市值比见标题态</p>
 </section>
 <section class="card">
-  <h2>季度净利润(扣非) <span class="hint" id="pfState">
+  <h2>季度净利润(扣非) <span class="hint">
     <label class="chk"><input type="radio" name="pfMode" value="single" checked> 单季</label>
-    <label class="chk"><input type="radio" name="pfMode" value="cum"> 累计</label></span></h2>
+    <label class="chk"><input type="radio" name="pfMode" value="cum"> 累计</label>
+    <span id="pfMsg"></span></span></h2>
   <div id="chartProfit" style="height:260px"></div>
   <p class="hint">扣非口径(剔除非经常损益) · 柱=净利润(亿) · 折线=同比% · 单季识别业绩变脸更灵敏</p>
 </section>
@@ -194,7 +195,7 @@ function renderMargin(d) {
 }
 
 function renderProfit(d, mode) {
-  if (!d.dates.length) { $('pfState').textContent = '无财务数据'; chP.clear(); return; }
+  if (!d.dates.length) { $('pfMsg').textContent = '无财务数据'; chP.clear(); return; }
   const vals = mode === 'cum' ? d.cum : d.single;
   const yoys = mode === 'cum' ? d.cum_yoy : d.single_yoy;
   const up = '#e34448', dn = '#1baf7a';
@@ -246,7 +247,7 @@ async function loadA2(code) {
                            ["val", renderVal]]) {
     try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
     catch (e) { $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
-              : mod === 'profit' ? 'pfState' : 'valState').textContent = '✗ ' + e.message; }
+              : mod === 'profit' ? 'pfMsg' : 'valState').textContent = '✗ ' + e.message; }
   }
 }
 document.querySelectorAll('input[name=pfMode]').forEach(r =>
