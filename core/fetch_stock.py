@@ -63,6 +63,17 @@ def _conn(path=None):
         ts_code TEXT, trade_date TEXT, pe_ttm REAL, pb REAL,
         total_mv REAL, circ_mv REAL,
         PRIMARY KEY(ts_code, trade_date));
+      CREATE TABLE IF NOT EXISTS stock_float(            -- A3: 个股解禁(share_float)
+        ts_code TEXT, ann_date TEXT, float_date TEXT,
+        float_share REAL, float_ratio REAL, holder_name TEXT,
+        PRIMARY KEY(ts_code, float_date, holder_name));
+      CREATE TABLE IF NOT EXISTS stock_events(           -- A3: 个股大事件(统一归一)
+        ts_code TEXT, ev_date TEXT, ev_type TEXT,
+        title TEXT, detail TEXT, risk TEXT,
+        PRIMARY KEY(ts_code, ev_date, ev_type, title));
+      CREATE TABLE IF NOT EXISTS stock_pledge(           -- A3: 质押比例(状态类, 不入K线事件)
+        ts_code TEXT, end_date TEXT, pledge_ratio REAL,
+        PRIMARY KEY(ts_code, end_date));
     """)
     con.commit()
     return con
@@ -95,6 +106,12 @@ def _iso(d) -> str:
     """trade_date归一ISO: 20261107→2026-11-07(已是ISO原样) — 全系统统一口径"""
     s = str(d or "")
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else s
+
+
+def _ann(v) -> str | None:
+    """ann_date归一ISO并滤脏值(pandas NaN→str'nan')"""
+    s = str(v or "").strip()
+    return _iso(s) if s and s not in ("nan", "None") else None
 
 
 def _norm_code(code: str) -> str:
@@ -306,9 +323,6 @@ def refresh_finance(code: str, path=None) -> int:
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 财务失败 {ts_code}: {str(e)[:60]}")
         return -1
-    def _ann(v):
-        s = str(v or "").strip()
-        return _iso(s) if s and s not in ("nan", "None") else None
     rows = [(ts_code, _iso(r["end_date"]), _ann(r.get("ann_date")),
              _f(r.get("profit_dedt")), _f(r.get("netprofit_yoy")),
              _f(r.get("or_yoy")), _f(r.get("grossprofit_margin")),
@@ -575,6 +589,184 @@ def val_payload(code: str, path=None) -> dict:
         pb_p3.append(_pct(w3b, pb)); pb_p5.append(_pct(w5b, pb))
     return {"ok": True, "code": ts_code, "dates": dates, "pe": pes, "pb": pbs,
             "pe_p3": pe_p3, "pe_p5": pe_p5, "pb_p3": pb_p3, "pb_p5": pb_p5}
+
+
+# ══════════ A3: 解禁与大事件 ══════════
+
+EV_TYPE_NAME = {"float": "解禁", "forecast": "业绩预告", "dividend": "分红",
+                "holdertrade": "增减持", "suspend": "停复牌"}
+FORECAST_RISK = {"首亏": "high", "续亏": "high", "预减": "high", "略减": "mid",
+                 "预增": "low", "略增": "low", "扭亏": "low", "续盈": "low"}
+
+
+def _float_risk(ratio) -> str:
+    if ratio is None:
+        return "low"
+    return "high" if ratio >= 5 else ("mid" if ratio >= 1 else "low")
+
+
+def refresh_float(code: str, path=None) -> int:
+    """个股解禁全史(share_float) + 同步生成解禁事件(未来>5%为大额高风险)"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("share_float",
+                    "ts_code,ann_date,float_date,float_share,float_ratio,holder_name",
+                    ts_code=ts_code)
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 解禁失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    con = _conn(path)
+    fr = []
+    for _, r in df.iterrows():
+        fd, hn = _iso(r["float_date"]), str(r.get("holder_name") or "未知股东").strip()
+        ratio = _f(r.get("float_ratio"))
+        share = _f(r.get("float_share"))
+        con.execute("INSERT INTO stock_float VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,float_date,holder_name) DO UPDATE SET "
+                    "ann_date=excluded.ann_date,float_share=excluded.float_share,"
+                    "float_ratio=excluded.float_ratio", (ts_code, _ann(r.get("ann_date")),
+                    fd, share, ratio, hn))
+        fr.append((ts_code, fd, "float",
+                   f"{hn}解禁{round(share / 1e8, 2)}亿股({ratio}%)",
+                   f"解禁股东: {hn}", _float_risk(ratio)))
+    con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
+                    "detail=excluded.detail,risk=excluded.risk", fr)
+    con.commit()
+    con.close()
+    return len(fr)
+
+
+def refresh_events(code: str, path=None) -> int:
+    """结构化大事件: 预告/分红/增减持/停牌 → 统一stock_events(风险分级)"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    ev = []
+    try:                                                     # 业绩预告
+        df = T.call("forecast", "ts_code,ann_date,end_date,type,p_change_min,p_change_max",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+        for _, r in df.iterrows():
+            t = str(r.get("type") or "预告").strip()
+            ev.append((ts_code, _ann(r.get("ann_date")), "forecast",
+                       f"业绩预告: {t}",
+                       f"{_iso(r['end_date'])}报告期 预计变动{r.get('p_change_min')}%"
+                       f"~{r.get('p_change_max')}%", FORECAST_RISK.get(t, "mid")))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 预告失败: {str(e)[:50]}")
+    try:                                                     # 分红送转
+        df = T.call("dividend", "ts_code,end_date,ann_date,cash_div,stk_div",
+                    ts_code=ts_code)
+        for _, r in df.iterrows():
+            cash, stk = _f(r.get("cash_div")), _f(r.get("stk_div"))
+            if not cash and not stk:
+                continue
+            ev.append((ts_code, _ann(r.get("ann_date")), "dividend",
+                       f"分红: 每10股派{cash}元" + (f" 送{stk}股" if stk else ""),
+                       f"{_iso(r['end_date'])}年度分配", "low"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 分红失败: {str(e)[:50]}")
+    try:                                                     # 股东增减持
+        df = T.call("stk_holdertrade",
+                    "ts_code,ann_date,holder_name,holder_type,change_vol,change_ratio",
+                    ts_code=ts_code, start_date="20180101",
+                    end_date=time.strftime("%Y%m%d"))
+        for _, r in df.iterrows():
+            vol = _f(r.get("change_vol"))
+            cr = _f(r.get("change_ratio"))
+            if vol is None or abs(vol) < 50:                 # <50万股噪音滤除
+                continue
+            down = vol < 0
+            hn = str(r.get("holder_name") or "").strip()[:18]
+            risk = "high" if down and (cr is not None and abs(cr) >= 1) else "mid"
+            ev.append((ts_code, _ann(r.get("ann_date")), "holdertrade",
+                       f"{hn}{'减持' if down else '增持'}{abs(round(vol, 0))}万股",
+                       f"变动占比{cr}%", risk))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 增减持失败: {str(e)[:50]}")
+    try:                                                     # 停复牌
+        df = T.call("suspend", "ts_code,suspend_date,resume_date", ts_code=ts_code)
+        for _, r in df.iterrows():
+            ev.append((ts_code, _iso(r["suspend_date"]), "suspend",
+                       "停牌", f"至{_iso(r.get('resume_date')) or '--'}复牌", "mid"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 停复牌失败: {str(e)[:50]}")
+    try:                                                     # 质押(状态类独立表)
+        df = T.call("pledge_stat", "ts_code,end_date,pledge_ratio", ts_code=ts_code)
+        con.executemany("INSERT INTO stock_pledge VALUES(?,?,?) "
+                        "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
+                        "pledge_ratio=excluded.pledge_ratio",
+                        [(ts_code, _iso(r["end_date"]), _f(r.get("pledge_ratio")))
+                         for _, r in df.iterrows()])
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 质押失败: {str(e)[:50]}")
+    con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
+                    "detail=excluded.detail,risk=excluded.risk", ev)
+    con.commit()
+    con.close()
+    return len(ev)
+
+
+def float_payload(code: str, path=None) -> dict:
+    """模块⑥: 解禁序列(历史/未来分段, 大额>=5%标红)+未来3月汇总"""
+    import datetime as dt
+    ts_code = _norm_code(code)
+    today = dt.date.today().isoformat()
+    con = _conn(path)
+    rows = con.execute("SELECT float_date, float_share, float_ratio, holder_name "
+                       "FROM stock_float WHERE ts_code=? ORDER BY float_date",
+                       (ts_code,)).fetchall()
+    con.close()
+    out = [{"date": r[0], "share_yi": round(r[1] / 1e8, 2) if r[1] else None,
+            "ratio": r[2], "holder": r[3][:12],
+            "future": r[0] > today, "big": (r[2] or 0) >= 5} for r in rows]
+    soon = [x for x in out if x["future"] and x["date"] <=
+            (dt.date.today() + dt.timedelta(days=90)).isoformat()]
+    return {"ok": True, "code": ts_code, "n": len(out), "data": out,
+            "soon": {"n": len(soon),
+                     "total_yi": round(sum(x["share_yi"] or 0 for x in soon), 2),
+                     "max_ratio": max((x["ratio"] or 0 for x in soon), default=0)}}
+
+
+def events_payload(code: str, path=None) -> dict:
+    """模块⑧: 大事件列表(K线标记+hover详情用), 按日期升序"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    rows = con.execute("SELECT ev_date, ev_type, title, detail, risk "
+                       "FROM stock_events WHERE ts_code=? ORDER BY ev_date",
+                       (ts_code,)).fetchall()
+    con.close()
+    return {"ok": True, "code": ts_code, "n": len(rows),
+            "events": [{"date": r[0], "type": EV_TYPE_NAME.get(r[1], r[1]),
+                        "title": r[2], "detail": r[3], "risk": r[4]} for r in rows]}
+
+
+def risk_payload(code: str, path=None) -> dict:
+    """顶部风险提示: 未来3月大额解禁 + 最新质押 + 近180天高风险事件"""
+    import datetime as dt
+    ts_code = _norm_code(code)
+    d180 = (dt.date.today() - dt.timedelta(days=180)).isoformat()
+    fl = float_payload(ts_code, path)
+    con = _conn(path)
+    pledge = con.execute("SELECT end_date, pledge_ratio FROM stock_pledge "
+                         "WHERE ts_code=? ORDER BY end_date DESC LIMIT 1",
+                         (ts_code,)).fetchone()
+    highs = con.execute("SELECT ev_date, title FROM stock_events "
+                        "WHERE ts_code=? AND risk='high' AND ev_date>=? "
+                        "ORDER BY ev_date DESC LIMIT 8", (ts_code, d180)).fetchall()
+    con.close()
+    items = []
+    if fl["soon"]["n"] and fl["soon"]["max_ratio"] >= 5:
+        items.append({"level": "high", "text": f"未来90天解禁{fl['soon']['n']}批/"
+                      f"共{fl['soon']['total_yi']}亿股, 最大占总股本{fl['soon']['max_ratio']}%"})
+    if pledge and pledge[1] is not None and pledge[1] >= 30:
+        items.append({"level": "high", "text": f"股权质押比例{pledge[1]}%"
+                      f"({pledge[0]}) — 平仓风险区"})
+    for d, t in highs:
+        items.append({"level": "high", "text": f"[{d}] {t}"})
+    # checked标记: 无风险项≠未拉取(避免每次空items都重新拉接口)
+    return {"ok": True, "code": ts_code, "items": items, "checked": True}
 
 
 def main():

@@ -25,8 +25,10 @@
     </span>
   </div>
   <p class="hint" id="stSummary">输入代码或名称搜索 → 选中自动入池并展示全史K线</p>
+  <div id="riskBanner" style="display:none; padding:6px 10px; border:1px solid #d03b3b;
+       border-radius:6px; background:rgba(208,59,59,.06); margin-bottom:6px"></div>
   <div id="chartK" style="height:600px"></div>
-  <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加</p>
+  <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加 · <b style="color:#d03b3b">▲</b>=高风险事件(<span id="evCount">0</span>条: 解禁/预亏/大额减持)</p>
 </section>
 <section class="card">
   <h2>前十大流通股东 <span class="hint" id="hdState">选择股票后展示</span>
@@ -54,8 +56,18 @@
   <p class="hint">季度末PE_TTM(滚动)/PB · 标注近3年/5年分位 · 亏损期PE不展示(负值)</p>
 </section>
 <section class="card">
+  <h2>限售解禁 <span class="hint" id="flState">选择股票后展示</span></h2>
+  <div id="chartFloat" style="height:240px"></div>
+  <p class="hint">柱=解禁数量(亿股) · 蓝灰=已解禁 · 橙=未来(计划) · <b style="color:#d03b3b">红=大额(≥5%总股本)</b> · 未来90天汇总见标题</p>
+</section>
+<section class="card">
+  <h2>个股大事件 <span class="hint" id="evState">选择股票后展示</span></h2>
+  <div id="evTable">--</div>
+  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
+</section>
+<section class="card">
   <h2>后续模块</h2>
-  <p class="hint">A3 解禁与个股大事件(K线标记) · A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
+  <p class="hint">A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -66,7 +78,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const chart = echarts.init($('chartK'));
 const MA_COLORS = {ma5:'#e34448', ma10:'#eda100', ma20:'#6250d6', ma30:'#1baf7a',
                    ma60:'#2f5cd6', ma180:'#eb6834', ma250:'#898781'};
-let curCode = null;
+let curCode = null, curEvents = [];      // A3: 当前股票事件(K线标记+tooltip)
 
 async function api(url, opts = {}) {
   const r = await fetch(url, Object.assign({}, opts, {
@@ -90,11 +102,33 @@ function renderK(d) {
     const rising = c && c[1] >= c[0];
     return {value: v, itemStyle: {color: rising ? up : dn}};
   });
+  // A3: 事件标记 — 高风险红▲/中橙●, 日期吸附最近≥该日的K线交易日
+  const evMarks = curEvents.filter(e => e.risk !== 'low').map(e => {
+    let i = d.dates.findIndex(x => x >= e.date);
+    if (i < 0) i = d.dates.length - 1;
+    const k = d.k[i];
+    return {value: [i, k ? k[3] * 1.03 : null], evt: e,
+            symbol: e.risk === 'high' ? 'triangle' : 'circle',
+            symbolSize: e.risk === 'high' ? 11 : 7,
+            itemStyle: {color: e.risk === 'high' ? '#d03b3b' : '#e67e22'}};
+  }).filter(m => m.value[1] != null);
+  const evByDate = {};
+  curEvents.forEach(e => { (evByDate[e.date] = evByDate[e.date] || []).push(e); });
   chart.setOption({
     animation: false, backgroundColor: 'transparent',
-    legend: {data: ['K线', ...mas.map(m => m.name), '成交额(亿)'],
+    legend: {data: ['K线', ...mas.map(m => m.name), '成交额(亿)', '风险事件'],
              textStyle: {fontSize: 11}, top: 0},
-    tooltip: {trigger: 'axis', axisPointer: {type: 'cross'}},
+    tooltip: {trigger: 'axis', axisPointer: {type: 'cross'},
+      formatter: ps => {
+        const i = ps[0].dataIndex, dd = d.dates[i], k = d.k[i];
+        let h = `<b>${dd}</b>`;
+        if (k) h += `<br/>开 ${k[0]} 收 <b style="color:${k[1] >= k[0] ? up : dn}">${k[1]}</b> 高 ${k[3]} 低 ${k[2]}`;
+        if (d.vol[i] != null) h += `<br/>量 ${(d.vol[i] / 1e4).toFixed(1)}万手 额 ${d.amount[i]}亿`;
+        (evByDate[dd] || []).forEach(e => {
+          h += `<br/><span style="color:${e.risk === 'high' ? '#d03b3b' : e.risk === 'mid' ? '#e67e22' : '#898781'}">◆[${e.type}] ${esc(e.title)}</span>`;
+        });
+        return h;
+      }},
     axisPointer: {link: [{xAxisIndex: 'all'}]},
     grid: [{left: 60, right: 20, top: 30, height: 380},
            {left: 60, right: 20, top: 440, height: 130}],
@@ -113,6 +147,8 @@ function renderK(d) {
        barMaxWidth: 10,
        itemStyle: {color: up, color0: dn, borderColor: up, borderColor0: dn}},
       ...mas,
+      {name: '风险事件', type: 'scatter', xAxisIndex: 0, yAxisIndex: 0,
+       data: evMarks, z: 9, cursor: 'default'},
       {name: '成交量(手)', type: 'bar', data: volBars, xAxisIndex: 1, yAxisIndex: 1,
        barMaxWidth: 10},
       {name: '成交额(亿)', type: 'line', data: d.amount, xAxisIndex: 1, yAxisIndex: 1,
@@ -124,6 +160,7 @@ function renderK(d) {
 
 async function load(code) {
   $('stState').textContent = '加载中…';
+  curEvents = [];                        // 切换股票先清旧标记(防错标)
   try {
     const d = await api('/admin/api/stock/kline?code=' + encodeURIComponent(code)
                         + '&adj=' + $('stAdj').value);
@@ -131,6 +168,14 @@ async function load(code) {
     $('stState').textContent = '● 就绪';
     loadPool();
     loadA2(d.code);                       // A2四模块并行
+    // A3: 事件先取(K线标记依赖), 再K线重绘 + 风险/解禁/事件表
+    try {
+      const ev = await api('/admin/api/stock/events?code=' + encodeURIComponent(d.code));
+      curEvents = ev.events || [];
+      $('evCount').textContent = curEvents.filter(e => e.risk !== 'low').length;
+      renderK(d);
+      loadA3(d.code);
+    } catch (e) { renderK(d); }
   } catch (e) { $('stState').textContent = '✗ ' + e.message; }
 }
 
@@ -238,6 +283,67 @@ function renderVal(d) {
        connectNulls: true, lineStyle: {width: 1.2, color: '#2f5cd6'},
        itemStyle: {color: '#2f5cd6'}}]
   }, true);
+}
+
+// ── A3: 风险横幅/解禁/事件表 ──
+const chF = echarts.init($('chartFloat'));
+window.addEventListener('resize', () => chF.resize());
+const RISK_COLOR = {high: '#d03b3b', mid: '#e67e22', low: '#898781'};
+const RISK_NAME = {high: '高', mid: '中', low: '低'};   // JS内联映射禁用Jinja双花括号写法
+
+function renderRisk(d) {
+  const el = $('riskBanner');
+  if (!d.items.length) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.innerHTML = '<b style="color:#d03b3b">⚠ 风险提示</b> '
+    + d.items.map(i => `<div style="margin-top:2px">· ${esc(i.text)}</div>`).join('');
+}
+
+function renderFloat(d) {
+  if (!d.n) { $('flState').textContent = '无解禁数据'; chF.clear(); return; }
+  const s = d.soon;
+  $('flState').textContent = s.n
+    ? `未来90天: ${s.n}批/共${s.total_yi}亿股, 最大占比${s.max_ratio}%${s.max_ratio >= 5 ? ' ⚠大额' : ''}`
+    : '未来90天无解禁';
+  chF.setOption({
+    animation: false, backgroundColor: 'transparent',
+    tooltip: {trigger: 'axis', formatter: ps => {
+      const x = d.data[ps[0].dataIndex];
+      return `<b>${x.date}</b><br/>${esc(x.holder)}<br/>解禁${x.share_yi}亿股 (${x.ratio}%)`
+        + (x.future ? ' · 计划' : ' · 已解禁') + (x.big ? ' <b style="color:#d03b3b">大额</b>' : '');
+    }},
+    grid: {left: 60, right: 20, top: 24, bottom: 40},
+    xAxis: {type: 'category', data: d.data.map(x => x.date.slice(2)), ...AX},
+    yAxis: {type: 'value', name: '亿股', ...AX},
+    dataZoom: [{type: 'inside'}],
+    series: [{type: 'bar', barMaxWidth: 16, data: d.data.map(x => ({
+      value: x.share_yi,
+      itemStyle: {color: x.big ? '#d03b3b' : (x.future ? '#eda100' : '#8ba0b6'),
+                  opacity: x.future ? 0.85 : 0.6}}))}]
+  }, true);
+}
+
+function renderEvents(d) {
+  if (!d.n) { $('evState').textContent = '无事件数据'; $('evTable').textContent = '--'; return; }
+  $('evState').textContent = `${d.n}条`;
+  const rows = d.events.slice().reverse();          // 最新在前
+  $('evTable').innerHTML = '<table class="table"><tr><th>日期</th><th>类型</th>'
+    + '<th style="text-align:left">事件</th><th>风险</th></tr>'
+    + rows.slice(0, 60).map(e => `<tr><td class="hint">${e.date}</td>
+        <td class="hint">${esc(e.type)}</td>
+        <td style="text-align:left" title="${esc(e.detail || '')}">${esc(e.title)}</td>
+        <td><b style="color:${RISK_COLOR[e.risk]}">${RISK_NAME[e.risk] || e.risk}</b></td></tr>`).join('')
+    + (rows.length > 60 ? `<tr><td colspan="4" class="hint">…共${rows.length}条(近60条)</td></tr>` : '')
+    + '</table>';
+}
+
+async function loadA3(code) {
+  const enc = encodeURIComponent(code);
+  for (const [mod, fn] of [["risk", renderRisk], ["float", renderFloat], ["events", renderEvents]]) {
+    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
+    catch (e) { $(mod === 'risk' ? 'riskBanner' : mod === 'float' ? 'flState' : 'evState')
+              .textContent = '✗ ' + e.message; }
+  }
 }
 
 async function loadA2(code) {
