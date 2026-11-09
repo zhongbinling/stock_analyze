@@ -74,6 +74,14 @@ def _conn(path=None):
       CREATE TABLE IF NOT EXISTS stock_pledge(           -- A3: 质押比例(状态类, 不入K线事件)
         ts_code TEXT, end_date TEXT, pledge_ratio REAL,
         PRIMARY KEY(ts_code, end_date));
+      CREATE TABLE IF NOT EXISTS stock_bs(               -- A4: 资产负债表关键列
+        ts_code TEXT, end_date TEXT, goodwill REAL,
+        total_assets REAL, total_liab REAL,
+        PRIMARY KEY(ts_code, end_date));
+      CREATE TABLE IF NOT EXISTS stock_ai(               -- A4: AI财报分析缓存(一股一行)
+        ts_code TEXT PRIMARY KEY, end_date TEXT, ann_date TEXT,
+        rule_grade TEXT, rule_score REAL, rules_json TEXT,
+        ai_json TEXT, model TEXT, analyzed_at TEXT);
     """)
     con.commit()
     return con
@@ -707,6 +715,29 @@ def refresh_events(code: str, path=None) -> int:
     con.commit()
     con.close()
     return len(ev)
+
+
+def refresh_bs(code: str, path=None) -> int:
+    """A4: 资产负债表关键列(商誉/总资产/总负债 — 净资产自算)"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("balancesheet", "ts_code,end_date,goodwill,total_assets,total_liab",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 资产负债表失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["end_date"]), _f(r.get("goodwill")),
+             _f(r.get("total_assets")), _f(r.get("total_liab")))
+            for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany("INSERT INTO stock_bs VALUES(?,?,?,?,?) "
+                    "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
+                    "goodwill=excluded.goodwill,total_assets=excluded.total_assets,"
+                    "total_liab=excluded.total_liab", rows)
+    con.commit()
+    con.close()
+    return len(rows)
 
 
 def float_payload(code: str, path=None) -> dict:

@@ -255,6 +255,35 @@ def api_stock_module(mod):
     return jsonify(_stock_module(request.args.get("code", ""), mod))
 
 
+@bp_admin.get("/api/stock/finance_ai")
+@require_level(7)
+def api_stock_finance_ai():
+    """A4: AI财报风险评级(读缓存, 无缓存返回提示)"""
+    import stock_risk as SR
+    import fetch_stock as FS
+    r = SR.analyze_stock_finance(request.args.get("code", ""))
+    if not r.get("ok"):
+        return jsonify(r), 404
+    return jsonify(r)
+
+
+@bp_admin.post("/api/stock/finance_ai")
+@require_level(7)
+def api_stock_finance_ai_run():
+    """A4: 手动触发分析(规则+AI, 串行同步27B约1-3分钟) — 先确保bs数据"""
+    import fetch_stock as FS
+    import stock_risk as SR
+    from server import jobs as J
+    if J.get_setting("ai_local_enabled", "0") != "1":
+        return jsonify({"msg": "本地AI未启用, 请先在宏观页配置"}), 400
+    code = (request.get_json(force=True, silent=True) or {}).get("code", "")
+    FS.refresh_bs(code)                              # 商誉/净资产数据保障
+    r = SR.analyze_stock_finance(code)
+    if not r.get("ok"):
+        return jsonify(r), 404
+    return jsonify(r)
+
+
 @bp_admin.get("/api/rt/latest")
 @require_level(7)
 def api_rt_latest():

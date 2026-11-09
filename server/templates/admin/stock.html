@@ -66,8 +66,15 @@
   <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
 </section>
 <section class="card">
+  <h2>AI财报风险评级
+    <button class="btn primary" id="btnAiFin" style="float:right">分析/重新分析</button>
+    <span class="hint" id="aiFinState" style="float:right;margin-right:10px">选择股票后展示</span></h2>
+  <div id="aiFinBody">--</div>
+  <p class="hint">混合评级: 规则引擎硬规则扣分(A/B/C/D锚定) + 本地AI定性风险点(依据直引指标表, 存疑标记) · 更正版财报自动失效重析 · <b>AI分析为参考信号, 非投资建议</b></p>
+</section>
+<section class="card">
   <h2>后续模块</h2>
-  <p class="hint">A4 AI财报风险评级 · A5 数据管理整合 — 按批次推进</p>
+  <p class="hint">A5 数据管理整合 — 按批次推进</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -168,6 +175,7 @@ async function load(code) {
     $('stState').textContent = '● 就绪';
     loadPool();
     loadA2(d.code);                       // A2四模块并行
+    loadAiFin(d.code);                    // A4: 读缓存(无缓存提示手动分析)
     // A3: 事件先取(K线标记依赖), 再K线重绘 + 风险/解禁/事件表
     try {
       const ev = await api('/admin/api/stock/events?code=' + encodeURIComponent(d.code));
@@ -345,6 +353,51 @@ async function loadA3(code) {
               .textContent = '✗ ' + e.message; }
   }
 }
+
+// ── A4: AI财报风险评级 ──
+const GRADE_COLOR = {A: '#1baf7a', B: '#eda100', C: '#e67e22', D: '#d03b3b'};
+
+function renderAiFin(d) {
+  const g = d.grade || '-';
+  const rules = (d.rules || []).map(h =>
+    `<li>[${h.level}] ${esc(h.rule)} (${h.score}分)</li>`).join('');
+  const ai = d.ai || {};
+  const pts = (ai.points || []).map(p => `<li style="margin-top:4px">
+      <b style="color:${p.severity === '高' ? '#d03b3b' : p.severity === '中' ? '#e67e22' : '#898781'}">${esc(p.title)}</b>
+      <span class="hint">— ${esc(p.evidence || '')}</span>
+      ${p.suspect ? '<b style="color:#d03b3b">⚠依据存疑</b>' : ''}</li>`).join('');
+  $('aiFinBody').innerHTML = `
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div style="text-align:center;min-width:90px">
+        <div style="font-size:44px;font-weight:bold;color:${GRADE_COLOR[g] || '#898781'}">${g}</div>
+        <div class="hint">规则分 ${d.score ?? '--'} · ${esc(d.end_date || '')}${d.cached ? ' · 缓存' : ''}</div>
+      </div>
+      <div style="flex:1;min-width:300px">
+        ${ai.summary ? `<p><b>AI总评:</b> ${esc(ai.summary)}</p>` : ''}
+        ${rules ? `<p><b>命中硬规则:</b></p><ul style="margin:4px 0 8px 18px">${rules}</ul>` : '<p class="hint">未命中硬规则</p>'}
+        ${pts ? `<p><b>AI风险点:</b></p><ul style="margin:4px 0 8px 18px">${pts}</ul>` : ''}
+        ${ai.advice ? `<p class="hint"><b>建议:</b> ${esc(ai.advice)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function loadAiFin(code, force = false) {
+  $('aiFinState').textContent = '加载中…';
+  try {
+    const r = force
+      ? await api('/admin/api/stock/finance_ai', {method: 'POST',
+          body: JSON.stringify({code})})
+      : await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
+    renderAiFin(r);
+    $('aiFinState').textContent = '● 就绪';
+  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+}
+$('btnAiFin').onclick = () => {
+  if (!curCode) { alert('请先选择股票'); return; }
+  $('aiFinState').textContent = '⏳ 分析中(本地27B约1-3分钟)…';
+  $('btnAiFin').disabled = true;
+  loadAiFin(curCode, true).finally(() => { $('btnAiFin').disabled = false; });
+};
 
 async function loadA2(code) {
   const enc = encodeURIComponent(code);
