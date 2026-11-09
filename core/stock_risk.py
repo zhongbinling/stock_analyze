@@ -253,18 +253,19 @@ def _scan_ai(ts_code, m, inp, rules, cfg) -> dict:
     events_txt = "\n".join(f"  - [{e['risk']}]{e['date']} {e['title']}" for e in inp["events"]) \
         or "  (近一年无高风险事件)"
     hn = inst["holder_num"][0] if inst["holder_num"] else None
+    _dash = lambda v: "--" if v is None else str(v)   # None→'--'防"股价None%"入prompt
     resp = ai_client.chat(
         cfg["base_url"], cfg["model"],
         [{"role": "user", "content": SCAN_PROMPT.format(
             name=m["name"], code=ts_code,
             last_period=full["dates"][-1] if full["dates"] else "-",
             fin_table="\n".join(lines),
-            inst_ratio=inst["ratio"][0] if inst["ratio"] else None,
-            pledge=full.get("pledge_ratio"),
-            holder_num=round(hn / 1e4, 1) if hn else None,
-            pe=val["pe"][li] if li >= 0 and val["pe"][li] else None,
-            pb=val["pb"][li] if li >= 0 and val["pb"][li] else None,
-            dv=P.get("dv_ttm"), chg_1y=inp["chg_1y"],
+            inst_ratio=_dash(inst["ratio"][0] if inst["ratio"] else None),
+            pledge=_dash(full.get("pledge_ratio")),
+            holder_num=_dash(round(hn / 1e4, 1) if hn else None),
+            pe=_dash(val["pe"][li] if li >= 0 and val["pe"][li] else None),
+            pb=_dash(val["pb"][li] if li >= 0 and val["pb"][li] else None),
+            dv=_dash(P.get("dv_ttm")), chg_1y=_dash(inp["chg_1y"]),
             events=events_txt, rules=rules_txt)}],
         # qwen3 thinking模式: reasoning先耗max_tokens(实测扫雷prompt下
         # reasoning 2658字耗尽2000 → content空) → 6000留足content额度
