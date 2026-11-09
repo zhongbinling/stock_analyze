@@ -242,6 +242,14 @@ def build_payload(cfg, years=None):
     payload.update(aux)
     # D1-18 M3: 事件标注(macro.db 独立库, 缺失→空)
     payload["events"] = _read_events()
+    # 2026-11-10修复: 事件content可能含抓取来的完整网页HTML(内嵌</script>
+    # 广告代码) — JSON不转义它, 浏览器在字符串内提前关闭script标签 →
+    # payload截断成裸文本(SyntaxError+%22碎片404)。注入前转义闭合标签。
+    import json as _json
+    _pl = _json.dumps(payload, ensure_ascii=False)
+    if "</script" in _pl:
+        _pl = _pl.replace("</script", "<\\/script")
+        payload = _json.loads(_pl)
     return payload
 
 

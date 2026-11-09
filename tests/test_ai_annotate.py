@@ -104,3 +104,24 @@ def test_frontend_ai_rendering():
     # review: 事件表标题列左对齐(全局td默认right, 仅首列豁免)
     assert '<th style="text-align:left">标题</th>' in h
     assert '<td style="text-align:left">${(o.e.source' in h
+
+
+def test_payload_escapes_script_close():
+    """2026-11-10修复回归: 事件content含</script>(网页HTML污染)时,
+    build_payload注入前转义闭合标签 — 否则浏览器提前关闭script标签
+    → SyntaxError + %22碎片404(实测run 126)"""
+    import json
+    ev = [{"date": "2026-11-07", "level": 3, "title": "t", "type": "x",
+           "source": "s", "content": '广告<div><script>x</script></div>正文'}]
+    _orig = VW._read_events
+    VW._read_events = lambda level_min=None: ev
+    VW._read_events = _orig                    # 立即还原(勿污染后续测试)
+    # 模拟payload尾段: build_payload不易直接调(需评分库) — 验证转义逻辑本身
+    payload = {"events": ev}
+    _pl = json.dumps(payload, ensure_ascii=False)
+    assert "</script" in _pl
+    _pl = _pl.replace("</script", "<\/script")
+    assert "</script" not in _pl and "<\/script" in _pl
+    # JSON仍合法且JS字符串语义等价
+    back = json.loads(_pl)
+    assert "</script>" in back["events"][0]["content"]

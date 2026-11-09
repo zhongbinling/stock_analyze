@@ -134,3 +134,15 @@ def test_auto_analyze_wires_sync(monkeypatch):
     monkeypatch.setattr(AN, "analyze_cloud_batch", lambda *a, **kw: {})
     AN.auto_analyze()
     assert called == [1]
+
+
+def test_dedup_insert_strips_html(env):
+    """2026-11-10修复回归: content为完整网页HTML(含script广告)时剥离标签入库"""
+    import sqlite3
+    FN.ensure_db(env)
+    con = sqlite3.connect(str(env))
+    html = '<div class="ad"><script>(sinaads=[]).push({})</script></div>太阳能装机首超煤电。'
+    FN._dedup_insert(con, "em_flash", "2026-11-07 09:00:00", "稀土出口收紧", None, html, "t")
+    ct = con.execute("SELECT content FROM news_raw").fetchone()[0]
+    con.commit(); con.close()
+    assert "<" not in ct and "script" not in ct and "太阳能装机首超煤电" in ct

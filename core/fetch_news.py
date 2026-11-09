@@ -149,6 +149,10 @@ def _dedup_insert(con, src, pub, title, url, content, now):
     内容升级: 已有行content为空(major_news轻量层/短快讯)且新源带富文本
     (em摘要) → 回填 — 实测major_news接口无content值, 富化靠跨源回流。"""
     title = _clean_title(title)[:500]      # 与INSERT截断一致(原文>500时查询会漏)
+    import re as _re
+    if content and "<" in content:          # 剥离网页HTML(广告/正文标记 — 全文
+        content = _re.sub(r"<[^>]+>", "", content)  # HTML入库会污染下游HTML生成)
+        content = _re.sub(r"\s+", " ", content).strip()[:2000] or None
     existing = con.execute(
         "SELECT id FROM news_raw WHERE title=? AND substr(pub_time,1,10)=substr(?,1,10)",
         (title, pub)).fetchone()
