@@ -297,27 +297,42 @@ def api_stock_module(mod):
 @bp_admin.get("/api/stock/finance_ai")
 @require_level(7)
 def api_stock_finance_ai():
-    """A4: AI财报风险评级(读缓存, 无缓存返回提示)"""
+    """A4/B2: 读扫雷结果缓存(无缓存返回incomplete提示)"""
     import stock_risk as SR
-    import fetch_stock as FS
-    r = SR.analyze_stock_finance(request.args.get("code", ""))
-    if not r.get("ok"):
+    r = SR.scan_stock(request.args.get("code", ""))
+    if not r.get("ok") and not r.get("cached"):
         return jsonify(r), 404
     return jsonify(r)
 
 
-@bp_admin.post("/api/stock/finance_ai")
+@bp_admin.get("/api/stock/freshness")
 @require_level(7)
-def api_stock_finance_ai_run():
-    """A4: 手动触发分析(规则+AI, 串行同步27B约1-3分钟) — 纯规则分析不依赖AI开关,
-    AI未启用/失败自动降级(见stock_risk)"""
-    import fetch_stock as FS
+def api_stock_freshness():
+    """B2: 各数据集更新状态(供数据更新按钮边上的状态显示)"""
+    import stock_risk as SR
+    return jsonify({"ok": True, "datasets": SR.data_freshness(request.args.get("code", ""))})
+
+
+@bp_admin.post("/api/stock/update_all")
+@require_level(7)
+def api_stock_update_all():
+    """B2: 更新全部数据集(扫雷第一步, 同步~10-20秒/股)"""
     import stock_risk as SR
     code = (request.get_json(force=True, silent=True) or {}).get("code", "")
-    FS.refresh_finance(code)                         # 财务数据保障
-    FS.refresh_bs(code)                              # 商誉/净资产数据保障
-    r = SR.analyze_stock_finance(code)
-    if not r.get("ok"):
+    res = SR.update_all(code)
+    return jsonify({"ok": True, "results": res,
+                    "datasets": SR.data_freshness(code)})
+
+
+@bp_admin.post("/api/stock/scan")
+@require_level(7)
+def api_stock_scan():
+    """B2一键扫雷: 全维度AI体检, 报告入库(下次打开可回看)。
+    force跳过缓存; 数据不完整仍可继续(仅规则降级)。"""
+    import stock_risk as SR
+    d = request.get_json(force=True, silent=True) or {}
+    r = SR.scan_stock(d.get("code", ""), force=bool(d.get("force")))
+    if not r.get("ok") and not r.get("cached"):
         return jsonify(r), 404
     return jsonify(r)
 

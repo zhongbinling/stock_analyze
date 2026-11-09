@@ -145,18 +145,15 @@ def test_ai_failure_degrades_to_rules(env, monkeypatch):
 # ── API + UI ──
 
 def test_finance_ai_api(server_app, monkeypatch):
+    """B2后: GET读scan缓存(404含incomplete); 扫雷走POST /scan"""
     c = server_app["client"]
     import stock_risk
-    monkeypatch.setattr(stock_risk, "analyze_stock_finance",
-                        lambda code: {"ok": False, "msg": "数据不足"})
+    monkeypatch.setattr(stock_risk, "scan_stock",
+                        lambda code, force=False: {"ok": False, "incomplete": True,
+                                                   "msg": "数据不足"})
     assert c.get("/admin/api/stock/finance_ai?code=x").status_code == 404
-    # POST: 不再要求AI开关(纯规则分析合法), 先保障finance/bs数据
-    import fetch_stock as FS
-    refs = []
-    monkeypatch.setattr(FS, "refresh_finance", lambda c2, path=None: refs.append("fin"))
-    monkeypatch.setattr(FS, "refresh_bs", lambda c2, path=None: refs.append("bs"))
-    assert c.post("/admin/api/stock/finance_ai", json={"code": "x"}).status_code == 404
-    assert refs == ["fin", "bs"]
+    r = c.post("/admin/api/stock/scan", json={"code": "x"})
+    assert r.status_code == 404 and r.get_json().get("incomplete") is True
 
 
 def test_validate_chinese_evidence_not_suspect():

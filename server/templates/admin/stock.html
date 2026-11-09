@@ -66,11 +66,16 @@
   <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
 </section>
 <section class="card">
-  <h2>AI财报风险评级
-    <button class="btn primary" id="btnAiFin" style="float:right">分析/重新分析</button>
-    <span class="hint" id="aiFinState" style="float:right;margin-right:10px">选择股票后展示</span></h2>
+  <h2>一键扫雷 · AI全维度体检
+    <span style="float:right;display:flex;gap:8px;align-items:center">
+      <span class="hint" id="aiFinState">选择股票后展示</span>
+      <button class="btn" id="btnSkUpd" title="更新全部数据集后刷新状态">数据更新</button>
+      <button class="btn primary" id="btnAiFin">一键扫雷</button>
+    </span></h2>
+  <div id="freshRow" class="row-flex" style="gap:6px;flex-wrap:wrap;margin-bottom:6px"></div>
   <div id="aiFinBody">--</div>
-  <p class="hint">混合评级: 规则引擎硬规则扣分(A/B/C/D锚定) + 本地AI定性风险点(依据直引指标表, 存疑标记) · 更正版财报自动失效重析 · <b>AI分析为参考信号, 非投资建议</b></p>
+  <p class="hint">扫雷=数据→规则引擎(A/B/C/D锚定)→全维度AI(财务/筹码/估值/事件, 依据直引数据存疑标记)→报告入库(下次打开可回看) ·
+    数据不新鲜时提示是否继续 · <b>AI分析为参考信号, 非投资建议</b></p>
 </section>
 <section class="card">
   <h2>盈利能力 <span class="hint" id="g1State">选择股票后展示</span></h2>
@@ -192,6 +197,7 @@ async function load(code) {
     loadPool();
     loadA2(d.code);                       // A2四模块并行
     loadB1(d.code);                       // B1财务全景四组图
+    loadFresh(d.code);                    // B2数据集状态徽标
     loadAiFin(d.code);                    // A4: 读缓存(无缓存提示手动分析)
     // A3: 事件先取(K线标记依赖), 再K线重绘 + 风险/解禁/事件表
     try {
@@ -450,6 +456,7 @@ function renderAiFin(d) {
     `<li>[${h.level}] ${esc(h.rule)} (${h.score}分)</li>`).join('');
   const ai = d.ai || {};
   const pts = (ai.points || []).map(p => `<li style="margin-top:4px">
+      ${p.dimension ? `<b style="color:${DIM_COLOR[p.dimension] || '#898781'}">[${p.dimension}]</b> ` : ''}
       <b style="color:${p.severity === '高' ? '#d03b3b' : p.severity === '中' ? '#e67e22' : '#898781'}">${esc(p.title)}</b>
       <span class="hint">— ${esc(p.evidence || '')}</span>
       ${p.suspect ? '<b style="color:#d03b3b">⚠依据存疑</b>' : ''}</li>`).join('');
@@ -468,34 +475,62 @@ function renderAiFin(d) {
     </div>`;
 }
 
-async function loadAiFin(code, force = false) {
+const DIM_COLOR = {财务: '#e34448', 筹码: '#6250d6', 估值: '#2f5cd6', 事件: '#e67e22'};
+
+function renderFresh(ds) {                     // 数据集状态徽标行
+  $('freshRow').innerHTML = Object.entries(ds || {}).map(([k, v]) =>
+    `<span class="hint" style="padding:1px 7px;border:1px solid var(--line,#ddd);border-radius:6px;
+      ${v.fresh ? '' : 'border-color:#e67e22;color:#e67e22'}"
+      title="${k}最新: ${v.last || '无'}">${k}${v.fresh ? '✓' : '!'}</span>`).join('');
+}
+
+async function loadFresh(code) {
+  try {
+    const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(code));
+    renderFresh(d.datasets);
+  } catch (e) {}
+}
+
+async function loadAiFin(code) {              // 读扫雷结果(缓存回看)
   $('aiFinState').textContent = '加载中…';
   try {
-    const r = force
-      ? await api('/admin/api/stock/finance_ai', {method: 'POST',
-          body: JSON.stringify({code})})
-      : await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
+    const r = await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
     renderAiFin(r);
-    $('aiFinState').textContent = '● 就绪';
-  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+    $('aiFinState').textContent = r.cached ? '● 上次扫雷结果' : '● 就绪';
+  } catch (e) { $('aiFinState').textContent = '--(未扫雷)'; $('freshRow').textContent = ''; }
 }
-$('btnAiFin').onclick = () => {
+$('btnSkUpd').onclick = async () => {          // 数据更新
   if (!curCode) { alert('请先选择股票'); return; }
-  $('aiFinState').textContent = '⏳ 分析中(本地27B约1-3分钟)…';
+  $('aiFinState').textContent = '⏳ 数据更新中(~20秒)…';
+  $('btnSkUpd').disabled = true;
+  try {
+    const r = await api('/admin/api/stock/update_all', {method: 'POST',
+      body: JSON.stringify({code: curCode})});
+    renderFresh(r.datasets);
+    $('aiFinState').textContent = '● 数据已更新';
+    load(curCode);                             // 各图表随之刷新
+  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+  finally { $('btnSkUpd').disabled = false; }
+};
+$('btnAiFin').onclick = async () => {          // 一键扫雷
+  if (!curCode) { alert('请先选择股票'); return; }
+  let stale = false;
+  try {
+    const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(curCode));
+    stale = Object.values(d.datasets || {}).some(x => !x.fresh);
+  } catch (e) {}
+  if (stale && !confirm('部分数据不新鲜(橙色标记)。\n建议先[数据更新]。\n是否直接继续扫雷?')) return;
+  $('aiFinState').textContent = '⏳ 扫雷中(本地27B约1-3分钟)…';
   $('btnAiFin').disabled = true;
-  loadAiFin(curCode, true).finally(() => { $('btnAiFin').disabled = false; });
+  try {
+    const r = await api('/admin/api/stock/scan', {method: 'POST',
+      body: JSON.stringify({code: curCode, force: true})});
+    renderAiFin(r);
+    $('aiFinState').textContent = '● 扫雷完成(已入库)';
+  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+  finally { $('btnAiFin').disabled = false; }
 };
 
-async function loadA2(code) {
-  const enc = encodeURIComponent(code);
-  for (const [mod, fn] of [["holders", renderHolders], ["margin", renderMargin],
-                           ["profit", d => renderProfit(d, document.querySelector('input[name=pfMode]:checked').value)],
-                           ["val", renderVal]]) {
-    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
-    catch (e) { $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
-              : mod === 'profit' ? 'pfMsg' : 'valState').textContent = '✗ ' + e.message; }
-  }
-}
 document.querySelectorAll('input[name=pfMode]').forEach(r =>
   r.onchange = async () => {
     if (!curCode) return;
