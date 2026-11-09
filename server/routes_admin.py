@@ -208,6 +208,38 @@ def api_stock_pool():
     return jsonify({"pool": FS.pool_list()})
 
 
+@bp_admin.get("/api/stock/stats_pool")
+@require_level(7)
+def api_stock_stats_pool():
+    """A5数据管理卡: 池内每股各数据集健康度"""
+    import fetch_stock as FS
+    return jsonify(FS.stats_pool())
+
+
+@bp_admin.post("/api/stock/full_refresh")
+@require_level(7)
+def api_stock_full_refresh():
+    """A5: 单只全量重拉(异步入队, 全史所有数据集)"""
+    from server import jobs as J
+    import fetch_stock as FS
+    code = (request.get_json(force=True, silent=True) or {}).get("code", "")
+    if not FS._norm_code(code):
+        return jsonify({"msg": "缺少 code"}), 400
+    ok, msg = J.enqueue("stock_full", J.task_stock_full(FS._norm_code(code)),
+                        target=f"个股全量重拉({FS._norm_code(code)})", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})
+
+
+@bp_admin.post("/api/stock/nightly")
+@require_level(7)
+def api_stock_nightly():
+    """A5: 手动触发夜间链(日频增量, 异步入队)"""
+    from server import jobs as J
+    ok, msg = J.enqueue("stock_daily", J.task_stock_daily(False),
+                        target="个股数据·日频", trigger="manual")
+    return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})
+
+
 @bp_admin.post("/api/stock/daily")
 @require_level(7)
 def api_stock_daily_refresh():

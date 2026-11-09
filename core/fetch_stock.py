@@ -319,14 +319,22 @@ def _f(v):
         return None
 
 
-def refresh_finance(code: str, path=None) -> int:
+def _start(lookback: int = None) -> str:
+    """全史或近N自然日起始(A5: 夜间增量用lookback, 手动全量None)"""
+    if not lookback:
+        return "19900000"
+    import datetime as _dt
+    return (_dt.date.today() - _dt.timedelta(days=lookback)).strftime("%Y%m%d")
+
+
+def refresh_finance(code: str, path=None, lookback: int = None) -> int:
     """季度财务(fina_indicator全史单call): 扣非/增速/毛利率/ROE/负债率"""
     ts_code = _norm_code(code)
     try:
         df = T.call("fina_indicator",
                     "ts_code,end_date,ann_date,profit_dedt,netprofit_yoy,or_yoy,"
                     "grossprofit_margin,roe,debt_to_assets",
-                    ts_code=ts_code, start_date="19900000",
+                    ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 财务失败 {ts_code}: {str(e)[:60]}")
@@ -383,14 +391,14 @@ def refresh_holders(code: str, path=None) -> int:
     return len(rows) + len(hnums)
 
 
-def refresh_margin(code: str, path=None) -> int:
-    """两融明细(margin_detail全史, 分页防行数上限)"""
+def refresh_margin(code: str, path=None, lookback: int = None) -> int:
+    """两融明细(margin_detail, 分页防行数上限; 夜间增量lookback)"""
     ts_code = _norm_code(code)
     frames, offset = [], 0
     try:
         while True:
             df = T.call("margin_detail", "ts_code,trade_date,rzye,rqye,rzmre,rqyl",
-                        ts_code=ts_code, start_date="19900000",
+                        ts_code=ts_code, start_date=_start(lookback),
                         end_date=time.strftime("%Y%m%d"),
                         limit=4000, offset=offset)
             frames.append(df)
@@ -415,12 +423,12 @@ def refresh_margin(code: str, path=None) -> int:
     return len(rows)
 
 
-def refresh_val(code: str, path=None) -> int:
-    """每日估值(daily_basic全史单call): PE_TTM/PB/总市值/流通市值"""
+def refresh_val(code: str, path=None, lookback: int = None) -> int:
+    """每日估值(daily_basic): PE_TTM/PB/总市值/流通市值"""
     ts_code = _norm_code(code)
     try:
         df = T.call("daily_basic", "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv",
-                    ts_code=ts_code, start_date="19900000",
+                    ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 估值失败 {ts_code}: {str(e)[:60]}")
@@ -613,8 +621,9 @@ def _float_risk(ratio) -> str:
     return "high" if ratio >= 5 else ("mid" if ratio >= 1 else "low")
 
 
-def refresh_float(code: str, path=None) -> int:
-    """个股解禁全史(share_float) + 同步生成解禁事件(未来>5%为大额高风险)"""
+def refresh_float(code: str, path=None, lookback: int = None) -> int:
+    """个股解禁(share_float) + 同步生成解禁事件(未来>5%为大额高风险)
+    注: 接口不支持ann_date过滤, lookback仅为签名统一(全量拉, 单股行数少)"""
     ts_code = _norm_code(code)
     try:
         df = T.call("share_float",
@@ -646,14 +655,14 @@ def refresh_float(code: str, path=None) -> int:
     return len(fr)
 
 
-def refresh_events(code: str, path=None) -> int:
+def refresh_events(code: str, path=None, lookback: int = None) -> int:
     """结构化大事件: 预告/分红/增减持/停牌 → 统一stock_events(风险分级)"""
     ts_code = _norm_code(code)
     con = _conn(path)
     ev = []
     try:                                                     # 业绩预告
         df = T.call("forecast", "ts_code,ann_date,end_date,type,p_change_min,p_change_max",
-                    ts_code=ts_code, start_date="19900000",
+                    ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
         for _, r in df.iterrows():
             t = str(r.get("type") or "预告").strip()
@@ -678,7 +687,7 @@ def refresh_events(code: str, path=None) -> int:
     try:                                                     # 股东增减持
         df = T.call("stk_holdertrade",
                     "ts_code,ann_date,holder_name,holder_type,change_vol,change_ratio",
-                    ts_code=ts_code, start_date="20180101",
+                    ts_code=ts_code, start_date=_start(lookback) if lookback else "20180101",
                     end_date=time.strftime("%Y%m%d"))
         for _, r in df.iterrows():
             vol = _f(r.get("change_vol"))                   # 单位=股(实测:
@@ -801,14 +810,93 @@ def risk_payload(code: str, path=None) -> dict:
     return {"ok": True, "code": ts_code, "items": items, "checked": True}
 
 
+def run_nightly(weekly: bool = False, path=None) -> dict:
+    """A5夜间链: 日频(daily回看7+margin/val 45日+events 30日) ;
+    weekly=True加季频全史(finance/bs/holders/float)。
+    调度: 19:30每晚 + 周五19:35季频(jobs挂载)。"""
+    import datetime as dt
+    r = {"daily": refresh_daily(path=path), "stocks": 0, "weekly": weekly}
+    con = _conn(path)
+    pool = [r2[0] for r2 in con.execute("SELECT ts_code FROM stock_pool")]
+    con.close()
+    for ts_code in pool:
+        n = 0
+        n += max(0, refresh_margin(ts_code, path, lookback=45))
+        n += max(0, refresh_val(ts_code, path, lookback=45))
+        n += max(0, refresh_events(ts_code, path, lookback=30))
+        if weekly:
+            n += max(0, refresh_finance(ts_code, path))
+            n += max(0, refresh_bs(ts_code, path))
+            n += max(0, refresh_holders(ts_code, path))
+            n += max(0, refresh_float(ts_code, path))
+        r["stocks"] += 1
+        print(f"  {ts_code}: +{n}行")
+    print(f"[stock] 夜间链{'(含季频)' if weekly else ''}: {r['stocks']}只 +{r['daily']}日频行")
+    return r
+
+
+def full_refresh(code: str, path=None) -> dict:
+    """A5手动单只全量重拉(全史所有数据集)"""
+    ts_code = _norm_code(code)
+    r = add_stock(ts_code, path)
+    if not r.get("ok"):
+        return r
+    n = {"margin": refresh_margin(ts_code, path),
+         "val": refresh_val(ts_code, path),
+         "finance": refresh_finance(ts_code, path),
+         "bs": refresh_bs(ts_code, path),
+         "holders": refresh_holders(ts_code, path),
+         "events": refresh_events(ts_code, path),
+         "float": refresh_float(ts_code, path)}
+    r["detail"] = n
+    return r
+
+
+def stats_pool(path=None) -> dict:
+    """A5数据管理卡: 池内每股各数据集健康度(last日期/行数/AI评级)"""
+    con = _conn(path)
+    pool = con.execute("SELECT ts_code, name, last_daily FROM stock_pool "
+                       "ORDER BY added_at DESC").fetchall()
+    out = []
+    for ts_code, name, last_daily in pool:
+        one = con.execute(
+            "SELECT (SELECT MAX(trade_date) FROM stock_daily WHERE ts_code=:c),"
+            " (SELECT COUNT(*) FROM stock_daily WHERE ts_code=:c),"
+            " (SELECT MAX(trade_date) FROM stock_margin WHERE ts_code=:c),"
+            " (SELECT MAX(trade_date) FROM stock_val WHERE ts_code=:c),"
+            " (SELECT MAX(end_date) FROM stock_finance WHERE ts_code=:c),"
+            " (SELECT COUNT(*) FROM stock_events WHERE ts_code=:c),"
+            " (SELECT rule_grade FROM stock_ai WHERE ts_code=:c)",
+            {"c": ts_code}).fetchone()
+        out.append({"code": ts_code, "name": name, "last_daily": one[0],
+                    "rows_daily": one[1], "last_margin": one[2],
+                    "last_val": one[3], "last_finance": one[4],
+                    "events_n": one[5], "ai_grade": one[6]})
+    con.close()
+    return {"pool": out, "n": len(out)}
+
+
 def main():
     ap = argparse.ArgumentParser(description="避雷针个股数据(A1)")
     ap.add_argument("--add", default=None, help="入池股票代码")
     ap.add_argument("--daily", action="store_true", help="池内日增")
     ap.add_argument("--basic", action="store_true", help="全市场基础信息缓存")
+    ap.add_argument("--nightly", action="store_true", help="夜间链(日频增量)")
+    ap.add_argument("--weekly", action="store_true", help="夜间链+季频全史")
+    ap.add_argument("--stats", action="store_true", help="池健康度")
+    ap.add_argument("--full", default=None, help="单只全量重拉")
     a = ap.parse_args()
     if a.add:
         print(add_stock(a.add))
+    elif a.full:
+        print(full_refresh(a.full))
+    elif a.nightly:
+        run_nightly()
+    elif a.weekly:
+        run_nightly(weekly=True)
+    elif a.stats:
+        import json as _j
+        print(_j.dumps(stats_pool(), ensure_ascii=False))
     elif a.daily:
         refresh_daily()
     elif a.basic:

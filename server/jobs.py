@@ -386,6 +386,32 @@ def task_analyze_cloud(batch_size: int = 5):
     return fn
 
 
+def task_stock_daily(weekly: bool = False, trigger: str = "schedule"):
+    """A5: 避雷针自选池夜间链 — 日频(日线/两融/估值/事件增量) + 周五季频全史"""
+    def fn(append):
+        if str(CORE) not in sys.path:
+            sys.path.insert(0, str(CORE))
+        import fetch_stock as FS
+        append(f"[{utcnow_str()}] 个股数据{'(含季频)' if weekly else ''}开始")
+        r = FS.run_nightly(weekly=weekly)
+        append(f"个股数据结束: {r['stocks']}只 +{r['daily']}日频行")
+        return 0
+    return fn
+
+
+def task_stock_full(code: str, trigger: str = "manual"):
+    """A5: 单只全量重拉(异步入队)"""
+    def fn(append):
+        if str(CORE) not in sys.path:
+            sys.path.insert(0, str(CORE))
+        import fetch_stock as FS
+        append(f"[{utcnow_str()}] {code} 全量重拉开始")
+        r = FS.full_refresh(code)
+        append(f"{code} 全量重拉: {r.get('msg', '')} {r.get('detail', '')}")
+        return 0 if r.get("ok") else 1
+    return fn
+
+
 def task_briefing(trigger: str = "manual"):
     """D1-29: 数据简报生成 → ViewRun(复用视图管理)"""
     def fn(append):
@@ -688,7 +714,8 @@ def _sync_cron_jobs(app):
     gh, gm = _parse_hhmm(get_setting("generate_cron"), 18, 0)
 
     for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup",
-                "briefing_evening", "briefing_morning"):
+                "briefing_evening", "briefing_morning",
+                "stock_daily", "stock_weekly"):
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
     if au:
@@ -713,6 +740,16 @@ def _sync_cron_jobs(app):
                                            target="数据简报", trigger="schedule"),
                            CronTrigger(hour=7, minute=0),
                            id="briefing_morning")
+
+    # 避雷针A5: 自选池夜间链(独立调度, 不挂repair长链 — 失败不拖累主链)
+    _scheduler.add_job(lambda: enqueue("stock_daily", task_stock_daily(False),
+                                       target="个股数据·日频", trigger="schedule"),
+                       CronTrigger(hour=19, minute=30),
+                       id="stock_daily")
+    _scheduler.add_job(lambda: enqueue("stock_daily", task_stock_daily(True),
+                                       target="个股数据·日频+季频", trigger="schedule"),
+                       CronTrigger(hour=19, minute=35, day_of_week="fri"),
+                       id="stock_weekly")
 
     # B1: 日备/周备(策略热更新同机制)
     if get_setting("backup_enabled") == "1":

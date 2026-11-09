@@ -98,6 +98,18 @@
 </section>
 
 <section class="card">
+  <h2>个股数据 · 避雷针自选池 <span class="hint" id="skStat">加载中…</span>
+    <a class="btn small" style="float:right" href="/admin/stock">避雷针页 →</a></h2>
+  <p class="hint">独立库 stock.db; 夜间链 19:30日频(日线/两融/估值/事件增量) + 周五19:35季频(财务/股东/解禁全史);
+    池内为查询过的股票; 已纳入备份基础块</p>
+  <div id="skPoolTable">--</div>
+  <div class="row-flex" style="margin-top:6px;gap:8px;align-items:center">
+    <button class="btn" id="btnSkNightly">立即跑夜间链(日频)</button>
+    <span class="hint" id="skMsg"></span>
+  </div>
+</section>
+
+<section class="card">
   <h2>数据备份 <a class="btn small" href="{{ url_for('admin.backups_page') }}">备份中心 →</a></h2>
   <div class="row-flex" style="margin-bottom:6px">
     <span class="hint" id="bkState">加载中…</span>
@@ -708,6 +720,46 @@ loadNewsStat();
   } catch (e) { $('rtBfMsg').textContent = e.message; }
 };
 loadRtStat();
+
+// ── 避雷针A5: 个股数据管理卡 ──
+async function loadSkPool() {
+  try {
+    const d = await (await fetch('/admin/api/stock/stats_pool')).json();
+    $('skStat').textContent = d.n ? `${d.n}只` : '空(避雷针页查询过即入池)';
+    if (!d.n) { $('skPoolTable').textContent = '--'; return; }
+    $('skPoolTable').innerHTML = '<table class="table"><tr><th>代码</th><th>名称</th>'
+      + '<th>日线到</th><th>行数</th><th>两融到</th><th>估值到</th><th>财报期</th>'
+      + '<th>事件</th><th>AI评级</th><th></th></tr>'
+      + d.pool.map(x => `<tr><td class="hint">${x.code}</td><td>${x.name || '--'}</td>`
+        + `<td class="hint">${x.last_daily || '--'}</td><td>${x.rows_daily ?? '--'}</td>`
+        + `<td class="hint">${x.last_margin || '--'}</td><td class="hint">${x.last_val || '--'}</td>`
+        + `<td class="hint">${x.last_finance || '--'}</td><td>${x.events_n ?? 0}</td>`
+        + `<td>${x.ai_grade ? `<b>${x.ai_grade}</b>` : '--'}</td>`
+        + `<td><button class="btn small" data-full="${x.code}" title="全史所有数据集重拉">全量重拉</button></td></tr>`).join('')
+      + '</table>';
+    document.querySelectorAll('[data-full]').forEach(b => b.onclick = async () => {
+      if (!confirm(`全量重拉 ${b.dataset.full}?(全史, 约数秒)`)) return;
+      try {
+        const r = await (await fetch('/admin/api/stock/full_refresh', {method: 'POST',
+          headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
+          body: JSON.stringify({code: b.dataset.full})})).json();
+        $('skMsg').textContent = r.msg;
+        setTimeout(loadSkPool, 15000);
+      } catch (e) { $('skMsg').textContent = e.message; }
+    });
+  } catch (e) { $('skStat').textContent = e.message; }
+}
+$('btnSkNightly').onclick = async () => {
+  $('skMsg').textContent = '⏳ 夜间链入队中…';
+  try {
+    const r = await (await fetch('/admin/api/stock/nightly', {method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
+      body: '{}'})).json();
+    $('skMsg').textContent = r.msg;
+    setTimeout(loadSkPool, 30000);
+  } catch (e) { $('skMsg').textContent = e.message; }
+};
+loadSkPool();
 // D1-28 N1: 宏观新闻抓取卡
 async function loadNewsStat() {
   try {
