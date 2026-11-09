@@ -152,3 +152,20 @@ def test_sched_registration_includes_new_ids():
     assert '"stock_daily", "stock_weekly"' in src
     assert "def queue_snapshot" in src and "def heartbeat" in src
     assert "def scheduled_jobs_view" in src and "def set_paused" in src
+
+
+def test_queue_log_lifecycle(jc, server_app):
+    """review修复回归: 登记簿条目 queue→running(_execute开题)→done(收尾),
+    40条窗口内跑完的任务不再滞留排队视图"""
+    jc._queue_log.clear()
+    jc.enqueue("probe_kind", lambda append: 0, target="探针", trigger="manual")
+    assert len(jc.queue_snapshot()) == 1
+    # 直接执行该条(worker同路径: _execute)
+    from server import jobs as J
+    item = J._q.get_nowait()
+    with server_app["app"].app_context():
+        J._execute(item)
+    snap = jc.queue_snapshot()
+    assert snap == []                          # 完结后不再显示排队
+    assert any(e["state"] == "done" and e["kind"] == "probe_kind"
+               for e in jc._queue_log)

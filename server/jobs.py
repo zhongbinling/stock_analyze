@@ -200,21 +200,9 @@ def enqueue(kind, fn, target="", trigger="manual"):
 
 
 def queue_snapshot() -> list:
-    """排队簿快照(任务运行中心视图): 移除已执行(running/done在Job表)"""
-    running_kinds = set()
-    try:
-        from server.models import Job
-        with db.session.no_autoflush:
-            running_kinds = {(j.kind, j.target) for j in
-                             Job.query.filter_by(status="running").all()}
-    except Exception:                                       # noqa: BLE001
-        pass
-    out = []
-    for e in list(_queue_log):
-        key = (e["kind"], e["target"])
-        if e["state"] == "queued" and key not in running_kinds:
-            out.append(e)
-    return out
+    """排队簿快照: 仅queued态(登记簿生命周期 queue→running→done 由
+    _execute驱动; 旧版running_kinds过滤会误吞同kind+target的后续排队条)"""
+    return [e for e in _queue_log if e.get("state") == "queued"]
 
 
 def heartbeat(name: str):
@@ -289,6 +277,10 @@ def is_paused() -> bool:
 
 def _execute(item):
     from server.models import Job
+    for e in _queue_log:                       # 任务运行中心: 消费登记簿条目
+        if e.get("state") == "queued" and e["kind"] == item["kind"]                 and e["target"] == item["target"]:
+            e["state"] = "running"
+            break
     job = Job(kind=item["kind"], target=item["target"], trigger=item["trigger"],
               status="running", started_at=_now())
     db.session.add(job)
@@ -319,6 +311,10 @@ def _execute(item):
     job.finished_at = _now()
     append(f"[{utcnow_str()}] 结束: {'成功' if rc == 0 else '失败'} ({job.duration_s}s)")
     db.session.commit()
+    for e in _queue_log:                       # 任务运行中心: 该条完结, 移出排队视图
+        if e.get("state") == "running" and e["kind"] == item["kind"]                 and e["target"] == item["target"]:
+            e["state"] = "done"
+            break
     if item["kind"] == "update":
         _post_update_check(item, rc, job)      # D1-10 A1: 失败重试判定
 
