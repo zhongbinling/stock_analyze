@@ -43,10 +43,11 @@ def _conn(path=None):
         ts_code TEXT, trade_date TEXT, open REAL, high REAL, low REAL,
         close REAL, vol REAL, amount REAL, adj_factor REAL,
         PRIMARY KEY(ts_code, trade_date));
-      CREATE TABLE IF NOT EXISTS stock_finance(          -- A2: 季度财务(fina_indicator)
+      CREATE TABLE IF NOT EXISTS stock_finance(          -- B1: 季度财务(fina_indicator)
         ts_code TEXT, end_date TEXT, ann_date TEXT,
         profit_dedt REAL, netprofit_yoy REAL, or_yoy REAL,
         grossprofit_margin REAL, roe REAL, debt_to_assets REAL,
+        netprofit_margin REAL, inv_turn REAL, ar_turn REAL,
         PRIMARY KEY(ts_code, end_date));
       CREATE TABLE IF NOT EXISTS stock_holders(          -- A2: 十大流通股东
         ts_code TEXT, end_date TEXT, holder_name TEXT,
@@ -97,6 +98,7 @@ def _conn(path=None):
             ("stock_bs", "acct_payable", "REAL"), ("stock_bs", "inventories", "REAL"),
             ("stock_finance", "netprofit_margin", "REAL"),
             ("stock_finance", "inv_turn", "REAL"),
+            ("stock_finance", "ar_turn", "REAL"),
             ("stock_val", "dv_ttm", "REAL")):
         try:
             have = {r[1] for r in con.execute(f"PRAGMA table_info({tbl})")}
@@ -354,7 +356,8 @@ def refresh_finance(code: str, path=None, lookback: int = None) -> int:
     try:
         df = T.call("fina_indicator",
                     "ts_code,end_date,ann_date,profit_dedt,netprofit_yoy,or_yoy,"
-                    "grossprofit_margin,roe,debt_to_assets,netprofit_margin,inv_turn",
+                    "grossprofit_margin,roe,debt_to_assets,netprofit_margin,"
+                    "inv_turn,ar_turn",
                     ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
@@ -364,18 +367,20 @@ def refresh_finance(code: str, path=None, lookback: int = None) -> int:
              _f(r.get("profit_dedt")), _f(r.get("netprofit_yoy")),
              _f(r.get("or_yoy")), _f(r.get("grossprofit_margin")),
              _f(r.get("roe")), _f(r.get("debt_to_assets")),
-             _f(r.get("netprofit_margin")), _f(r.get("inv_turn")))
+             _f(r.get("netprofit_margin")), _f(r.get("inv_turn")),
+             _f(r.get("ar_turn")))
             for _, r in df.iterrows()]
     con = _conn(path)
     con.executemany(
         "INSERT INTO stock_finance(ts_code,end_date,ann_date,profit_dedt,"
         "netprofit_yoy,or_yoy,grossprofit_margin,roe,debt_to_assets,"
-        "netprofit_margin,inv_turn) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
+        "netprofit_margin,inv_turn,ar_turn) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(ts_code,end_date) DO UPDATE SET ann_date=excluded.ann_date,"
         "profit_dedt=excluded.profit_dedt,netprofit_yoy=excluded.netprofit_yoy,"
         "or_yoy=excluded.or_yoy,grossprofit_margin=excluded.grossprofit_margin,"
         "roe=excluded.roe,debt_to_assets=excluded.debt_to_assets,"
-        "netprofit_margin=excluded.netprofit_margin,inv_turn=excluded.inv_turn", rows)
+        "netprofit_margin=excluded.netprofit_margin,inv_turn=excluded.inv_turn,"
+        "ar_turn=excluded.ar_turn", rows)
     con.commit()
     con.close()
     return len(rows)
@@ -652,8 +657,8 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
         (ts_code,))}
     fin = {r[0]: r for r in con.execute(
         "SELECT end_date, profit_dedt, netprofit_yoy, or_yoy, grossprofit_margin,"
-        " netprofit_margin, roe, debt_to_assets, inv_turn FROM stock_finance "
-        "WHERE ts_code=?", (ts_code,))}
+        " netprofit_margin, roe, debt_to_assets, inv_turn, ar_turn "
+        "FROM stock_finance WHERE ts_code=?", (ts_code,))}
     bs = {r[0]: r for r in con.execute(
         "SELECT end_date, money_cap, accounts_receiv, acct_payable, inventories,"
         " goodwill, total_assets, total_liab FROM stock_bs WHERE ts_code=?",
@@ -728,7 +733,8 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
             for k in ("assets", "liab", "dta", "goodwill", "gw_eq"):
                 out["balance"][k].append(None)
         out["cashflow"]["inv_turn"].append(f[8] if f else None)
-        out["cashflow"]["ar_turn"].append(None)              # ar_turn在fin旧列, 此处placeholder
+        # fin列序: ...8inv_turn 9ar_turn
+        out["cashflow"]["ar_turn"].append(f[9] if f else None)
     return out
 
 

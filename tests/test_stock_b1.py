@@ -43,7 +43,7 @@ def test_schema_migration_adds_columns(env):
         "SELECT name FROM sqlite_master WHERE type='table'")}
     con.close()
     assert {"money_cap", "accounts_receiv", "acct_payable", "inventories"} <= bs_cols
-    assert {"netprofit_margin", "inv_turn"} <= fin_cols
+    assert {"netprofit_margin", "inv_turn", "ar_turn"} <= fin_cols
     assert "dv_ttm" in val_cols
     assert {"stock_income", "stock_cashflow"} <= tables
 
@@ -85,9 +85,9 @@ def _seed_full(env):
         ("600519.SH", "2026-06-30", 1.2e10), ("600519.SH", "2026-09-30", 1.4e10)])
     con.executemany("INSERT INTO stock_finance(ts_code,end_date,profit_dedt,or_yoy,"
                     "netprofit_yoy,grossprofit_margin,netprofit_margin,roe,"
-                    "debt_to_assets,inv_turn) VALUES(?,?,?,?,?,?,?,?,?,?)", [
-        ("600519.SH", "2026-06-30", 1.4e10, 10.0, 8.0, 91.0, 50.0, 15.0, 20.0, 0.8),
-        ("600519.SH", "2026-09-30", 1.5e10, 12.0, 9.0, 90.0, 49.0, 16.0, 21.0, 0.9)])
+                    "debt_to_assets,inv_turn,ar_turn) VALUES(?,?,?,?,?,?,?,?,?,?,?)", [
+        ("600519.SH", "2026-06-30", 1.4e10, 10.0, 8.0, 91.0, 50.0, 15.0, 20.0, 0.8, 55.0),
+        ("600519.SH", "2026-09-30", 1.5e10, 12.0, 9.0, 90.0, 49.0, 16.0, 21.0, 0.9, 52.0)])
     con.executemany("INSERT INTO stock_bs(ts_code,end_date,money_cap,"
                     "accounts_receiv,acct_payable,inventories,goodwill,"
                     "total_assets,total_liab) VALUES(?,?,?,?,?,?,?,?,?)", [
@@ -121,6 +121,7 @@ def test_finance_full_payload_groups(env):
     assert d["cashflow"]["ocf"] == [120.0, 140.0]
     assert d["cashflow"]["cash"] == [500.0, 520.0]
     assert d["cashflow"]["inv_turn"] == [0.8, 0.9]
+    assert d["cashflow"]["ar_turn"] == [55.0, 52.0]   # review修复: 占位符→真实管线
     # 资产负债组: 净资产自算=总资产-总负债, 商誉占比=商誉/净资产
     assert d["balance"]["assets"] == [3000.0, 3100.0]
     assert d["balance"]["gw_eq"] == [round(3e8 / (3e11-5e10) * 100, 1),
