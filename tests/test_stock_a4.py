@@ -141,19 +141,33 @@ def test_ai_failure_degrades_to_rules(env, monkeypatch):
 # ── API + UI ──
 
 def test_finance_ai_api(server_app, monkeypatch):
-    import server.routes_admin as RA
     c = server_app["client"]
-    from server import jobs
-    with server_app["app"].app_context():
-        jobs.set_setting("ai_local_enabled", "1")
-    import types as _t
     import stock_risk
     monkeypatch.setattr(stock_risk, "analyze_stock_finance",
                         lambda code: {"ok": False, "msg": "数据不足"})
     assert c.get("/admin/api/stock/finance_ai?code=x").status_code == 404
-    with server_app["app"].app_context():
-        jobs.set_setting("ai_local_enabled", "0")
-    assert c.post("/admin/api/stock/finance_ai", json={"code": "x"}).status_code == 400
+    # POST: 不再要求AI开关(纯规则分析合法), 先保障finance/bs数据
+    import fetch_stock as FS
+    refs = []
+    monkeypatch.setattr(FS, "refresh_finance", lambda c2, path=None: refs.append("fin"))
+    monkeypatch.setattr(FS, "refresh_bs", lambda c2, path=None: refs.append("bs"))
+    assert c.post("/admin/api/stock/finance_ai", json={"code": "x"}).status_code == 404
+    assert refs == ["fin", "bs"]
+
+
+def test_validate_chinese_evidence_not_suspect():
+    """review修复回归: AI依据用中文指标名+四舍五入值(真实场景)不误判存疑"""
+    m = _metrics([{"end_date": "2026-09-30", "dedt_yi": 5.0, "netprofit_yoy": -45.234,
+                   "or_yoy": 5.0, "gpm": 50.0, "roe": 5.0,
+                   "debt_to_assets": 40.0, "goodwill_eq": None}])
+    ai = {"points": [
+        {"title": "业绩下滑", "evidence": "扣非净利同比=-45.2%(连续2期)", "severity": "高"},
+        {"title": "毛利率走弱", "evidence": "毛利率由52降至50附近", "severity": "低"},
+        {"title": "编造", "evidence": " nonexistent_ratio=99", "severity": "高"}]}
+    out = SR._validate_ai_points(ai, m)
+    assert not out["points"][0]["suspect"]          # 中文基名命中
+    assert not out["points"][1]["suspect"]          # 毛利率基名命中(无精确数值也过)
+    assert out["points"][2]["suspect"] is True      # 无中生有仍拦
 
 
 def test_a4_ui_markers():

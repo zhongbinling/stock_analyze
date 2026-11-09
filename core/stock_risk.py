@@ -122,14 +122,17 @@ def run_rules(metrics: dict) -> dict:
 KNOWN_METRICS = {"dedt_yi": "扣非净利润(亿)", "netprofit_yoy": "扣非净利同比%",
                  "or_yoy": "营收同比%", "gpm": "毛利率%", "roe": "ROE%",
                  "debt_to_assets": "资产负债率%", "goodwill_eq": "商誉占净资产%"}
+# 幻觉校验用指标基名(中文去单位后缀 — AI依据写"扣非净利同比=-45.2%"应命中)
+_KNOWN_BASE = [k.split("%")[0].split("(")[0]
+               for k in list(KNOWN_METRICS) + list(KNOWN_METRICS.values())]
 
 
 def _validate_ai_points(ai: dict, metrics: dict) -> dict:
-    """N2幻觉校验: evidence中的指标引用必须存在于输入表(数值由prompt约束直引)"""
+    """N2幻觉校验: evidence须引用输入表的指标名(中/英基名)或真实数值"""
     rows = metrics["rows"]
     for p in (ai or {}).get("points", []):
         ev = str(p.get("evidence", ""))
-        p["suspect"] = not any(k in ev for k in KNOWN_METRICS) and \
+        p["suspect"] = not any(k in ev for k in _KNOWN_BASE) and \
             not any(str(v) in ev for r in rows for v in r.values() if v is not None)
     return ai
 

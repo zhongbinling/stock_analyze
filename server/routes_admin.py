@@ -270,13 +270,12 @@ def api_stock_finance_ai():
 @bp_admin.post("/api/stock/finance_ai")
 @require_level(7)
 def api_stock_finance_ai_run():
-    """A4: 手动触发分析(规则+AI, 串行同步27B约1-3分钟) — 先确保bs数据"""
+    """A4: 手动触发分析(规则+AI, 串行同步27B约1-3分钟) — 纯规则分析不依赖AI开关,
+    AI未启用/失败自动降级(见stock_risk)"""
     import fetch_stock as FS
     import stock_risk as SR
-    from server import jobs as J
-    if J.get_setting("ai_local_enabled", "0") != "1":
-        return jsonify({"msg": "本地AI未启用, 请先在宏观页配置"}), 400
     code = (request.get_json(force=True, silent=True) or {}).get("code", "")
+    FS.refresh_finance(code)                         # 财务数据保障
     FS.refresh_bs(code)                              # 商誉/净资产数据保障
     r = SR.analyze_stock_finance(code)
     if not r.get("ok"):
