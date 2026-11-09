@@ -51,7 +51,7 @@ _SEED = [
 def ensure_db(path=None) -> None:
     path = path or MACRO_DB
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(path))
+    con = sqlite3.connect(str(path), timeout=30)
     con.execute("""CREATE TABLE IF NOT EXISTS macro_events(
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL, level INTEGER NOT NULL,
@@ -72,7 +72,7 @@ def ensure_db(path=None) -> None:
 
 def _conn(path=None):
     ensure_db(path)
-    return sqlite3.connect(str(path or MACRO_DB))
+    return sqlite3.connect(str(path or MACRO_DB), timeout=30)   # 并发写让锁
 
 
 def _row(r):

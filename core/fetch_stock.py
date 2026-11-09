@@ -31,7 +31,7 @@ MAS = (5, 10, 20, 30, 60, 180, 250)          # A1: 七均线(可勾选)
 def _conn(path=None):
     p = path or STOCK_DB
     p.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(p))
+    con = sqlite3.connect(str(p), timeout=30)   # 并发写让锁(夜间链与页面查询)
     con.executescript("""
       CREATE TABLE IF NOT EXISTS stock_basic(
         ts_code TEXT PRIMARY KEY, name TEXT, industry TEXT,
