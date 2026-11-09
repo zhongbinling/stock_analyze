@@ -261,7 +261,7 @@ def _stock_module(code, mod):
     payload = {"holders": FS.holders_payload, "margin": FS.margin_payload,
                "profit": FS.profit_payload, "val": FS.val_payload,
                "float": FS.float_payload, "events": FS.events_payload,
-               "risk": FS.risk_payload}[mod]
+               "risk": FS.risk_payload, "full": FS.finance_full_payload}[mod]
     p = payload(ts_code)
     if mod == "profit" and not p.get("dates"):           # profit依赖finance
         FS.refresh_finance(ts_code)
@@ -270,6 +270,12 @@ def _stock_module(code, mod):
             not p.get("data") and not p.get("dates") and not p.get("n")
             and not p.get("events")):
         refresher(ts_code)
+        p = payload(ts_code)
+    elif mod == "full" and not p.get("dates"):           # B1全景依赖四表
+        FS.refresh_income(ts_code)
+        FS.refresh_cashflow(ts_code)
+        FS.refresh_finance(ts_code)
+        FS.refresh_bs(ts_code)
         p = payload(ts_code)
     elif mod == "risk" and not p.get("items") and not p.get("checked"):
         FS.refresh_float(ts_code)                        # risk依赖float+events
@@ -281,8 +287,9 @@ def _stock_module(code, mod):
 @bp_admin.get("/api/stock/<mod>")
 @require_level(7)
 def api_stock_module(mod):
-    """A2/A3模块载荷: holders|margin|profit|val|float|events|risk (非法mod 400)"""
-    if mod not in ("holders", "margin", "profit", "val", "float", "events", "risk"):
+    """A2/A3/B1模块载荷: holders|margin|profit|val|float|events|risk|full"""
+    if mod not in ("holders", "margin", "profit", "val", "float", "events",
+                   "risk", "full"):
         return jsonify({"msg": "mod 非法"}), 400
     return jsonify(_stock_module(request.args.get("code", ""), mod))
 

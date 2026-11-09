@@ -59,9 +59,9 @@ def _conn(path=None):
         ts_code TEXT, trade_date TEXT, rzye REAL, rqye REAL,
         rzmre REAL, rqyl REAL,
         PRIMARY KEY(ts_code, trade_date));
-      CREATE TABLE IF NOT EXISTS stock_val(              -- A2: 每日估值(daily_basic)
+      CREATE TABLE IF NOT EXISTS stock_val(              -- B1: 每日估值+股息率
         ts_code TEXT, trade_date TEXT, pe_ttm REAL, pb REAL,
-        total_mv REAL, circ_mv REAL,
+        total_mv REAL, circ_mv REAL, dv_ttm REAL,
         PRIMARY KEY(ts_code, trade_date));
       CREATE TABLE IF NOT EXISTS stock_float(            -- A3: 个股解禁(share_float)
         ts_code TEXT, ann_date TEXT, float_date TEXT,
@@ -74,15 +74,36 @@ def _conn(path=None):
       CREATE TABLE IF NOT EXISTS stock_pledge(           -- A3: 质押比例(状态类, 不入K线事件)
         ts_code TEXT, end_date TEXT, pledge_ratio REAL,
         PRIMARY KEY(ts_code, end_date));
-      CREATE TABLE IF NOT EXISTS stock_bs(               -- A4: 资产负债表关键列
-        ts_code TEXT, end_date TEXT, goodwill REAL,
-        total_assets REAL, total_liab REAL,
+      CREATE TABLE IF NOT EXISTS stock_bs(               -- B1: 资产负债表全列
+        ts_code TEXT, end_date TEXT, money_cap REAL,
+        accounts_receiv REAL, acct_payable REAL, inventories REAL,
+        goodwill REAL, total_assets REAL, total_liab REAL,
         PRIMARY KEY(ts_code, end_date));
       CREATE TABLE IF NOT EXISTS stock_ai(               -- A4: AI财报分析缓存(一股一行)
         ts_code TEXT PRIMARY KEY, end_date TEXT, ann_date TEXT,
         rule_grade TEXT, rule_score REAL, rules_json TEXT,
         ai_json TEXT, model TEXT, analyzed_at TEXT);
+      CREATE TABLE IF NOT EXISTS stock_income(           -- B1: 利润表
+        ts_code TEXT, end_date TEXT, revenue REAL,
+        total_revenue REAL, n_income REAL,
+        PRIMARY KEY(ts_code, end_date));
+      CREATE TABLE IF NOT EXISTS stock_cashflow(         -- B1: 现金流量表
+        ts_code TEXT, end_date TEXT, n_cashflow_act REAL,
+        PRIMARY KEY(ts_code, end_date));
     """)
+    # B1: 旧库扩列(PRAGMA检测, 幂等)
+    for tbl, col, typ in (
+            ("stock_bs", "money_cap", "REAL"), ("stock_bs", "accounts_receiv", "REAL"),
+            ("stock_bs", "acct_payable", "REAL"), ("stock_bs", "inventories", "REAL"),
+            ("stock_finance", "netprofit_margin", "REAL"),
+            ("stock_finance", "inv_turn", "REAL"),
+            ("stock_val", "dv_ttm", "REAL")):
+        try:
+            have = {r[1] for r in con.execute(f"PRAGMA table_info({tbl})")}
+            if col not in have:
+                con.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}")
+        except sqlite3.OperationalError:
+            pass                                  # 表未建(全新库由CREATE建)
     con.commit()
     return con
 
@@ -333,7 +354,7 @@ def refresh_finance(code: str, path=None, lookback: int = None) -> int:
     try:
         df = T.call("fina_indicator",
                     "ts_code,end_date,ann_date,profit_dedt,netprofit_yoy,or_yoy,"
-                    "grossprofit_margin,roe,debt_to_assets",
+                    "grossprofit_margin,roe,debt_to_assets,netprofit_margin,inv_turn",
                     ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
@@ -342,15 +363,19 @@ def refresh_finance(code: str, path=None, lookback: int = None) -> int:
     rows = [(ts_code, _iso(r["end_date"]), _ann(r.get("ann_date")),
              _f(r.get("profit_dedt")), _f(r.get("netprofit_yoy")),
              _f(r.get("or_yoy")), _f(r.get("grossprofit_margin")),
-             _f(r.get("roe")), _f(r.get("debt_to_assets")))
+             _f(r.get("roe")), _f(r.get("debt_to_assets")),
+             _f(r.get("netprofit_margin")), _f(r.get("inv_turn")))
             for _, r in df.iterrows()]
     con = _conn(path)
     con.executemany(
-        "INSERT INTO stock_finance VALUES(?,?,?,?,?,?,?,?,?) "
+        "INSERT INTO stock_finance(ts_code,end_date,ann_date,profit_dedt,"
+        "netprofit_yoy,or_yoy,grossprofit_margin,roe,debt_to_assets,"
+        "netprofit_margin,inv_turn) VALUES(?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(ts_code,end_date) DO UPDATE SET ann_date=excluded.ann_date,"
         "profit_dedt=excluded.profit_dedt,netprofit_yoy=excluded.netprofit_yoy,"
         "or_yoy=excluded.or_yoy,grossprofit_margin=excluded.grossprofit_margin,"
-        "roe=excluded.roe,debt_to_assets=excluded.debt_to_assets", rows)
+        "roe=excluded.roe,debt_to_assets=excluded.debt_to_assets,"
+        "netprofit_margin=excluded.netprofit_margin,inv_turn=excluded.inv_turn", rows)
     con.commit()
     con.close()
     return len(rows)
@@ -427,19 +452,22 @@ def refresh_val(code: str, path=None, lookback: int = None) -> int:
     """每日估值(daily_basic): PE_TTM/PB/总市值/流通市值"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("daily_basic", "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv",
+        df = T.call("daily_basic", "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv,dv_ttm",
                     ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 估值失败 {ts_code}: {str(e)[:60]}")
         return -1
     rows = [(ts_code, _iso(r["trade_date"]), _f(r.get("pe_ttm")), _f(r.get("pb")),
-             _f(r.get("total_mv")), _f(r.get("circ_mv"))) for _, r in df.iterrows()]
+             _f(r.get("total_mv")), _f(r.get("circ_mv")), _f(r.get("dv_ttm")))
+            for _, r in df.iterrows()]
     con = _conn(path)
-    con.executemany("INSERT INTO stock_val VALUES(?,?,?,?,?,?) "
+    con.executemany("INSERT INTO stock_val(ts_code,trade_date,pe_ttm,pb,total_mv,"
+                    "circ_mv,dv_ttm) VALUES(?,?,?,?,?,?,?) "
                     "ON CONFLICT(ts_code,trade_date) DO UPDATE SET "
                     "pe_ttm=excluded.pe_ttm,pb=excluded.pb,"
-                    "total_mv=excluded.total_mv,circ_mv=excluded.circ_mv", rows)
+                    "total_mv=excluded.total_mv,circ_mv=excluded.circ_mv,"
+                    "dv_ttm=excluded.dv_ttm", rows)
     con.commit()
     con.close()
     return len(rows)
@@ -607,6 +635,103 @@ def val_payload(code: str, path=None) -> dict:
             "pe_p3": pe_p3, "pe_p5": pe_p5, "pb_p3": pb_p3, "pb_p5": pb_p5}
 
 
+# ══════════ B1: 财务指标全景 ══════════
+
+def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
+    """B1: 四组指标全景(近N季, 单位: 金额亿/比率%/周转次数)
+    盈利(营收/净利/扣非/增速/毛利率/净利率/ROE/股息率) · 现金流与营运
+    (经营现金流/应收/应付/存货/货币资金/存货周转/应收周转) ·
+    资产负债(资产/负债/负债率/商誉及占净资产) · 筹码(机构持仓比例/质押率)"""
+    ts_code = _norm_code(code)
+    con = _conn(path)
+    inc = con.execute("SELECT end_date, revenue, n_income FROM stock_income "
+                      "WHERE ts_code=? ORDER BY end_date DESC LIMIT ?",
+                      (ts_code, n_qua)).fetchall()
+    cf = {r[0]: r[1] for r in con.execute(
+        "SELECT end_date, n_cashflow_act FROM stock_cashflow WHERE ts_code=?",
+        (ts_code,))}
+    fin = {r[0]: r for r in con.execute(
+        "SELECT end_date, profit_dedt, netprofit_yoy, or_yoy, grossprofit_margin,"
+        " netprofit_margin, roe, debt_to_assets, inv_turn FROM stock_finance "
+        "WHERE ts_code=?", (ts_code,))}
+    bs = {r[0]: r for r in con.execute(
+        "SELECT end_date, money_cap, accounts_receiv, acct_payable, inventories,"
+        " goodwill, total_assets, total_liab FROM stock_bs WHERE ts_code=?",
+        (ts_code,))}
+    dv = con.execute("SELECT dv_ttm FROM stock_val WHERE ts_code=? "
+                     "AND dv_ttm IS NOT NULL ORDER BY trade_date DESC LIMIT 1",
+                     (ts_code,)).fetchone()
+    pledge = con.execute("SELECT pledge_ratio FROM stock_pledge WHERE ts_code=? "
+                         "ORDER BY end_date DESC LIMIT 1", (ts_code,)).fetchone()
+    # 机构持仓: 近三期十大流通中 机构类(公募/资管/北向/国家队/私募) 持股占比合计
+    inst = []
+    for (end_date,) in con.execute(
+            "SELECT DISTINCT end_date FROM stock_holders WHERE ts_code=? "
+            "ORDER BY end_date DESC LIMIT 3", (ts_code,)).fetchall():
+        names = con.execute("SELECT holder_name, ratio FROM stock_holders "
+                            "WHERE ts_code=? AND end_date=?",
+                            (ts_code, end_date)).fetchall()
+        ratio_sum = round(sum((r or 0) for n, r in names
+                              if _holder_tag(n) in ("公募/资管", "北向", "国家队",
+                                                    "私募", "金融机构")), 2)
+        hn = con.execute("SELECT holder_num FROM stock_holdernum WHERE ts_code=? "
+                         "AND end_date=?", (ts_code, end_date)).fetchone()
+        inst.append((end_date, ratio_sum, hn[0] if hn else None))
+    con.close()
+    dates = sorted({r[0] for r in inc} | set(fin) | set(bs))
+    E = 1e8                                    # 元→亿
+    out = {"ok": True, "code": ts_code, "dates": [],
+           "profit": {"revenue": [], "n_income": [], "dedt": [], "or_yoy": [],
+                      "net_yoy": [], "gpm": [], "npm": [], "roe": [], "dv_ttm": None},
+           "cashflow": {"ocf": [], "ar": [], "ap": [], "inv": [], "cash": [],
+                        "inv_turn": [], "ar_turn": []},
+           "balance": {"assets": [], "liab": [], "dta": [], "goodwill": [],
+                       "gw_eq": []},
+           "inst": {"dates": [x[0] for x in inst], "ratio": [x[1] for x in inst],
+                    "holder_num": [x[2] for x in inst]},
+           "pledge_ratio": pledge[0] if pledge else None}
+    if dv:
+        out["profit"]["dv_ttm"] = dv[0]
+    for d in dates:
+        i = next((r for r in inc if r[0] == d), None)
+        f = fin.get(d)
+        b = bs.get(d)
+        out["dates"].append(d)
+        out["profit"]["revenue"].append(round(i[1] / E, 2) if i and i[1] else None)
+        out["profit"]["n_income"].append(round(i[2] / E, 2) if i and i[2] else None)
+        out["profit"]["dedt"].append(round(f[1] / E, 2) if f and f[1] else None)
+        # fin列序: 1dedt 2net_yoy 3or_yoy 4gpm 5npm 6roe 7dta 8inv_turn
+        out["profit"]["or_yoy"].append(f[3] if f else None)
+        out["profit"]["net_yoy"].append(f[2] if f else None)
+        out["profit"]["gpm"].append(f[4] if f else None)
+        out["profit"]["npm"].append(f[5] if f else None)
+        out["profit"]["roe"].append(f[6] if f else None)
+        ocf = cf.get(d)
+        out["cashflow"]["ocf"].append(round(ocf / E, 2) if ocf else None)
+        # bs列序: 0end_date 1money_cap 2ar 3ap 4inventories
+        #         5goodwill 6total_assets 7total_liab
+        if b:
+            out["cashflow"]["ar"].append(round(b[2] / E, 2) if b[2] else None)
+            out["cashflow"]["ap"].append(round(b[3] / E, 2) if b[3] else None)
+            out["cashflow"]["inv"].append(round(b[4] / E, 2) if b[4] else None)
+            out["cashflow"]["cash"].append(round(b[1] / E, 2) if b[1] else None)
+            eq = (b[6] - b[7]) if b[6] and b[7] else None    # 净资产自算
+            out["balance"]["assets"].append(round(b[6] / E, 1) if b[6] else None)
+            out["balance"]["liab"].append(round(b[7] / E, 1) if b[7] else None)
+            out["balance"]["dta"].append(f[7] if f else None)
+            out["balance"]["goodwill"].append(round(b[5] / E, 2) if b[5] else None)
+            out["balance"]["gw_eq"].append(round(b[5] / eq * 100, 1)
+                                           if b[5] and eq and eq > 0 else None)
+        else:
+            for k in ("ar", "ap", "inv", "cash"):
+                out["cashflow"][k].append(None)
+            for k in ("assets", "liab", "dta", "goodwill", "gw_eq"):
+                out["balance"][k].append(None)
+        out["cashflow"]["inv_turn"].append(f[8] if f else None)
+        out["cashflow"]["ar_turn"].append(None)              # ar_turn在fin旧列, 此处placeholder
+    return out
+
+
 # ══════════ A3: 解禁与大事件 ══════════
 
 EV_TYPE_NAME = {"float": "解禁", "forecast": "业绩预告", "dividend": "分红",
@@ -727,23 +852,77 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
 
 
 def refresh_bs(code: str, path=None) -> int:
-    """A4: 资产负债表关键列(商誉/总资产/总负债 — 净资产自算)"""
+    """B1: 资产负债表全列(货币资金money_cap/应收/应付/存货/商誉/资产负债/
+    流动资产负债 — 148字段实测定位, 货币资金= money_cap)"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("balancesheet", "ts_code,end_date,goodwill,total_assets,total_liab",
+        df = T.call("balancesheet",
+                    "ts_code,end_date,money_cap,accounts_receiv,acct_payable,"
+                    "inventories,goodwill,total_assets,total_liab,"
+                    "total_cur_assets,total_cur_liab",
                     ts_code=ts_code, start_date="19900000",
                     end_date=time.strftime("%Y%m%d"))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 资产负债表失败 {ts_code}: {str(e)[:60]}")
         return -1
-    rows = [(ts_code, _iso(r["end_date"]), _f(r.get("goodwill")),
+    rows = [(ts_code, _iso(r["end_date"]), _f(r.get("money_cap")),
+             _f(r.get("accounts_receiv")), _f(r.get("acct_payable")),
+             _f(r.get("inventories")), _f(r.get("goodwill")),
              _f(r.get("total_assets")), _f(r.get("total_liab")))
             for _, r in df.iterrows()]
     con = _conn(path)
-    con.executemany("INSERT INTO stock_bs VALUES(?,?,?,?,?) "
+    con.executemany(
+        "INSERT INTO stock_bs(ts_code,end_date,money_cap,accounts_receiv,"
+        "acct_payable,inventories,goodwill,total_assets,total_liab) "
+        "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(ts_code,end_date) DO UPDATE SET "
+        "money_cap=excluded.money_cap,accounts_receiv=excluded.accounts_receiv,"
+        "acct_payable=excluded.acct_payable,inventories=excluded.inventories,"
+        "goodwill=excluded.goodwill,total_assets=excluded.total_assets,"
+        "total_liab=excluded.total_liab", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def refresh_income(code: str, path=None) -> int:
+    """B1: 利润表(营业收入/营业总收入/净利润)"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("income", "ts_code,end_date,revenue,total_revenue,n_income",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 利润表失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["end_date"]), _f(r.get("revenue")),
+             _f(r.get("total_revenue")), _f(r.get("n_income")))
+            for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany("INSERT INTO stock_income VALUES(?,?,?,?,?) "
                     "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
-                    "goodwill=excluded.goodwill,total_assets=excluded.total_assets,"
-                    "total_liab=excluded.total_liab", rows)
+                    "revenue=excluded.revenue,total_revenue=excluded.total_revenue,"
+                    "n_income=excluded.n_income", rows)
+    con.commit()
+    con.close()
+    return len(rows)
+
+
+def refresh_cashflow(code: str, path=None) -> int:
+    """B1: 现金流量表(经营活动现金流净额)"""
+    ts_code = _norm_code(code)
+    try:
+        df = T.call("cashflow", "ts_code,end_date,n_cashflow_act",
+                    ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"))
+    except Exception as e:                                   # noqa: BLE001
+        print(f"[stock] 现金流量表失败 {ts_code}: {str(e)[:60]}")
+        return -1
+    rows = [(ts_code, _iso(r["end_date"]), _f(r.get("n_cashflow_act")))
+            for _, r in df.iterrows()]
+    con = _conn(path)
+    con.executemany("INSERT INTO stock_cashflow VALUES(?,?,?) "
+                    "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
+                    "n_cashflow_act=excluded.n_cashflow_act", rows)
     con.commit()
     con.close()
     return len(rows)

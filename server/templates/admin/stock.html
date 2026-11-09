@@ -73,8 +73,24 @@
   <p class="hint">混合评级: 规则引擎硬规则扣分(A/B/C/D锚定) + 本地AI定性风险点(依据直引指标表, 存疑标记) · 更正版财报自动失效重析 · <b>AI分析为参考信号, 非投资建议</b></p>
 </section>
 <section class="card">
-  <h2>后续模块</h2>
-  <p class="hint">A5 数据管理整合 — 按批次推进</p>
+  <h2>盈利能力 <span class="hint" id="g1State">选择股票后展示</span></h2>
+  <div id="chartG1" style="height:260px"></div>
+  <p class="hint">柱=营收/净利/扣非(亿, 左轴) · 折线=同比%/ROE/毛利率/净利率(右轴) · 股息率(dv_ttm)见标题</p>
+</section>
+<section class="card">
+  <h2>现金流与营运 <span class="hint" id="g2State"></span></h2>
+  <div id="chartG2" style="height:260px"></div>
+  <p class="hint">柱=经营现金流/应收/应付/存货/货币资金(亿) · 折线=存货/应收周转率(右轴) — 现金流与净利背离=预警</p>
+</section>
+<section class="card">
+  <h2>资产负债结构 <span class="hint" id="g3State"></span></h2>
+  <div id="chartG3" style="height:240px"></div>
+  <p class="hint">柱=总资产/总负债/商誉(亿) · 折线=资产负债率%/商誉占净资产%(右轴) — 商誉占比>30%减值爆雷风险</p>
+</section>
+<section class="card">
+  <h2>筹码结构 <span class="hint" id="g4State"></span></h2>
+  <div id="chartG4" style="height:220px"></div>
+  <p class="hint">折线=机构持仓合计占比%(近三期十大流通聚合) · 柱=股东户数(万, 右轴) · 质押率见标题(≥30%平仓风险)</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -175,6 +191,7 @@ async function load(code) {
     $('stState').textContent = '● 就绪';
     loadPool();
     loadA2(d.code);                       // A2四模块并行
+    loadB1(d.code);                       // B1财务全景四组图
     loadAiFin(d.code);                    // A4: 读缓存(无缓存提示手动分析)
     // A3: 事件先取(K线标记依赖), 再K线重绘 + 风险/解禁/事件表
     try {
@@ -343,6 +360,76 @@ function renderEvents(d) {
         <td><b style="color:${RISK_COLOR[e.risk]}">${RISK_NAME[e.risk] || e.risk}</b></td></tr>`).join('')
     + (rows.length > 60 ? `<tr><td colspan="4" class="hint">…共${rows.length}条(近60条)</td></tr>` : '')
     + '</table>';
+}
+
+// ── B1: 财务指标全景(四组图) ──
+const g1 = echarts.init($('chartG1')), g2 = echarts.init($('chartG2')),
+      g3 = echarts.init($('chartG3')), g4 = echarts.init($('chartG4'));
+window.addEventListener('resize', () => [g1, g2, g3, g4].forEach(c => c.resize()));
+
+function _bars(name, data, color, yi = 1) {
+  return {name, type: 'bar', data, barMaxWidth: 10 * yi,
+          itemStyle: {color}, yAxisIndex: 0};
+}
+function _line(name, data, color, idx = 1) {
+  return {name, type: 'line', data, showSymbol: false, connectNulls: true,
+          lineStyle: {width: 1.3, color}, itemStyle: {color}, yAxisIndex: idx};
+}
+function _gridOpt(d, series, title) {
+  return {animation: false, backgroundColor: 'transparent',
+    legend: {data: series.map(x => x.name), textStyle: {fontSize: 10}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 54, right: 54, top: 26, bottom: 34},
+    xAxis: {type: 'category', data: d, ...AX},
+    yAxis: [{type: 'value', scale: true, name: '亿', ...AX},
+            {type: 'value', scale: true, name: '%/次', ...AX, splitLine: {show: false}}],
+    series};
+}
+
+function renderFull(d) {
+  const ds = d.dates.map(x => x.slice(2));
+  if (!ds.length) { $('g1State').textContent = '无财务数据(点上方"分析"或先选股)';
+    [g1, g2, g3, g4].forEach(c => c.clear()); return; }
+  const P = d.profit, C = d.cashflow, B = d.balance;
+  $('g1State').textContent = `${ds[ds.length-1]}期 · 股息率(dv_ttm) ${P.dv_ttm ?? '--'}%`;
+  g1.setOption(_gridOpt(ds, [
+    _bars('营收(亿)', P.revenue, '#8ba0b6'), _bars('净利(亿)', P.n_income, '#e34448'),
+    _bars('扣非(亿)', P.dedt, '#eda100'),
+    _line('营收同比%', P.or_yoy, '#2f5cd6'), _line('净利同比%', P.net_yoy, '#6250d6'),
+    _line('毛利率%', P.gpm, '#1baf7a'), _line('ROE%', P.roe, '#eb6834')]), true);
+  g2.setOption(_gridOpt(ds, [
+    _bars('经营现金流', C.ocf, '#2f5cd6'), _bars('应收', C.ar, '#eda100'),
+    _bars('应付', C.ap, '#8ba0b6'), _bars('存货', C.inv, '#e67e22'),
+    _bars('货币资金', C.cash, '#1baf7a'),
+    _line('存货周转', C.inv_turn, '#6250d6')]), true);
+  $('g3State').textContent = B.gw_eq && B.gw_eq.some(v => v != null)
+    ? `商誉占净资产最新 ${B.gw_eq.filter(v => v != null).pop()}%` : '';
+  g3.setOption(_gridOpt(ds, [
+    _bars('总资产', B.assets, '#8ba0b6'), _bars('总负债', B.liab, '#e67e22'),
+    _bars('商誉', B.goodwill, '#d03b3b'),
+    _line('资产负债率%', B.dta, '#2f5cd6'), _line('商誉占净资产%', B.gw_eq, '#d03b3b')]), true);
+  $('g4State').textContent = d.pledge_ratio != null
+    ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
+  g4.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['机构持仓占比%', '股东户数(万)'], textStyle: {fontSize: 11}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 54, right: 54, top: 26, bottom: 34},
+    xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AX},
+    yAxis: [{type: 'value', name: '%', ...AX},
+            {type: 'value', name: '万户', ...AX, splitLine: {show: false}}],
+    series: [
+      {name: '机构持仓占比%', type: 'line', data: d.inst.ratio, showSymbol: true,
+       symbolSize: 5, lineStyle: {width: 1.6, color: '#6250d6'},
+       itemStyle: {color: '#6250d6'}},
+      {name: '股东户数(万)', type: 'bar', yAxisIndex: 1, data: d.inst.holder_num,
+       barMaxWidth: 18, itemStyle: {color: '#8ba0b6'}}]
+  }, true);
+}
+
+async function loadB1(code) {
+  try { renderFull(await api('/admin/api/stock/full?code=' + encodeURIComponent(code))); }
+  catch (e) { $('g1State').textContent = '✗ ' + e.message; }
 }
 
 async function loadA3(code) {

@@ -61,7 +61,8 @@ def test_stats_pool_health(env):
     con.execute("INSERT INTO stock_pool VALUES('600519.SH','茅台','','t','t')")
     con.execute("INSERT INTO stock_daily VALUES('600519.SH','2026-11-07',1,2,1,2,100,200,1)")
     con.execute("INSERT INTO stock_margin VALUES('600519.SH','2026-11-07',1,1,1,1)")
-    con.execute("INSERT INTO stock_val VALUES('600519.SH','2026-11-07',22,6,1,1)")
+    con.execute("INSERT INTO stock_val(ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv) "
+                "VALUES('600519.SH','2026-11-07',22,6,1,1)")
     con.execute("INSERT INTO stock_finance(ts_code,end_date) VALUES('600519.SH','2026-09-30')")
     con.execute("INSERT INTO stock_events VALUES('600519.SH','2026-01-01','dividend','t','','low')")
     con.execute("INSERT INTO stock_ai VALUES('600519.SH','2026-09-30','','C',-10,'[]','{}','m','t')")

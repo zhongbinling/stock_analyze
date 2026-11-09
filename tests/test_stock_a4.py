@@ -98,7 +98,9 @@ def test_cache_and_ann_date_invalidation(env, monkeypatch):
                                  "base_url": ""})
     con = FS._conn(env)
     con.execute("INSERT INTO stock_pool VALUES('600519.SH','茅台','','t','t')")
-    con.executemany("INSERT INTO stock_finance VALUES(?,?,?,?,?,?,?,?,?)",
+    con.executemany("INSERT INTO stock_finance(ts_code,end_date,ann_date,profit_dedt,"
+                    "netprofit_yoy,or_yoy,grossprofit_margin,roe,debt_to_assets) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
                     [("600519.SH", "2026-06-30", "2026-08-15", 2e9, 5.0, 8.0,
                       91.0, 15.0, 30.0),
                      ("600519.SH", "2026-09-30", "2026-10-28", 2.2e9, 6.0, 9.0,
@@ -128,7 +130,9 @@ def test_ai_failure_degrades_to_rules(env, monkeypatch):
                         lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("ollama down")))
     con = FS._conn(env)
     con.execute("INSERT INTO stock_pool VALUES('600519.SH','茅台','','t','t')")
-    con.executemany("INSERT INTO stock_finance VALUES(?,?,?,?,?,?,?,?,?)",
+    con.executemany("INSERT INTO stock_finance(ts_code,end_date,ann_date,profit_dedt,"
+                    "netprofit_yoy,or_yoy,grossprofit_margin,roe,debt_to_assets) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
                     [("600519.SH", "2026-06-30", None, 2e9, 5.0, 8.0, 91.0, 15.0, 30.0),
                      ("600519.SH", "2026-09-30", None, 2.2e9, 6.0, 9.0, 91.0, 15.0, 30.0)])
     con.commit()
