@@ -57,7 +57,9 @@ def ensure_db(path=None):
 
 def _conn(path=None):
     ensure_db(path)
-    return sqlite3.connect(str(path or MACRO_DB))
+    # timeout=30s: 与夜间链(repair/auto_analyze)并发写macro.db时等待
+    # 而非立即database is locked崩掉(2026-11-09实测: 21:54驱动撞22:03 repair)
+    return sqlite3.connect(str(path or MACRO_DB), timeout=30)
 
 
 def fetch_day(day_ymd: str, path=None, with_content: bool = False) -> int:
