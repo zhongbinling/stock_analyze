@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}任务运行中心 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card">
+  <h2>任务运行中心 <span class="hint" id="jcState">加载中…</span>
+    <span style="float:right;display:flex;gap:8px;align-items:center">
+      <button class="btn" id="btnJcPause">暂停队列</button>
+      <button class="btn small" id="btnJcRefresh">刷新</button>
+    </span></h2>
+  <p class="hint">全局任务视图: 运行中(Job实时) · 排队(登记簿) · 计划调度(APScheduler) ·
+    跨进程心跳互斥 — 各数据页的操作在这里统一可见, 单worker天然串行不互相干扰</p>
+</section>
+
+<section class="card">
+  <h2>▶ 运行中</h2>
+  <div id="jcRun">--</div>
+</section>
+<section class="card">
+  <h2>≡ 排队中 <span class="hint" id="jcQN"></span></h2>
+  <div id="jcQueue">--</div>
+</section>
+<section class="card">
+  <h2>⏰ 计划任务 <span class="hint">cron调度 + 外部进程心跳</span></h2>
+  <div id="jcSched">--</div>
+</section>
+<section class="card">
+  <h2>☰ 历史 <span class="hint">最近20条</span></h2>
+  <div id="jcHist">--</div>
+</section>
+
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {
+    headers: Object.assign({'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})}));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+
+async function loadHist() {
+  try {
+    const d = await api('/admin/api/jobs?limit=20');
+    $('jcHist').innerHTML = (d.jobs || []).length
+      ? '<table class="table"><tr><th>#</th><th>类型</th><th>目标</th><th>状态</th><th>耗时</th><th>开始</th></tr>'
+        + d.jobs.map(j => `<tr><td class="hint">${j.id}</td><td>${esc(j.kind)}</td>
+            <td style="text-align:left">${esc(j.target || '')}</td>
+            <td><b style="color:${j.status === 'done' ? '#1baf7a' : j.status === 'running' ? '#2f5cd6' : '#d03b3b'}">${esc(j.status)}</b></td>
+            <td class="hint">${j.duration_s ?? '--'}s</td>
+            <td class="hint">${esc((j.started_at || '').slice(5, 19))}</td></tr>`).join('') + '</table>'
+      : '<p class="hint">暂无</p>';
+  } catch (e) { $('jcHist').textContent = e.message; }
+}
+
+async function loadCenter() {
+  $('jcState').textContent = '加载中…';
+  try {
+    const d = await api('/admin/api/jobs/center');
+    // 运行中
+    $('jcRun').innerHTML = d.running.length
+      ? d.running.map(j => `<div class="row-flex" style="gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--grid,#eee)">
+          <b style="color:#2f5cd6">▶</b> <b>${esc(j.kind)}</b> ${esc(j.target || '')}
+          <span class="hint">${esc(j.started_at.slice(11, 19))}起</span>
+          <span style="flex:1;height:6px;background:var(--page);border-radius:3px;overflow:hidden">
+            <div style="height:100%;width:${j.progress || 0}%;background:#2f5cd6"></div></span>
+          <span class="hint">${j.progress ?? 0}%</span></div>`).join('')
+      : '<p class="hint">空闲</p>';
+    // 排队
+    $('jcQN').textContent = d.queued.length ? `×${d.queued.length}` : '';
+    $('jcQueue').innerHTML = d.queued.length
+      ? '<table class="table"><tr><th>序</th><th>类型</th><th>目标</th><th>触发</th><th>入队时间</th></tr>'
+        + d.queued.map(e => `<tr><td class="hint">#${e.seq}</td><td>${esc(e.kind)}</td>
+            <td style="text-align:left">${esc(e.target || '')}</td>
+            <td class="hint">${esc(e.trigger)}</td>
+            <td class="hint">${esc(e.at)}</td></tr>`).join('') + '</table>'
+      : '<p class="hint">无排队</p>';
+    // 计划
+    $('jcSched').innerHTML = (d.scheduled || []).length
+      ? '<table class="table"><tr><th>ID</th><th>调度</th><th>下次触发</th><th>距现在</th></tr>'
+        + d.scheduled.map(j => `<tr><td>${esc(j.id)}</td>
+            <td class="hint" style="text-align:left">${esc(j.cron)}</td>
+            <td class="hint">${esc(j.next || '--')}</td>
+            <td>${esc(j.next_rel || '')}</td></tr>`).join('') + '</table>'
+      : '<p class="hint">调度器未启动(SA_NO_JOBS或配置关闭)</p>';
+    $('btnJcPause').textContent = d.paused ? '恢复队列' : '暂停队列';
+    $('btnJcPause').style.color = d.paused ? '#d03b3b' : '';
+    $('jcState').textContent = d.paused ? '⏸ 已暂停' : '● 正常';
+  } catch (e) { $('jcState').textContent = '✗ ' + e.message; }
+}
+
+$('btnJcRefresh').onclick = () => { loadCenter(); loadHist(); };
+$('btnJcPause').onclick = async () => {
+  const d = await api('/admin/api/jobs/center').catch(() => null);
+  const paused = d ? !d.paused : true;
+  try {
+    const r = await api('/admin/api/jobs/pause', {method: 'POST',
+      body: JSON.stringify({paused})});
+    loadCenter();
+  } catch (e) { alert(e.message); }
+};
+
+loadCenter();
+loadHist();
+setInterval(() => { if (!document.hidden) { loadCenter(); loadHist(); } }, 5000);
+</script>
+{% endblock %}

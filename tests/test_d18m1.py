@@ -74,9 +74,13 @@ def test_import_batch(macro_mod):
 
 # ── API 与页面 ──
 
-def test_macro_api_crud_and_search(server_app, monkeypatch):
+def test_macro_api_crud_and_search(server_app, monkeypatch, tmp_path):
+    """API闭环(隔离库: 2026-11-10起改tmp — 真库版三次撞analyze_all长事务
+    写锁, 环境依赖不可重复; 播种语义已由macro_mod系夹具覆盖)。"""
+    import server.macro as M
+    monkeypatch.setattr(M, "MACRO_DB", tmp_path / "macro.db")
     c = server_app["client"]
-    # 真库闭环测试(首访自动建库播种=生产行为): 新增→检索→导入去重→删除, 不留残渣
+    # 首访自动建库播种
     r = c.get("/admin/api/macro/events")
     assert r.status_code == 200 and "events" in r.get_json()
     r = c.post("/admin/api/macro/events", json={

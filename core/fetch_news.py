@@ -348,6 +348,25 @@ def _mn_days(path=None) -> int:
     return len(days_done(SRC_MN, path))
 
 
+def _driver_heartbeat(on=True):
+    """任务运行中心心跳登记(外部进程视角可见; on=False清除)"""
+    try:
+        import json as _j
+        import time as _t
+        f = BASE.parent / "data" / "task_heartbeat.json"
+        beats = {}
+        if f.exists():
+            try:
+                beats = _j.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                pass
+        beats["news_driver"] = _t.time() if on else 0
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(_j.dumps(beats, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def run_rounds(deadline_min: float = 720, start: str = "20180601",
                end: str = None, path=None) -> bool:
     """D1-28新闻回补: 限频自适应驱动 — run()至限频→指数退避→续传, 直至完成/截止/连续空轮
@@ -361,7 +380,9 @@ def run_rounds(deadline_min: float = 720, start: str = "20180601",
     empty, backoff = 0, 5 * 60
     bail = max(MAX_EMPTY_ROUNDS, int(deadline_min // 60) + 1)
     try:
+        _driver_heartbeat(True)                    # 心跳续期(任务运行中心可见)
         while time.time() - t0 < deadline_min * 60:
+            _driver_heartbeat(True)
             before = _mn_days(path)
             r = run(start, end, path, tail=False)   # 轮尾akshare/汇总只做一次(退出前)
             if r is True:
@@ -380,6 +401,7 @@ def run_rounds(deadline_min: float = 720, start: str = "20180601",
                   f" (空轮{empty}/{bail})", flush=True)
             time.sleep(backoff)
             backoff = min(backoff * 2, 60 * 60)
+        _driver_heartbeat(False)
         print(f"[news] 截止{deadline_min:.0f}min到, 驱动退出(断点已保存, 重跑续传)")
         return False
     finally:

@@ -12,6 +12,8 @@
     定时生成前用"行情最新日期==今天"做守卫, 节假日/更新失败自动跳过;
     手动生成不受守卫限制(便于周末调参)
 """
+import collections
+import itertools
 import json
 import os
 import queue
@@ -165,6 +167,8 @@ def ensure_worker(app):
 def _worker_loop(app):
     while True:
         item = _q.get()
+        while _paused["on"]:                   # 暂停: 挂起取件(已出队的这条照跑)
+            time.sleep(2)
         with app.app_context():
             _execute(item)
 
@@ -173,12 +177,114 @@ def queue_size() -> int:
     return _q.qsize()
 
 
+# 任务运行中心: 排队登记簿(镜像内存队列, deque快照) + 暂停开关 + 心跳
+_queue_log = collections.deque(maxlen=40)      # 入队序号→条目
+_q_seq = itertools.count(1)
+_paused = {"on": False}                        # 暂停: worker挂起取件(排队可见不丢)
+HEARTBEAT_FILE = ROOT / "data" / "task_heartbeat.json"
+_HEARTBEAT_TTL = 900                           # 心跳有效期(秒): 超时视为进程已死
+
+
 def enqueue(kind, fn, target="", trigger="manual"):
-    """入队; 返回 (ok, msg)"""
+    """入队; 返回 (ok, msg) — 登记簿同步记录(kind/target/序号/时间)"""
     if _q.qsize() >= QUEUE_CAP:
         return False, "任务队列已满(20), 请稍后再试"
-    _q.put({"kind": kind, "fn": fn, "target": target, "trigger": trigger})
+    seq = next(_q_seq)
+    item = {"kind": kind, "fn": fn, "target": target, "trigger": trigger}
+    _q.put(item)
+    _queue_log.append({"seq": seq, "kind": kind, "target": target,
+                       "trigger": trigger,
+                       "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                       "state": "queued"})
     return True, "已加入队列"
+
+
+def queue_snapshot() -> list:
+    """排队簿快照(任务运行中心视图): 移除已执行(running/done在Job表)"""
+    running_kinds = set()
+    try:
+        from server.models import Job
+        with db.session.no_autoflush:
+            running_kinds = {(j.kind, j.target) for j in
+                             Job.query.filter_by(status="running").all()}
+    except Exception:                                       # noqa: BLE001
+        pass
+    out = []
+    for e in list(_queue_log):
+        key = (e["kind"], e["target"])
+        if e["state"] == "queued" and key not in running_kinds:
+            out.append(e)
+    return out
+
+
+def heartbeat(name: str):
+    """跨进程心跳: 写入{name: 时间戳}; 外部进程(新闻驱动等)启动/周期调用"""
+    try:
+        beats = _read_heartbeats()
+        beats[name] = time.time()
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_FILE.write_text(json.dumps(beats, ensure_ascii=False),
+                                  encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_heartbeats() -> dict:
+    try:
+        beats = json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+        return {k: v for k, v in beats.items()
+                if time.time() - v < _HEARTBEAT_TTL}
+    except (OSError, ValueError):
+        return {}
+
+
+def heartbeat_alive(name: str) -> bool:
+    """指定进程心跳是否存活(TTL内)"""
+    beats = _read_heartbeats()
+    return name in beats
+
+
+def scheduled_jobs_view() -> list:
+    """计划任务视图: APScheduler jobstore → cron表达式+下次触发时间"""
+    out = []
+    if _scheduler is None:
+        return out
+    try:
+        import datetime as _dt
+        for job in _scheduler.get_jobs():
+            trig = job.trigger
+            fields = getattr(trig, "fields", [])
+            cron_str = str(trig)
+            nxt = job.next_run_time
+            out.append({"id": job.id, "cron": cron_str[:60],
+                        "next": nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else None,
+                        "next_rel": _fmt_rel(nxt) if nxt else None})
+    except Exception as e:                                  # noqa: BLE001
+        out.append({"id": "error", "cron": str(e)[:60], "next": None})
+    out.sort(key=lambda x: x["next"] or "9999")
+    return out
+
+
+def _fmt_rel(nxt) -> str:
+    delta = nxt - datetime.now()
+    sec = int(delta.total_seconds())
+    if sec < 0:
+        return "已过"
+    if sec < 3600:
+        return f"{sec // 60}分钟后"
+    if sec < 86400:
+        return f"{sec // 3600}小时后"
+    return f"{sec // 86400}天后"
+
+
+def set_paused(paused: bool):
+    """暂停/恢复队列(worker挂起取件; 排队可见不丢)"""
+    _paused["on"] = paused
+    return _paused["on"]
+
+
+def is_paused() -> bool:
+    return _paused["on"]
 
 
 def _execute(item):

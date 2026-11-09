@@ -163,6 +163,57 @@ def realtime_page():
 
 # ── 避雷针A1: 个股分析页与API ──
 
+@bp_admin.get("/jobs")
+@require_level(7)
+def jobs_center_page():
+    """任务运行中心: 运行中/排队/计划 三视图 + 历史"""
+    return render_template("admin/jobs_center.html")
+
+
+@bp_admin.get("/api/jobs/center")
+@require_level(7)
+def api_jobs_center():
+    """三视图数据: running(Job表) + queued(登记簿) + scheduled(jobstore) + paused"""
+    from server import jobs as J
+    from server.models import Job
+    running = []
+    try:
+        for j in Job.query.filter_by(status="running").all():
+            running.append({"id": j.id, "kind": j.kind, "target": j.target,
+                            "progress": j.progress, "started_at": str(j.started_at or "")})
+    except Exception:                                       # noqa: BLE001
+        pass
+    return jsonify({"running": running,
+                    "queued": J.queue_snapshot(),
+                    "scheduled": J.scheduled_jobs_view(),
+                    "paused": J.is_paused()})
+
+
+@bp_admin.get("/api/jobs")
+@require_level(7)
+def api_jobs_list():
+    """历史任务列表(最近N条, 任务运行中心/历史区)"""
+    from server.models import Job
+    n = min(int(request.args.get("limit", 20) or 20), 100)
+    jobs = Job.query.order_by(Job.id.desc()).limit(n).all()
+    return jsonify({"jobs": [{"id": j.id, "kind": j.kind, "target": j.target,
+                              "status": j.status, "progress": j.progress,
+                              "duration_s": j.duration_s,
+                              "started_at": str(j.started_at or "")} for j in jobs]})
+
+
+@bp_admin.post("/api/jobs/pause")
+@require_level(7)
+def api_jobs_pause():
+    """暂停/恢复队列(worker挂起取件, 排队不丢)"""
+    from server import jobs as J
+    d = request.get_json(force=True, silent=True) or {}
+    on = J.set_paused(bool(d.get("paused", True)))
+    return jsonify({"ok": True, "paused": on,
+                    "msg": "队列已暂停(运行中任务不受影响, 新任务排队)"
+                    if on else "队列已恢复"})
+
+
 @bp_admin.get("/stock")
 @require_level(7)
 def stock_page():
