@@ -89,17 +89,24 @@ def test_full_refresh_orchestrates(env, monkeypatch):
         ["margin", "val", "finance", "bs", "holders", "events", "float"])
 
 
-def test_jobs_scheduled_and_task(server_app):
+def test_jobs_scheduled_and_task(server_app, monkeypatch):
     from server import jobs as J
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
     assert "task_stock_daily" in src and "task_stock_full" in src
     assert 'CronTrigger(hour=19, minute=30)' in src                # 日频
     assert 'hour=19, minute=35, day_of_week="fri"' in src          # 周五季频
     assert '"stock_daily", "stock_weekly"' in src                  # 清理列表
-    # 任务函数可执行(空池)
+    # 任务函数可执行(run_nightly打桩 — 原版对真库池发起真实tushare调用)
+    import fetch_stock as FS
+    stubbed = []
+    monkeypatch.setattr(FS, "run_nightly", lambda weekly=False: stubbed.append(weekly) or
+                        {"daily": 0, "stocks": 0})
     fn = J.task_stock_daily(False)
     rc = fn(lambda s: None)
-    assert rc == 0
+    assert rc == 0 and stubbed == [False]
+    fn2 = J.task_stock_daily(True)
+    fn2(lambda s: None)
+    assert stubbed == [False, True]
 
 
 def test_a5_apis(server_app, monkeypatch):
