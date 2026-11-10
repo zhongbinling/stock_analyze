@@ -94,6 +94,8 @@
   <div class="row-flex" style="gap:10px;flex-wrap:wrap">
     <span class="hint" id="rtStatDetail">--</span>
     <button class="btn primary" id="btnRtBackfill">立即补采 / 重建当日</button>
+    <span class="hint" id="rtHistDetail"></span>
+    <button class="btn" id="btnRtHist" title="东财近5个交易日分钟线重建缺口日(含情绪回算)">回补历史缺口</button>
     <span class="hint" id="rtBfMsg"></span>
   </div>
 </section>
@@ -721,6 +723,27 @@ loadNewsStat();
   } catch (e) { $('rtBfMsg').textContent = e.message; }
 };
 loadRtStat();
+// 历史缺口探测+一键回补
+async function loadRtHist() {
+  try {
+    const d = await (await fetch('/admin/api/rt/hist_gap')).json();
+    $('rtHistDetail').innerHTML = d.missing.length
+      ? `<b style="color:#e67e22">近5源日缺 ${d.missing.length} 日</b>(${d.missing.join(', ')})`
+      : `近5源日全覆盖✓`;
+  } catch (e) { $('rtHistDetail').textContent = ''; }
+}
+$('btnRtHist').onclick = async () => {
+  if (!confirm('回补近5个交易日内的缺口日?\n(东财分钟线重建, 含逐分钟情绪回算, 已有日不动)')) return;
+  $('rtBfMsg').textContent = '⏳ 已入队…';
+  try {
+    const r = await (await fetch('/admin/api/rt/backfill_hist', {method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
+      body: '{}'})).json();
+    $('rtBfMsg').textContent = r.msg;
+    setTimeout(() => { loadRtHist(); loadRtStat(); }, 15000);
+  } catch (e) { $('rtBfMsg').textContent = e.message; }
+};
+loadRtHist();
 
 // ── 避雷针A5: 个股数据管理卡 ──
 async function loadSkPool() {

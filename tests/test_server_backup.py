@@ -232,8 +232,16 @@ def test_data_html_script_syntax():
     assert m, "data.html 缺 script 块"
     # P4①: SCAN_DS服务端注入含Jinja表达式({{ repair_ds_json }}) — 替换后再解析
     js = re.sub(r"\{\{.*?\}\}", "{}", m.group(1))
-    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", js],
-                       capture_output=True, text=True, timeout=60)
+    import tempfile, os
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
+        f.write(js); tmp = f.name
+    try:
+        r = subprocess.run([shutil.which("node"), "-e",
+                            "new Function(require('fs').readFileSync(process.argv[1],'utf8'))",
+                            tmp], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=60)
+    finally:
+        os.unlink(tmp)
     assert r.returncode == 0, f"JS 语法错误: {r.stderr[:500]}"
 
 

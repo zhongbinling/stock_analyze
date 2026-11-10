@@ -455,6 +455,92 @@ def days() -> list:
     return out
 
 
+# ── 实时行情历史管理: 东财trends2近5日回补 ──
+
+EM_TRENDS_URL = ("https://push2his.eastmoney.com/api/qt/stock/trends2/get"
+                 "?secid=1.000001&fields1=f1,f2,f3&fields2=f51,f53,f56,f58"
+                 "&ndays=5&iscr=0")
+
+
+def _em_trends_days() -> dict:
+    """东财trends2(ndays=5实测上限) → {date: [(t, close, cumvol, cumamt), ...]}
+    字段: "2026-11-09 09:30,3624.58,5974886,3619.254"(cumamt亿)"""
+    from probe_rt import _curl
+    code, body = _curl(EM_TRENDS_URL, timeout=10)
+    if code != 200:
+        return {}
+    try:
+        trends = json.loads(body)["data"]["trends"]
+    except (ValueError, KeyError, TypeError):
+        return {}
+    out = {}
+    for x in trends:
+        p = x.split(",")
+        if len(p) < 4:
+            continue
+        dt2 = p[0].split()                    # "2026-11-05 09:30" → 日期+时间
+        if len(dt2) < 2:
+            continue
+        try:
+            rec = (dt2[1][:5], float(p[1]), float(p[2]), float(p[3]))
+        except ValueError:                    # 非数值 → 脏行跳过
+            continue
+        out.setdefault(dt2[0], []).append(rec)  # 解析成功才建组
+    return out
+
+
+def hist_gap_map() -> dict:
+    """近5交易日源覆盖 vs 库内存档 → 缺口日清单(管理卡展示)"""
+    src = _em_trends_days()
+    have = set(days())
+    return {"src_days": sorted(src), "missing": sorted(d for d in src if d not in have),
+            "have_recent": sorted(d for d in have if d >= sorted(src)[0]) if src else []}
+
+
+def backfill_hist() -> dict:
+    """一键回补: 缺口日用东财分钟线重建(终值融合+情绪框架); 幂等。
+    注意: 情绪分数按重建日收盘数据回算(框架一次+末行改写), 与backfill_today
+    同构; ETF分钟映射同样适用。返回 {filled: [dates], skipped: n}"""
+    src = _em_trends_days()
+    if not src:
+        return {"filled": [], "skipped": 0, "msg": "源不可达"}
+    have = set(days())
+    filled = []
+    for d in sorted(src):
+        if d in have:
+            continue
+        pts = src[d]
+        samples = [{"t": t, "close": c, "cumvol": v, "cumamt": a,
+                    "score": None, "v1": None, "stage": None,
+                    "zt": None, "jl": None, "etf": None} for t, c, v, a in pts]
+        try:                                   # 逐分钟情绪(框架改末行)
+            import rt_score
+            from db import connect
+            conn = connect()
+            try:
+                snap = {"date": d, "close": pts[-1][1],
+                        "volume1": pts[-1][2], "amount1": (pts[-1][3] or 0) * 1e8}
+                scores = rt_score.rt_series(conn, snap, samples)
+            finally:
+                conn.close()
+            for smp, sc in zip(samples, scores):
+                if sc is not None:
+                    smp["score"] = smp["v1"] = sc
+        except Exception as e:                               # noqa: BLE001
+            print(f"[rt] 历史回补{d}情绪失败(仅量价): {e}")
+        con = sqlite3.connect(str(RT_DB))
+        con.execute("INSERT INTO rt_day(date,updated_at,n,payload) VALUES(?,?,?,?) "
+                    "ON CONFLICT(date) DO UPDATE SET updated_at=excluded.updated_at,"
+                    "n=excluded.n,payload=excluded.payload",
+                    (d, time.strftime("%Y-%m-%d %H:%M:%S"), len(samples),
+                     json.dumps({"samples": samples}, ensure_ascii=False)))
+        con.commit()
+        con.close()
+        filled.append(d)
+        print(f"[rt] 历史回补 {d}: {len(samples)}点")
+    return {"filled": filled, "skipped": len(src) - len(filled)}
+
+
 _app = None
 
 
