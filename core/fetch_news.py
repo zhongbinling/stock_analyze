@@ -201,8 +201,22 @@ def days_done(src: str, path=None) -> set:
     return out
 
 
+def _missing_dates(start_d, end_d, done: set) -> list:
+    """区间内未覆盖日列表 — 近端优先(用户最关心近期事件, 情绪图标注
+    主要落在近端; 深史2018海量日放后)。返回按'离今天近→远'排序。"""
+    import datetime as dt
+    out, cur = [], start_d
+    while cur <= end_d:
+        if cur.isoformat() not in done:
+            out.append(cur)
+        cur += dt.timedelta(days=1)
+    return sorted(out, reverse=True)          # 近端在前
+
+
 def run(start: str = "20180601", end: str = None, path=None, tail: bool = True):
-    """全史回补: 逐自然日幂等(已覆盖日跳过), 支持断点续传
+    """全史回补: 逐自然日幂等(已覆盖日跳过), 支持断点续传。
+    遍历序=近端优先(_missing_dates) — 修双头推进中间空洞(2026-08~10
+    62日缺口实测: 旧正向遍历从2018起, 近端缺口永远轮不到)。
 
     返回: True=区间全覆盖完成 / "capped"=限频中断(真值, fetch_daily
     backfill协议把False当自报失败, 故限频不用False)
@@ -215,28 +229,24 @@ def run(start: str = "20180601", end: str = None, path=None, tail: bool = True):
     done = days_done(SRC_MN, path)
     d = dt.date(int(start[:4]), int(start[4:6]), int(start[6:8]))
     d2 = dt.date(int(end[:4]), int(end[4:6]), int(end[6:8]))
-    todo, cur = 0, d
-    while cur <= d2:
-        if cur.isoformat() not in done:
-            todo += 1
-        cur += dt.timedelta(days=1)
-    print(f"[news] major_news 待回补 {todo} 日 ({start}~{end})")
-    t0, i, cur = time.time(), 0, d
+    missing = _missing_dates(d, d2, done)
+    todo = len(missing)
+    front = missing[0].isoformat() if missing else "-"
+    print(f"[news] major_news 待回补 {todo} 日 ({start}~{end}), 本轮自 {front} (近端优先)")
+    t0, i = time.time(), 0
     rate_capped = False
-    while cur <= d2:
+    for cur in missing:
         if rate_capped:                           # 限频(40次/天)耗尽 → 本轮到此
             break
         iso = cur.isoformat()
-        if iso not in done:
-            time.sleep(INTERVAL)                  # 均匀限速(18次/分≈3.3s间隔)
-            n = fetch_day(cur.strftime("%Y%m%d"), path)
-            if n == -2:                           # 限频 → 不再空转(曾空转500日×3.3s)
-                print(f"  ⏳ 限频耗尽于{iso}, 本轮结束(渐进回补次轮续)")
-                rate_capped = True
-            i += 1
-            if i % 30 == 0:
-                print(f"  [{i}/{todo}] {time.time()-t0:.0f}s → {iso}", flush=True)
-        cur += dt.timedelta(days=1)
+        time.sleep(INTERVAL)                  # 均匀限速(18次/分≈3.3s间隔)
+        n = fetch_day(cur.strftime("%Y%m%d"), path)
+        if n == -2:                           # 限频 → 不再空转(曾空转500日×3.3s)
+            print(f"  ⏳ 限频耗尽于{iso}, 本轮结束(渐进回补次轮续)")
+            rate_capped = True
+        i += 1
+        if i % 30 == 0:
+            print(f"  [{i}/{todo}] {time.time()-t0:.0f}s → {iso}", flush=True)
     if tail:
         refresh_em(path)
         _summary(path)
