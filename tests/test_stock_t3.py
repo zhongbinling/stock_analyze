@@ -4,6 +4,7 @@
 E2E语义(沿用T1模式): 读生产stock.db真数据(茅台在池) + 真Ollama扫雷;
 环境不满足(无池/无模型)整文件skip不假绿。单元部分: 幂等重跑一致性。
 """
+import functools
 import sqlite3
 import sys
 import time
@@ -30,7 +31,9 @@ def env(tmp_path, monkeypatch):
 
 # ── 环境守卫: 生产库有池且Ollama可达(仅E2E用例) ──
 
+@functools.lru_cache(maxsize=1)
 def _e2e_ready() -> bool:
+    """模块导入+装饰器评估各调一次 → lru_cache只探一次(库查询+11434探测)"""
     try:
         import requests
         r = requests.get("http://localhost:11434/api/tags", timeout=3)
@@ -205,6 +208,7 @@ def test_rule_yoy_consecutive_requires_two(env):
     r = SR.run_rules(_m(rows))
     neg_hits = [h["rule"] for h in r["hits"] if "同比" in h["rule"]]
     assert all("连续" not in x for x in neg_hits)              # 不误报连续
+    assert any("转负" in x for x in neg_hits)                  # 转负正确命中(高)
 
 
 def test_grade_score_composition(env):
