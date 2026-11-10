@@ -244,6 +244,8 @@ def scheduled_jobs_view() -> list:
             fields = getattr(trig, "fields", [])
             cron_str = str(trig)
             nxt = job.next_run_time
+            if nxt is not None and nxt.tzinfo is not None:
+                nxt = nxt.astimezone().replace(tzinfo=None)   # aware→naive本地
             out.append({"id": job.id, "cron": cron_str[:60],
                         "next": nxt.strftime("%Y-%m-%d %H:%M:%S") if nxt else None,
                         "next_rel": _fmt_rel(nxt) if nxt else None})
@@ -254,6 +256,8 @@ def scheduled_jobs_view() -> list:
 
 
 def _fmt_rel(nxt) -> str:
+    if nxt.tzinfo is not None:              # APScheduler aware → 转naive本地
+        nxt = nxt.astimezone().replace(tzinfo=None)
     delta = nxt - datetime.now()
     sec = int(delta.total_seconds())
     if sec < 0:

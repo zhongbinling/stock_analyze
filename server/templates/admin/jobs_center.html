@@ -62,12 +62,15 @@ async function loadCenter() {
     const d = await api('/admin/api/jobs/center');
     // 运行中
     $('jcRun').innerHTML = d.running.length
-      ? d.running.map(j => `<div class="row-flex" style="gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--grid,#eee)">
-          <b style="color:#2f5cd6">▶</b> <b>${esc(j.kind)}</b> ${esc(j.target || '')}
-          <span class="hint">${esc(j.started_at.slice(11, 19))}起</span>
-          <span style="flex:1;height:6px;background:var(--page);border-radius:3px;overflow:hidden">
-            <div style="height:100%;width:${j.progress || 0}%;background:#2f5cd6"></div></span>
-          <span class="hint">${j.progress ?? 0}%</span></div>`).join('')
+      ? d.running.map(j => `<div style="padding:6px 0;border-bottom:1px solid var(--grid,#eee)">
+          <div class="row-flex" style="gap:10px;align-items:center">
+            <b style="color:#2f5cd6">▶</b> <b>${esc(j.kind)}</b> ${esc(j.target || '')}
+            <span class="hint">${esc(j.started_at.slice(11, 19))}起${j.elapsed_s != null ? ' · 已运行' + (j.elapsed_s >= 60 ? Math.floor(j.elapsed_s / 60) + 'm' : j.elapsed_s + 's') : ''}</span>
+            <span style="flex:1;height:6px;background:var(--page);border-radius:3px;overflow:hidden">
+              <div style="height:100%;width:${j.progress || 0}%;background:#2f5cd6;transition:width .5s"></div></span>
+            <span class="hint">${j.progress != null ? j.progress + '%' : '—'}</span></div>
+          <pre class="logpre" style="max-height:140px;overflow:auto;margin:4px 0 0;font-size:11px">${esc((j.log || '(等待输出…)').split(String.fromCharCode(10)).slice(-10).join(String.fromCharCode(10)))}</pre>
+        </div>`).join('')
       : '<p class="hint">空闲</p>';
     // 排队
     $('jcQN').textContent = d.queued.length ? `×${d.queued.length}` : '';

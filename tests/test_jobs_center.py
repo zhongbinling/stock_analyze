@@ -169,3 +169,36 @@ def test_queue_log_lifecycle(jc, server_app):
     assert snap == []                          # 完结后不再显示排队
     assert any(e["state"] == "done" and e["kind"] == "probe_kind"
                for e in jc._queue_log)
+
+
+def test_fmt_rel_timezone_aware(jc):
+    """review修复回归: APScheduler的next_run_time是aware(tz) —
+    naive datetime.now()相减抛TypeError(实测计划视图全表error行)"""
+    from datetime import datetime, timezone, timedelta
+    aware = datetime.now(timezone.utc) + timedelta(hours=2)
+    assert "2小时" in jc._fmt_rel(aware) or "1小时" in jc._fmt_rel(aware)  # 转naive后正常
+    naive = datetime.now() + timedelta(minutes=5)
+    assert "分钟" in jc._fmt_rel(naive)
+
+
+def test_center_running_has_log_and_elapsed(server_app):
+    """运行中任务带实时日志流(尾部4k)+已运行时长"""
+    from server.models import Job
+    from datetime import datetime
+    with server_app["app"].app_context():
+        db = server_app["app"].extensions["sqlalchemy"]
+        Job.query.filter_by(kind="probe_run").delete()
+        db.session.commit()
+        j = Job(kind="probe_run", target="探针", status="running",
+                started_at=datetime.now(), log="第1行输出")
+        db.session.add(j); db.session.commit()
+        jid = j.id
+    c = server_app["client"]
+    r = c.get("/admin/api/jobs/center").get_json()
+    run = next(x for x in r["running"] if x["id"] == jid)
+    assert "第1行输出" in run["log"]
+    assert run["elapsed_s"] is not None and run["elapsed_s"] >= 0
+    with server_app["app"].app_context():
+        db = server_app["app"].extensions["sqlalchemy"]
+        Job.query.filter_by(id=jid).delete()
+        db.session.commit()

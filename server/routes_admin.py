@@ -179,8 +179,14 @@ def api_jobs_center():
     running = []
     try:
         for j in Job.query.filter_by(status="running").all():
+            started = j.started_at
+            elapsed = None
+            if started:
+                elapsed = round((datetime.now() - started).total_seconds())
             running.append({"id": j.id, "kind": j.kind, "target": j.target,
-                            "progress": j.progress, "started_at": str(j.started_at or "")})
+                            "progress": j.progress, "started_at": str(started or ""),
+                            "elapsed_s": elapsed,
+                            "log": (j.log or "")[-4000:]})   # 实时日志流(尾部4k)
     except Exception:                                       # noqa: BLE001
         pass
     return jsonify({"running": running,
