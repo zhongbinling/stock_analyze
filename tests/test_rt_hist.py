@@ -135,3 +135,11 @@ def test_hist_ui_markers():
     for mk in ("btnRtHist", "rtHistDetail", "loadRtHist", "/admin/api/rt/hist_gap",
                "/admin/api/rt/backfill_hist", "回补历史缺口"):
         assert mk in html, f"缺: {mk}"
+
+
+def test_rt_conns_have_timeout():
+    """review修复回归: rt.py全部rt_day直连带timeout=30(与tick并发让锁)"""
+    import re
+    src = (REPO / "server" / "rt.py").read_text(encoding="utf-8")
+    bare = re.findall(r"sqlite3\.connect\(str\((?:RT_DB|path)\)\)(?!.*timeout)", src)
+    assert not bare, f"仍有裸连接: {bare[:3]}"

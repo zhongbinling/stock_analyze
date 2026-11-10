@@ -30,7 +30,7 @@ INTERVAL_S = 15                      # 采样间隔(秒), 盘中档
 def ensure_db(path=None) -> None:
     path = path or RT_DB                     # 运行时取模块属性(可测注入)
     path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(str(path))
+    con = sqlite3.connect(str(path), timeout=30)
     con.execute("""CREATE TABLE IF NOT EXISTS rt_day(
       date TEXT PRIMARY KEY, updated_at TEXT, n INTEGER, payload TEXT)""")
     con.commit()
@@ -354,7 +354,7 @@ def backfill_today(now: datetime = None) -> str | None:
 def _persist_locked(path=None) -> None:
     path = path or RT_DB                     # 运行时取模块属性(可测注入)
     ensure_db(path)
-    con = sqlite3.connect(str(path))
+    con = sqlite3.connect(str(path), timeout=30)
     con.execute(
         "INSERT INTO rt_day(date,updated_at,n,payload) VALUES(?,?,?,?) "
         "ON CONFLICT(date) DO UPDATE SET updated_at=excluded.updated_at,"
@@ -434,7 +434,7 @@ def latest() -> dict:
 def day(date_iso: str) -> dict | None:
     """R4 回看: 读取已存档交易日"""
     ensure_db()
-    con = sqlite3.connect(str(RT_DB))
+    con = sqlite3.connect(str(RT_DB), timeout=30)
     row = con.execute("SELECT updated_at, payload FROM rt_day WHERE date=?",
                       (date_iso,)).fetchone()
     con.close()
@@ -448,7 +448,7 @@ def day(date_iso: str) -> dict | None:
 
 def days() -> list:
     ensure_db()
-    con = sqlite3.connect(str(RT_DB))
+    con = sqlite3.connect(str(RT_DB), timeout=30)
     out = [r[0] for r in con.execute(
         "SELECT date FROM rt_day ORDER BY date DESC LIMIT 120")]
     con.close()
@@ -528,7 +528,7 @@ def backfill_hist() -> dict:
                     smp["score"] = smp["v1"] = sc
         except Exception as e:                               # noqa: BLE001
             print(f"[rt] 历史回补{d}情绪失败(仅量价): {e}")
-        con = sqlite3.connect(str(RT_DB))
+        con = sqlite3.connect(str(RT_DB), timeout=30)
         con.execute("INSERT INTO rt_day(date,updated_at,n,payload) VALUES(?,?,?,?) "
                     "ON CONFLICT(date) DO UPDATE SET updated_at=excluded.updated_at,"
                     "n=excluded.n,payload=excluded.payload",
@@ -574,7 +574,7 @@ def ensure_started(app=None) -> None:
 def stats() -> dict:
     """R6c 数据管理卡: 实时库状态概览"""
     ensure_db()
-    con = sqlite3.connect(str(RT_DB))
+    con = sqlite3.connect(str(RT_DB), timeout=30)
     try:
         rows = con.execute("SELECT date, n FROM rt_day ORDER BY date DESC").fetchall()
     finally:
