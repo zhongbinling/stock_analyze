@@ -232,7 +232,14 @@ function renderHolders(d) {
           <td>${h.ratio ?? '--'}</td>
           <td style="color:${h.chg == null ? '#898781' : h.chg >= 0 ? '#e34448' : '#1baf7a'}">${h.chg == null ? '--' : (h.chg > 0 ? '+' : '') + h.chg}</td></tr>`).join('')
       + '</table>';
-    $('hdState').textContent = `${sel.value} · 户数 ${item.holder_num ? (item.holder_num / 1e4).toFixed(2) + '万' : '--'}`;
+    // 户数环比(用户找回): 与上一期有户数数据的报告期比较 — 筹码集中/分散信号
+    const prevNum = d.data.filter(x => x.end_date < item.end_date && x.holder_num)[0];
+    const numChg = (prevNum && item.holder_num)
+      ? (item.holder_num - prevNum.holder_num) / prevNum.holder_num * 100 : null;
+    $('hdState').innerHTML = `${sel.value} · 户数 ${item.holder_num ? (item.holder_num / 1e4).toFixed(2) + '万' : '--'}`
+      + (numChg != null
+        ? ` · 环比 <b style="color:${numChg >= 0 ? '#e34448' : '#1baf7a'}">${numChg > 0 ? '+' : ''}${numChg.toFixed(1)}%</b> <span class="hint">${numChg >= 0 ? '筹码分散⚠' : '筹码集中'}</span>`
+        : '');
   };
   sel.onchange = show;
   show();
@@ -530,6 +537,19 @@ $('btnAiFin').onclick = async () => {          // 一键扫雷
   } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
   finally { $('btnAiFin').disabled = false; }
 };
+
+async function loadA2(code) {
+  // A2四模块并行(holders/margin/profit/val) — B2批JS块替换时误删定义,
+  // 调用点仍在(前端"数据都是空的"根因); 恢复自A2原始版(pfState→pfMsg)
+  const enc = encodeURIComponent(code);
+  for (const [mod, fn] of [["holders", renderHolders], ["margin", renderMargin],
+                           ["profit", d => renderProfit(d, document.querySelector('input[name=pfMode]:checked').value)],
+                           ["val", renderVal]]) {
+    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
+    catch (e) { $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
+              : mod === 'profit' ? 'pfMsg' : 'valState').textContent = '✗ ' + e.message; }
+  }
+}
 
 document.querySelectorAll('input[name=pfMode]').forEach(r =>
   r.onchange = async () => {

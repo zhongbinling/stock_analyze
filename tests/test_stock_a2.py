@@ -183,3 +183,12 @@ def test_pfmsg_not_pfstate():
     assert 'id="pfMsg"' in html
     assert "$('pfMsg').textContent" in html
     assert "$('pfState').textContent" not in html
+
+
+def test_a2_load_function_exists():
+    """review修复回归: loadA2定义必须存在 — B2批JS块替换时误删定义,
+    调用点仍在 → holders/margin/profit/val四模块全空(用户实测)"""
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    assert "async function loadA2" in html, "loadA2定义被删!"
+    assert html.count("loadA2(") >= 2               # 定义+调用
+    assert "户数环比" in html and "筹码" in html      # 户数变化指示(用户找回)
