@@ -167,3 +167,10 @@ def test_b1_ui_and_js():
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=120)
         assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+
+
+def test_goodwill_graceful_none():
+    """商誉无数据公司(茅台): 不画空系列, 显示'无商誉'提示"""
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    assert "hasGW" in html and "无商誉" in html
+    assert "if (hasGW)" in html          # 条件入系列

@@ -439,15 +439,19 @@ function renderFull(d) {
     _bars('应收', C.ar, '#eda100'), _bars('应付', C.ap, '#8ba0b6'),
     _bars('存货', C.inv, '#e67e22'), _bars('货币资金', C.cash, '#1baf7a'),
     _line('存货周转', C.inv_turn, '#6250d6')]), true);
-  // 资产负债: 金额柱
-  $('g3State').textContent = B.gw_eq && B.gw_eq.some(v => v != null)
-    ? `商誉占净资产最新 ${B.gw_eq.filter(v => v != null).pop()}%` : '';
-  g3.setOption(_gridOpt(ds, [
-    _bars('总资产', B.assets, '#8ba0b6'), _bars('总负债', B.liab, '#e67e22'),
-    _bars('商誉', B.goodwill, '#d03b3b')]), true);
-  // 杠杆与商誉: 比率型(全%同轴)
-  g3b.setOption(_gridOpt(ds, [
-    _line('资产负债率%', B.dta, '#2f5cd6', 0), _line('商誉占净资产%', B.gw_eq, '#d03b3b', 0)], '%'), true);
+  // 资产负债: 金额柱(商誉仅在有数据时入图 — 无商誉公司不画空系列)
+  const hasGW = (B.goodwill || []).some(v => v != null && v > 0);
+  $('g3State').textContent = hasGW
+    ? (B.gw_eq || []).some(v => v != null)
+      ? `商誉占净资产最新 ${(B.gw_eq.filter(v => v != null)).pop()}%` : ''
+    : '该公司无商誉(未做大额并购)';
+  const g3bars = [_bars('总资产', B.assets, '#8ba0b6'), _bars('总负债', B.liab, '#e67e22')];
+  if (hasGW) g3bars.push(_bars('商誉', B.goodwill, '#d03b3b'));
+  g3.setOption(_gridOpt(ds, g3bars), true);
+  // 杠杆与商誉: 比率型(全%同轴; 无商誉时只画负债率)
+  const g3lines = [_line('资产负债率%', B.dta, '#2f5cd6', 0)];
+  if (hasGW) g3lines.push(_line('商誉占净资产%', B.gw_eq, '#d03b3b', 0));
+  g3b.setOption(_gridOpt(ds, g3lines, '%'), true);
   $('g4State').textContent = d.pledge_ratio != null
     ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
   g4.setOption({
