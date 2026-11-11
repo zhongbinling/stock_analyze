@@ -174,3 +174,14 @@ def test_goodwill_graceful_none():
     html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
     assert "hasGW" in html and "无商誉" in html
     assert "if (hasGW)" in html          # 条件入系列
+
+
+def test_event_card_last_and_datazoom():
+    """事件卡在最后 + 全部B1图有dataZoom滑块"""
+    import re
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    h2s = re.findall(r"<h2>([^<]+)", html)
+    assert "个股大事件" in h2s[-1] or "个股大事件" in h2s[-2], f"事件卡不在尾部: {h2s[-3:]}"
+    # _gridOpt含slider dataZoom
+    assert "type: 'slider'" in html
+    assert html.count("type: 'slider'") >= 3     # _gridOpt+g4+float

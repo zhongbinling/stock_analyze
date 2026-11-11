@@ -61,11 +61,6 @@
   <p class="hint">柱=解禁数量(亿股) · 蓝灰=已解禁 · 橙=未来(计划) · <b style="color:#d03b3b">红=大额(≥5%总股本)</b> · 未来90天汇总见标题</p>
 </section>
 <section class="card">
-  <h2>个股大事件 <span class="hint" id="evState">选择股票后展示</span></h2>
-  <div id="evTable">--</div>
-  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
-</section>
-<section class="card">
   <h2>一键扫雷 · AI全维度体检
     <span style="float:right;display:flex;gap:8px;align-items:center">
       <span class="hint" id="aiFinState">选择股票后展示</span>
@@ -111,6 +106,11 @@
   <h2>筹码结构 <span class="hint" id="g4State"></span></h2>
   <div id="chartG4" style="height:200px"></div>
   <p class="hint">折线=机构持仓合计%(左) · 柱=股东户数万(右) · 质押率见标题(≥30%平仓风险)</p>
+</section>
+<section class="card">
+  <h2>个股大事件 <span class="hint" id="evState">选择股票后展示</span></h2>
+  <div id="evTable">--</div>
+  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -365,10 +365,11 @@ function renderFloat(d) {
       return `<b>${x.date}</b><br/>${esc(x.holder)}<br/>解禁${x.share_yi}亿股 (${x.ratio}%)`
         + (x.future ? ' · 计划' : ' · 已解禁') + (x.big ? ' <b style="color:#d03b3b">大额</b>' : '');
     }},
-    grid: {left: 60, right: 20, top: 24, bottom: 40},
+    grid: {left: 60, right: 20, top: 24, bottom: 44},
     xAxis: {type: 'category', data: d.data.map(x => x.date.slice(2)), ...AX},
     yAxis: {type: 'value', name: '亿股', ...AX},
-    dataZoom: [{type: 'inside'}],
+    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+      borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [{type: 'bar', barMaxWidth: 16, data: d.data.map(x => ({
       value: x.share_yi,
       itemStyle: {color: x.big ? '#d03b3b' : (x.future ? '#eda100' : '#8ba0b6'),
@@ -409,10 +410,12 @@ function _gridOpt(d, series, y0name = '亿') {
   return {animation: false, backgroundColor: 'transparent',
     legend: {data: series.map(x => x.name), textStyle: {fontSize: 10}, top: 0},
     tooltip: {trigger: 'axis'},
-    grid: {left: 54, right: 54, top: 26, bottom: 34},
+    grid: {left: 54, right: 54, top: 26, bottom: 44},
     xAxis: {type: 'category', data: d, ...AX},
     yAxis: [{type: 'value', scale: true, name: y0name, ...AX},
             {type: 'value', scale: true, name: '%/次', ...AX, splitLine: {show: false}}],
+    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+      borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series};
 }
 
@@ -458,10 +461,12 @@ function renderFull(d) {
     animation: false, backgroundColor: 'transparent',
     legend: {data: ['机构持仓占比%', '股东户数(万)'], textStyle: {fontSize: 11}, top: 0},
     tooltip: {trigger: 'axis'},
-    grid: {left: 54, right: 54, top: 26, bottom: 34},
+    grid: {left: 54, right: 54, top: 26, bottom: 44},
     xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', name: '%', ...AX},
             {type: 'value', name: '万户', ...AX, splitLine: {show: false}}],
+    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+      borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '机构持仓占比%', type: 'line', data: d.inst.ratio, showSymbol: true,
        symbolSize: 5, lineStyle: {width: 1.6, color: '#6250d6'},
