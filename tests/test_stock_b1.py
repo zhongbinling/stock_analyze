@@ -151,8 +151,11 @@ def test_b1_ui_and_js():
     import shutil
     import subprocess
     html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
-    for mk in ("盈利能力", "现金流与营运", "资产负债结构", "筹码结构",
-               "chartG1", "renderFull", "loadB1", "_gridOpt", "机构持仓占比",
+    for mk in ("盈利 · 收入与利润", "盈利 · 利润率与回报", "现金流", "营运资金",
+               "资产负债", "杠杆与商誉风险", "筹码结构",
+               "chartG1", "chartG1b", "chartG2", "chartG2b",
+               "chartG3", "chartG3b", "chartG4",
+               "renderFull", "loadB1", "_gridOpt", "机构持仓占比",
                "商誉占净资产", "dv_ttm", "质押率"):
         assert mk in html, f"缺: {mk}"
     assert "${{" not in html                          # Jinja陷阱零残留
