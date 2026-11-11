@@ -138,3 +138,12 @@ def test_a5_ui_markers():
         assert mk in html, f"缺: {mk}"
     # 注: data.html含服务端Jinja占位符(repair_ds_json等), 整块node门禁
     # 对原始模板天然不可行 — 新增JS的语法由stock.html门禁间接覆盖(同构写法)
+
+
+def test_a5_full_refresh_button_feedback():
+    """review修复: KIND_CN含新任务类型 + 按钮即时反馈(禁用/等待态/25s刷新)"""
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    for mk in ("stock_full: '个股全量重拉'", "stock_daily: '个股日更'",
+               "rt_hist: '实时历史回补'", "analyze_all: 'AI全量分析'",
+               "KIND_CN[t.kind]", "b.disabled = true", "拉取中…"):
+        assert mk in html, f"缺: {mk}"

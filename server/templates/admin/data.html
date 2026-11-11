@@ -335,7 +335,10 @@ $('btnUpdate').onclick = async () => {
 
 let pollTimer = null;
 const KIND_CN = {update: '更新', repair: '修复', backfill: '补全', backup: '备份',
-                 verify: '校验', generate: '生成', recalc: '重算'};
+                 verify: '校验', generate: '生成', recalc: '重算',
+                 stock_full: '个股全量重拉', stock_daily: '个股日更',
+                 rt_hist: '实时历史回补', analyze: 'AI分析', analyze_all: 'AI全量分析',
+                 analyze_cloud: '云端AI分析'};
 let tcWasRunning = false;
 function tcFlash() {                       // 任务启动时任务中心蓝色描边闪烁
   const card = $('tcCard');
@@ -391,7 +394,7 @@ async function poll(quick) {
       btn.textContent = '增量更新数据（抓取＋重算评分）';
     }
     $('jobTable').innerHTML = '<tr><th>ID</th><th>类型</th><th>对象</th><th>触发</th><th>状态</th><th>耗时</th><th>时间</th><th></th></tr>' +
-      (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(t.kind)}</td><td>${esc(JOB_TARGET_CN[t.target] || t.target)}</td>
+      (j.recent.length ? j.recent.map(t => `<tr><td>${t.id}</td><td>${esc(KIND_CN[t.kind] || t.kind)}</td><td>${esc(JOB_TARGET_CN[t.target] || t.target)}</td>
         <td class="hint">${esc(t.trigger)}</td>
         <td class="${t.status === 'done' ? 'ok' : 'bad'}">${t.status === 'done' ? '✓ 成功' : '✗ 失败'}</td>
         <td>${t.duration ?? ''}s</td><td class="hint">${esc(t.at)}</td>
@@ -763,13 +766,16 @@ async function loadSkPool() {
       + '</table>';
     document.querySelectorAll('[data-full]').forEach(b => b.onclick = async () => {
       if (!confirm(`全量重拉 ${b.dataset.full}?(全史, 约数秒)`)) return;
+      b.disabled = true; b.textContent = '⏳ 拉取中…';
+      $('skMsg').textContent = '⏳ 已入队, 见上方任务中心…';
       try {
         const r = await (await fetch('/admin/api/stock/full_refresh', {method: 'POST',
           headers: {'Content-Type': 'application/json', 'X-CSRFToken': CSRF},
           body: JSON.stringify({code: b.dataset.full})})).json();
-        $('skMsg').textContent = r.msg;
-        setTimeout(loadSkPool, 15000);
-      } catch (e) { $('skMsg').textContent = e.message; }
+        $('skMsg').textContent = r.msg + ' — 拉取约20秒, 完成后自动刷新';
+        setTimeout(loadSkPool, 25000);            // 覆盖全量重拉典型17-25s
+      } catch (e) { $('skMsg').textContent = '✗ ' + e.message; }
+      finally { b.disabled = false; b.textContent = '全量重拉'; }
     });
   } catch (e) { $('skStat').textContent = e.message; }
 }
