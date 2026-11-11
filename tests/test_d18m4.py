@@ -148,3 +148,10 @@ def test_page_buffett_wired():
     for marker in ("chartBuffett", "echarts.min.js", "api/macro/buffett",
                    "巴菲特指标", "yAxis: 80", "yAxis: 100", "bfState"):
         assert marker in html, f"缺接线: {marker}"
+
+
+def test_buffett_stale_badge():
+    """巴菲特图数据滞后角标(>4天显示橙色提示 — 用户'只到11-4'类反馈自诊断)"""
+    html = (REPO / "server" / "templates" / "admin" / "macro.html").read_text(encoding="utf-8")
+    assert "数据至" in html and "滞后" in html
+    assert "4 * 864e5" in html                    # 阈值4天(覆盖周末不误报)

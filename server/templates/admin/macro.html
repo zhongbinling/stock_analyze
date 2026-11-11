@@ -451,10 +451,14 @@ setInterval(loadNewsRun, 15000);
       + (L.pct_all != null ? ` · 全史分位 <b>${L.pct_all}%</b>` : '')
       + (L.pct_5y != null ? ` · 近5年 <b>${L.pct_5y}%</b>` : '');
     const ch = echarts.init($('chartBuffett'));
+    const lastDate = d.series[d.series.length - 1].date;
+    const stale = lastDate < new Date(Date.now() - 4 * 864e5).toISOString().slice(0, 10);
     ch.setOption({
       animation: false, backgroundColor: 'transparent',
       grid: {left: 50, right: 20, top: 24, bottom: 46},
       tooltip: {trigger: 'axis'},
+      graphic: stale ? [{type: 'text', right: 8, top: 4, silent: true,
+        style: {text: `数据至 ${lastDate}(滞后)`, fontSize: 10, fill: '#e67e22'}}] : [],
       xAxis: {type: 'category', data: d.series.map(x => x.date),
               axisLabel: {color: '#898781'}},
       yAxis: {type: 'value', scale: true, name: '%',
