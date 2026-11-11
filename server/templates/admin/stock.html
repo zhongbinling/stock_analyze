@@ -234,7 +234,7 @@ function renderHolders(d) {
       + '</table>';
     // 户数环比(用户找回): 与上一期有户数数据的报告期比较 — 筹码集中/分散信号
     const prevNum = d.data.filter(x => x.end_date < item.end_date && x.holder_num)[0];
-    const numChg = (prevNum && item.holder_num)
+    const numChg = (prevNum && item.holder_num && prevNum.holder_num)
       ? (item.holder_num - prevNum.holder_num) / prevNum.holder_num * 100 : null;
     $('hdState').innerHTML = `${sel.value} · 户数 ${item.holder_num ? (item.holder_num / 1e4).toFixed(2) + '万' : '--'}`
       + (numChg != null
