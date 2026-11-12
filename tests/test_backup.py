@@ -508,3 +508,32 @@ def test_rebuilt_entries_survive_next_snapshot(env):
     assert len(m["entries"]) == 1
     B.prune()                                                        # 不炸
     assert len(_entries()) == 1
+
+
+def test_win_replace_retries(tmp_path, monkeypatch):
+    """WinError 5重试: 前2次PermissionError第3次成功; 全失败抛原异常"""
+    from pathlib import Path as _P
+    import backup as B
+    src = tmp_path / "a.part"
+    dst = tmp_path / "a.zip"
+    src.write_text("x")
+    calls = []
+    orig = _P.replace
+    def flaky(self, target):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(5, "拒绝访问")
+        return orig(self, target)
+    monkeypatch.setattr(_P, "replace", flaky)
+    B._win_replace(src, dst)
+    assert dst.exists() and len(calls) == 3
+    # 全失败
+    calls2 = []
+    def always_fail(self, target):
+        calls2.append(1)
+        raise PermissionError(5, "拒绝访问")
+    monkeypatch.setattr(_P, "replace", always_fail)
+    import pytest as _pt
+    with _pt.raises(PermissionError):
+        B._win_replace(dst, tmp_path / "b.zip")
+    assert len(calls2) == 3

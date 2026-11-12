@@ -92,6 +92,20 @@ def _log(msg: str):
         pass
 
 
+def _win_replace(src: Path, dst: Path, retries: int = 3):
+    """Windows原子重命名带重试 — WinError 5(拒绝访问)多由杀毒/索引器
+    瞬时锁文件引起(实测11-08/11-11日备间歇失败, zip.part→zip改名撞锁),
+    2s间隔重试3次; 仍失败抛原异常(调用方已有manifest回滚语义)。"""
+    for i in range(retries):
+        try:
+            src.replace(dst)
+            return
+        except PermissionError:
+            if i == retries - 1:
+                raise
+            time.sleep(2)
+
+
 def _sha256(p: Path) -> str:
     h = hashlib.sha256()
     with open(p, "rb") as f:
@@ -275,10 +289,10 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
                 fo.write(zo.compress(chunk))
             fo.write(zo.flush())
         tmp.unlink(missing_ok=True)
-        zpart.replace(zpath)
+        _win_replace(zpart, zpath)
         fname = fname + ".z"
     else:
-        tmp.replace(outdir / fname)               # .part → 原名
+        _win_replace(tmp, outdir / fname)           # .part → 原名
 
     sha = _sha256(outdir / fname)
     if last and last.get("sha256") == sha:    # raw(.z)压缩后到此才可比对(纵深:残缺条目缺键不炸)
@@ -320,7 +334,7 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
         shutil.rmtree(outdir, ignore_errors=True)
         if merge_dir:
             shutil.rmtree(merge_dir, ignore_errors=True)
-        zpart.replace(zpath)
+        _win_replace(zpart, zpath)
         entry_file = f"{folder}.zip/{fname}"
         # entry.size保持成员自身大小(final.stat().st_size, 压缩前原始字节);
         # D1-10r修复: 曾误记zpath整体大小, 多资产合并后所有条目都变成zip总大小
@@ -675,7 +689,7 @@ def restore(fname: str, yes: bool = False) -> bool:
     dst = Path(ASSETS[e["asset"]][1])
     tmp = dst.with_suffix(dst.suffix + ".part")
     shutil.copy2(src_plain, tmp)
-    tmp.replace(dst)
+    _win_replace(tmp, dst)
     for t in _temps:
         t.unlink(missing_ok=True)
     _log(f"↺ 已恢复 {fname} → {dst}")
