@@ -854,8 +854,8 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f"[float] 挂载异常(跳过): {type(e).__name__}: {e}")
     try:                                  # D1-28 N1+N4: 新闻日增+自动AI分析
-        import fetch_news
-        fetch_news.refresh()
+        import fetch_news                                  # backfill=False: 修复链
+        fetch_news.refresh(backfill=False)                 # 不做渐进回补(留给晚间驱动)
         import analyze_news
         analyze_news.auto_analyze()
     except Exception as e:  # noqa: BLE001

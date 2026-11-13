@@ -90,3 +90,24 @@ def test_driver_cron_prompt_near_first():
     assert "run(start, end, path, tail=False)" in src   # 调用面未变
     src_run = inspect.getsource(FN.run)
     assert "_missing_dates" in src_run
+
+
+def test_refresh_backfill_false_skips_progressive(env, monkeypatch):
+    """修复链backfill=False: 只拉近3日, 不做渐进回补(省配额给修复主链)"""
+    calls = []
+    monkeypatch.setattr(FN, "fetch_day",
+                        lambda d, path=None, with_content=False, lookback=None:
+                        calls.append(d) or 0)
+    monkeypatch.setattr(FN, "refresh_em", lambda path=None: 0)
+    monkeypatch.setattr(FN, "refresh_sina", lambda path=None: 0)
+    monkeypatch.setattr(FN, "refresh_ths", lambda path=None: 0)
+    monkeypatch.setattr(FN, "_summary", lambda path=None: None)
+    import datetime as dt2
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    FN.refresh(env, backfill=False)
+    # 仅近3日(今天+昨天+前天), 无回补probe
+    assert len(calls) == 3, f"backfill=False应只拉3日, 实际{len(calls)}: {calls}"
+    # backfill=True走渐进回补(有额外probe日)
+    calls.clear()
+    FN.refresh(env, backfill=True)
+    assert len(calls) > 3, "backfill=True应含渐进回补日"

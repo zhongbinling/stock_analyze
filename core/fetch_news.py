@@ -331,25 +331,29 @@ def refresh_ths(path=None) -> int:
     return n
 
 
-def refresh(path=None) -> bool:
-    """日增: major_news 近3日(含content富化) + em/sina/ths三路快讯; 顺带渐进回补"""
+def refresh(path=None, backfill: bool = True) -> bool:
+    """日增: major_news 近3日(含content富化) + em/sina/ths三路快讯。
+    backfill=True顺带渐进回补10日 — 仅晚间驱动用; 修复链(fetch_daily)
+   传False: 近端缺口大时渐进回补耗光40次/天配额, 拖慢修复主链
+    (用户实测: '修复最近30天'里新闻回补吃掉全部配额)。"""
     import datetime as dt
     done = days_done(SRC_MN, path)
     for back in range(3):
         d = (dt.date.today() - dt.timedelta(days=back)).strftime("%Y%m%d")
         fetch_day(d, path, with_content=True)      # 近期稀疏日顺带拉content
-    # 渐进回补: 从最近未覆盖日往前推10日(多层限频下安全余量, -2即止)
-    probe = dt.date.today() - dt.timedelta(days=4)
-    filled = 0
-    while filled < 10 and probe >= dt.date(2018, 6, 1):
-        iso = probe.isoformat()
-        if iso not in done:
-            n = fetch_day(probe.strftime("%Y%m%d"), path)
-            if n == -2:                       # 限频 → 本轮回补到此为止
-                break
-            if isinstance(n, int) and n >= 0:
-                filled += 1
-        probe -= dt.timedelta(days=1)
+    if backfill:
+        # 渐进回补: 从最近未覆盖日往前推10日(多层限频下安全余量)
+        probe = dt.date.today() - dt.timedelta(days=4)
+        filled = 0
+        while filled < 10 and probe >= dt.date(2018, 6, 1):
+            iso = probe.isoformat()
+            if iso not in done:
+                n = fetch_day(probe.strftime("%Y%m%d"), path)
+                if n == -2:                   # 限频 → 本轮回补到此为止
+                    break
+                if isinstance(n, int) and n >= 0:
+                    filled += 1
+            probe -= dt.timedelta(days=1)
     refresh_em(path)
     refresh_sina(path)                  # D1-28 N1+: 新浪快讯20条
     refresh_ths(path)                   # D1-28 N1+: 同花顺快讯20条

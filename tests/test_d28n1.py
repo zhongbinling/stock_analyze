@@ -110,7 +110,7 @@ def test_registrations():
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "news_fetch" in FD.BACKFILLS
     assert "news_raw" in str(FD.BACKFILLS["news_fetch"][1])
-    assert "fetch_news.refresh()" in (CORE / "fetch_daily.py").read_text(encoding="utf-8")
+    assert "fetch_news.refresh(backfill=False)" in (CORE / "fetch_daily.py").read_text(encoding="utf-8")  # 修复链不回补(留给驱动)
     assert "news_fetch" in jobs.BACKFILL_DATASETS
     assert jobs.BACKFILL_DEFAULT_START["news_fetch"] == "20180601"
     for mk in ("宏观新闻抓取", "btnNewsBackfill", "btnNewsInc", "loadNewsStat"):
