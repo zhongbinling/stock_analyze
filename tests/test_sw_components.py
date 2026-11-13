@@ -110,3 +110,16 @@ def test_validate_consistency(db):
     _seed(db)
     # 000001/000600 在册 == 今日还原(区间开放); 000034 历史段不计
     assert SC.validate() is True
+
+
+def test_bk_start_idx_in_payload(fixture_db):
+    """BK层级2019前无数据提示: payload含bkStartIdx(BK最早评分日索引)"""
+    import sector_viewer as SV
+    old = SV.DB
+    SV.DB = fixture_db
+    try:
+        p = SV.build_payload()
+        assert "bkStartIdx" in p
+        assert isinstance(p["bkStartIdx"], int) and p["bkStartIdx"] >= 0
+    finally:
+        SV.DB = old

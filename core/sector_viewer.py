@@ -133,6 +133,9 @@ def build_payload(years=2):
     except Exception:
         pass
 
+    # BK代码最早评分日索引(BK层级2019前无数据的提示用) — 须在conn.close()前查
+    bk_first = conn.execute(
+        "SELECT MIN(date) FROM sector_scores WHERE code LIKE 'BK%'").fetchone()[0]
     conn.close()
 
     def disp_name(c):
@@ -147,7 +150,8 @@ def build_payload(years=2):
             "comp": comp, "clabels": CLABELS, "corder": CORDER,
             "top5": top5, "bot5": bot5, "latest": latest,
             "sw1_groups": sw1_groups, "sw2_groups": sw2_groups,
-            "level_data": level_data, "sw2_to_sw1": sw2_to_sw1}
+            "level_data": level_data, "sw2_to_sw1": sw2_to_sw1,
+            "bkStartIdx": dates.index(bk_first) if bk_first in dset else 0}
 
 
 HTML = r"""<!DOCTYPE html>
@@ -981,6 +985,11 @@ function drawHeatmap() {
     dataZoom: [{ type: 'inside', xAxisIndex: 0, start: zStart, end: zEnd },
                { type: 'slider', xAxisIndex: 0, start: zStart, end: zEnd,
       bottom: 26, height: 14, borderColor: PAL.a, fillerColor: 'rgba(42,120,214,0.1)' }],
+    // BK层级窗口含2019-01-10前日期时提示(该前仅SW代码有评分, BK空白)
+    graphic: (levelVal === 'BK' && zStart / 100 * N_D < D.bkStartIdx)
+      ? [{ type: 'text', left: 'center', top: 38, silent: true,
+           style: { text: '◀ 2019-01-10前无BK板块评分 — 切换 L1/SW3/SW 层级可看2005年起数据',
+                    fontSize: 11, fill: PAL.warn } }] : [],
     series: [{ type: 'heatmap', data: hmData,
       // S3-D: 常态无边框(降噪), 仅hover描边
       itemStyle: { borderWidth: 0 },
