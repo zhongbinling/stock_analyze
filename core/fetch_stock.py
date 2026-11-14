@@ -668,11 +668,12 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
                      (ts_code,)).fetchone()
     pledge = con.execute("SELECT pledge_ratio FROM stock_pledge WHERE ts_code=? "
                          "ORDER BY end_date DESC LIMIT 1", (ts_code,)).fetchone()
-    # 机构持仓: 近三期十大流通中 机构类(公募/资管/北向/国家队/私募) 持股占比合计
+    # 机构持仓: 全期十大流通中 机构类(公募/资管/北向/国家队/私募) 持股占比合计
+    # (图表修复: 原LIMIT 3仅2026三期且DESC倒序 → 全期+正序)
     inst = []
     for (end_date,) in con.execute(
             "SELECT DISTINCT end_date FROM stock_holders WHERE ts_code=? "
-            "ORDER BY end_date DESC LIMIT 3", (ts_code,)).fetchall():
+            "ORDER BY end_date ASC", (ts_code,)).fetchall():
         names = con.execute("SELECT holder_name, ratio FROM stock_holders "
                             "WHERE ts_code=? AND end_date=?",
                             (ts_code, end_date)).fetchall()
@@ -691,7 +692,7 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
            "cashflow": {"ocf": [], "ar": [], "ap": [], "inv": [], "cash": [],
                         "inv_turn": [], "ar_turn": []},
            "balance": {"assets": [], "liab": [], "dta": [], "goodwill": [],
-                       "gw_eq": []},
+                       "gw_eq": [], "liab_pct": []},
            "inst": {"dates": [x[0] for x in inst], "ratio": [x[1] for x in inst],
                     "holder_num": [x[2] for x in inst]},
            "pledge_ratio": pledge[0] if pledge else None}
@@ -723,6 +724,8 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
             eq = (b[6] - b[7]) if b[6] and b[7] else None    # 净资产自算
             out["balance"]["assets"].append(round(b[6] / E, 1) if b[6] else None)
             out["balance"]["liab"].append(round(b[7] / E, 1) if b[7] else None)
+            out["balance"]["liab_pct"].append(round(b[7] / b[6] * 100, 1)
+                                              if b[7] and b[6] else None)   # 负债/资产%
             out["balance"]["dta"].append(f[7] if f else None)
             out["balance"]["goodwill"].append(round(b[5] / E, 2) if b[5] else None)
             out["balance"]["gw_eq"].append(round(b[5] / eq * 100, 1)
@@ -730,7 +733,7 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
         else:
             for k in ("ar", "ap", "inv", "cash"):
                 out["cashflow"][k].append(None)
-            for k in ("assets", "liab", "dta", "goodwill", "gw_eq"):
+            for k in ("assets", "liab", "dta", "goodwill", "gw_eq", "liab_pct"):
                 out["balance"][k].append(None)
         out["cashflow"]["inv_turn"].append(f[8] if f else None)
         # fin列序: ...8inv_turn 9ar_turn

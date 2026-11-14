@@ -74,7 +74,7 @@
 </section>
 <section class="card">
   <h2>盈利 · 收入与利润 <span class="hint" id="g1State">选择股票后展示</span></h2>
-  <div id="chartG1" style="height:220px"></div>
+  <div id="chartG1" style="height:260px"></div>
   <p class="hint">柱=营收/净利/扣非(亿, 左轴) · 折线=营收同比/净利同比%(右轴) · 股息率见标题 — 同比转负=业绩变脸</p>
 </section>
 <section class="card">
@@ -89,7 +89,7 @@
 </section>
 <section class="card">
   <h2>营运资金</h2>
-  <div id="chartG2b" style="height:200px"></div>
+  <div id="chartG2b" style="height:260px"></div>
   <p class="hint">柱=应收/应付/存货/货币资金(亿, 同尺度) · 折线=存货周转(右轴)</p>
 </section>
 <section class="card">
@@ -285,7 +285,9 @@ function renderMargin(d) {
     xAxis: {type: 'category', data: d.dates, ...AX},
     yAxis: [{type: 'value', scale: true, name: '融资(亿)', ...AX},
             {type: 'value', scale: true, name: '融券(亿)', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '融资余额(亿)', type: 'line', data: d.rzye, showSymbol: false,
@@ -308,7 +310,9 @@ function renderProfit(d, mode) {
     xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', name: '亿', ...AX},
             {type: 'value', name: '%', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '净利润(亿)', type: 'bar', data: vals.map(v =>
@@ -334,7 +338,9 @@ function renderVal(d) {
     xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', scale: true, name: 'PE', ...AX},
             {type: 'value', scale: true, name: 'PB', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: 'PE_TTM', type: 'line', data: d.pe, showSymbol: false, connectNulls: true,
@@ -375,7 +381,9 @@ function renderFloat(d) {
     grid: {left: 60, right: 20, top: 24, bottom: 44},
     xAxis: {type: 'category', data: d.data.map(x => x.date.slice(2)), ...AX},
     yAxis: {type: 'value', name: '亿股', ...AX},
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [{type: 'bar', barMaxWidth: 16, data: d.data.map(x => ({
       value: x.share_yi,
@@ -421,7 +429,9 @@ function _gridOpt(d, series, y0name = '亿') {
     xAxis: {type: 'category', data: d, ...AX},
     yAxis: [{type: 'value', scale: true, name: y0name, ...AX},
             {type: 'value', scale: true, name: '%/次', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series};
 }
@@ -461,6 +471,7 @@ function renderFull(d) {
   // 杠杆与商誉: 比率型(全%同轴; 无商誉时只画负债率)
   const g3lines = [_line('资产负债率%', B.dta, '#2f5cd6', 0)];
   if (hasGW) g3lines.push(_line('商誉占净资产%', B.gw_eq, '#d03b3b', 0));
+  if (B.liab_pct) g3lines.push(_line('负债占比%', B.liab_pct, '#e67e22', 0));
   g3b.setOption(_gridOpt(ds, g3lines, '%'), true);
   $('g4State').textContent = d.pledge_ratio != null
     ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
@@ -472,7 +483,9 @@ function renderFull(d) {
     xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', name: '%', ...AX},
             {type: 'value', name: '万户', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside'}, {type: 'slider', height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+               {type: 'inside', xAxisIndex: 0},
+               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '机构持仓占比%', type: 'line', data: d.inst.ratio, showSymbol: true,

@@ -128,8 +128,12 @@ def test_finance_full_payload_groups(env):
                                      round(3e8 / (3.1e11-5.2e10) * 100, 1)]
     # 筹码组: 机构聚合(香港中央结算=北向+基金=公募, 个人不计) 户数
     # inst取近3期按日期DESC(新到旧), 与dates顺序一致
-    assert d["inst"]["ratio"] == [10.0, 9.0]     # 0930: 6.5+3.5 / 0630: 6.0+3.0(个人不计)
-    assert d["inst"]["holder_num"] == [8.5e4, 8e4]
+    assert d["inst"]["ratio"] == [9.0, 10.0]     # ASC: 0630: 6.0+3.0 / 0930: 6.5+3.5(个人不计)
+    assert d["inst"]["holder_num"] == [8e4, 8.5e4]
+    # 修复回归: 全期ASC正序(原LIMIT 3+DESC仅2026三期且倒序)
+    assert d["inst"]["dates"][0] < d["inst"]["dates"][-1]
+    # 负债占比
+    assert "liab_pct" in d["balance"]
     assert d["pledge_ratio"] == 0.5
 
 
@@ -185,3 +189,17 @@ def test_event_card_last_and_datazoom():
     # _gridOpt含slider dataZoom
     assert "type: 'slider'" in html
     assert html.count("type: 'slider'") >= 3     # _gridOpt+g4+float
+
+
+def test_chip_full_periods_asc(env):
+    """筹码修复: inst聚合从LIMIT 3 DESC → 全期ASC(时间正序)"""
+    import sqlite3
+    con = FS._conn(env)   # _conn自动ensure_db
+    # 预置5期holders(跨年份)
+    for y in (2022, 2023, 2024, 2025, 2026):
+        con.execute("INSERT INTO stock_holders VALUES(?,?,?,?,?)",
+                    ("600519.SH", f"{y}-12-31", "香港中央结算", 1e8, 5.0))
+    con.commit(); con.close()
+    d = FS.finance_full_payload("600519", env)
+    assert len(d["inst"]["dates"]) == 5         # 全部5期(不是LIMIT 3)
+    assert d["inst"]["dates"] == sorted(d["inst"]["dates"])  # ASC正序
