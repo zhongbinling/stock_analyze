@@ -99,3 +99,12 @@ def test_yday_etf_prev_mismatch_skips_code(env):
     c.commit(); c.close()
     r = rt._yday_etf_curve("2026-10-30")
     assert r is not None and r["date"] == "2026-10-29"     # 仍以多数code基准日
+
+
+def test_mkline_n800_covers_yesterday():
+    """mkline n=800: API实测n>=1000时反降至320根, 800覆盖今日80+昨日242+前日242=564余量236"""
+    import server.rt as rt
+    import inspect
+    sig = inspect.signature(rt._mkline)
+    n = sig.parameters["n"].default
+    assert n == 800, f"n应为800(640截断前交易日, 1000+API反降320): {n}"

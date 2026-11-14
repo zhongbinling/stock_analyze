@@ -627,8 +627,12 @@ _yday_anchor_cache = {}
 _yday_curve_cache = {}
 
 
-def _mkline(code: str = "sh000001", n: int = 640) -> list:
-    """腾讯mkline m1分钟柱(数组: [dt,open,close,high,low,vol,...]); 按code+日缓存"""
+def _mkline(code: str = "sh000001", n: int = 800) -> list:
+    """腾讯mkline m1分钟柱(数组: [dt,open,close,high,low,vol,...]); 按code+日缓存
+
+    n=800(原640): 盘中今日占~80根时, 640窗口边缘截断前交易日头部
+    (实测Nov11仅剩1053起158根→昨日虚线10:53后才可见); 800覆盖
+    今日242+昨日242+前日242=726余74根。API实测n>=1000时反降至320根。"""
     today = time.strftime("%Y-%m-%d")
     c = _mkline_cache.get(code)
     if c and c[0] == today and c[1]:
