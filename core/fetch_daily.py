@@ -692,6 +692,12 @@ BACKFILLS = {
     "mkt_val": ("全A/宽基估值回补(2010起, 自算整体法)",
                 [("mkt_val_daily", None, "date")],
                 lambda start: __import__("fetch_mktval").run(start), "20100101"),
+    "stock_daily": ("个股数据·自选池日增(日线/两融/估值/事件增量)",
+                    [],   # stock.db独立库, 不走sentiment.db缺口检测
+                    lambda start: __import__("fetch_stock").refresh_daily(), "20180601"),
+    "stock_hist": ("个股数据·自选池全量补全(含财务/股东/解禁全史)",
+                   [],
+                   lambda start: __import__("fetch_stock").run_nightly(weekly=True), "20050101"),
     "news_fetch": ("宏观新闻抓取·major_news回补(2018起)+em快讯增量",
                    [("news_raw", None, "pub_time")],
                    lambda start: __import__("fetch_news").run(start), "20180601"),
