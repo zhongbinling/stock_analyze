@@ -510,8 +510,9 @@ def test_rebuilt_entries_survive_next_snapshot(env):
     assert len(_entries()) == 1
 
 
-def test_win_replace_retries(tmp_path, monkeypatch):
-    """WinError 5重试: 前2次PermissionError第3次成功; 全失败抛原异常"""
+def test_win_replace_retries_and_fallback(tmp_path, monkeypatch):
+    """WinError 5: replace重试(前2次失败第3次成功) + 降级copy(全replace失败
+    后copy2到目标绕锁, .part容忍残留由sweep清)"""
     from pathlib import Path as _P
     import backup as B
     src = tmp_path / "a.part"
@@ -527,13 +528,11 @@ def test_win_replace_retries(tmp_path, monkeypatch):
     monkeypatch.setattr(_P, "replace", flaky)
     B._win_replace(src, dst)
     assert dst.exists() and len(calls) == 3
-    # 全失败
-    calls2 = []
-    def always_fail(self, target):
-        calls2.append(1)
-        raise PermissionError(5, "拒绝访问")
-    monkeypatch.setattr(_P, "replace", always_fail)
-    import pytest as _pt
-    with _pt.raises(PermissionError):
-        B._win_replace(dst, tmp_path / "b.zip")
-    assert len(calls2) == 3
+    # replace全失败 → 降级copy成功
+    src2 = tmp_path / "c.part"
+    dst2 = tmp_path / "c.zip"
+    src2.write_text("data")
+    monkeypatch.setattr(_P, "replace",
+                        lambda s, t: (_ for _ in ()).throw(PermissionError(5, "锁")))
+    B._win_replace(src2, dst2)
+    assert dst2.exists() and dst2.read_text() == "data"

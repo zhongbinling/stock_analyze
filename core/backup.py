@@ -92,18 +92,30 @@ def _log(msg: str):
         pass
 
 
-def _win_replace(src: Path, dst: Path, retries: int = 3):
-    """Windows原子重命名带重试 — WinError 5(拒绝访问)多由杀毒/索引器
-    瞬时锁文件引起(实测11-08/11-11日备间歇失败, zip.part→zip改名撞锁),
-    2s间隔重试3次; 仍失败抛原异常(调用方已有manifest回滚语义)。"""
+def _win_replace(src: Path, dst: Path, retries: int = 5):
+    """Windows原子重命名带重试+降级 — WinError 5(拒绝访问)多由杀毒/索引器
+    锁文件引起(实测周备1.4GB的AV扫描可锁30s+, 3×2s重试仍不够)。
+    策略: replace→10s间隔重试5次(50s)→copy+unlink降级(绕锁)→抛。"""
     for i in range(retries):
         try:
             src.replace(dst)
             return
         except PermissionError:
             if i == retries - 1:
-                raise
-            time.sleep(2)
+                break               # 走降级而非直接抛
+            time.sleep(10)
+    # 降级: copy到目标(新文件不受旧锁影响) + unlink源(可能仍锁→容忍)
+    try:
+        shutil.copy2(str(src), str(dst))
+        src.unlink(missing_ok=True)  # .part残留由_sweep_stale_parts清
+        return
+    except PermissionError:
+        pass                        # copy也锁 → 清理后抛原异常
+    try:
+        src.unlink(missing_ok=True)
+    except OSError:
+        pass
+    raise PermissionError(5, f"改名+降级均失败: {src} → {dst}")
 
 
 def _sha256(p: Path) -> str:
