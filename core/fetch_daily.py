@@ -380,10 +380,10 @@ def _pull_margin(conn, start_ymd: str, end_ymd: str) -> int:
             tot = g.sum(numeric_only=True)
             sse = g[g["exchange_id"] == "SSE"]["rzrqye"].sum()
             szse = g[g["exchange_id"] == "SZSE"]["rzrqye"].sum()
-            # 两融完整性守卫: 沪市有值但深市缺(源端延迟) → 不写半截数据
+            # 两融完整性守卫: 任一所缺(源端延迟) → 不写半截数据
             # (实测11-13仅SSE=1.19万亿入库, 缺SZSE≈1.1万亿 → 图表腰斩;
-            # 下轮3日重叠回看自动补齐全值)
-            if sse and not szse:
+            # 下轮3日重叠回看自动补齐全值; 双向防: SSE有SZSE缺 / 反向亦跳)
+            if (sse or szse) and not (sse and szse):
                 continue
             fresh[iso] = (iso, float(tot["rzye"]), float(tot["rzmre"]),
                           float(tot["rqye"]), float(tot["rzrqye"]),
