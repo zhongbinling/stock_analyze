@@ -469,9 +469,10 @@ function renderFull(d) {
   if (hasGW) g3bars.push(_bars('商誉', B.goodwill, '#d03b3b'));
   g3.setOption(_gridOpt(ds, g3bars), true);
   // 杠杆与商誉: 比率型(全%同轴; 无商誉时只画负债率)
-  const g3lines = [_line('资产负债率%', B.dta, '#2f5cd6', 0)];
+  // dta=资产负债率(负债/资产%) 即"负债占比" — liab_pct自算值与之完全
+  // 重叠(差仅四舍五入), 不重复画线, 统一用dta一条线+明确标签
+  const g3lines = [_line('负债占比%', B.dta, '#2f5cd6', 0)];
   if (hasGW) g3lines.push(_line('商誉占净资产%', B.gw_eq, '#d03b3b', 0));
-  if (B.liab_pct) g3lines.push(_line('负债占比%', B.liab_pct, '#e67e22', 0));
   g3b.setOption(_gridOpt(ds, g3lines, '%'), true);
   $('g4State').textContent = d.pledge_ratio != null
     ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
