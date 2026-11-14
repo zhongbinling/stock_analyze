@@ -171,3 +171,22 @@ def test_b2_ui_and_js():
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=120)
         assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+
+
+def test_freshness_sparse_data(env):
+    """review修复: 解禁/事件天然稀疏 — 解禁有数据即fresh, 事件季频判定"""
+    import datetime as dt
+    import fetch_stock as FS
+    import stock_risk as SR
+    import sqlite3
+    con = FS._conn(env)   # _conn自动ensure_db
+    # 解禁: 只有2009年数据(茅台场景)
+    con.execute("INSERT INTO stock_pool VALUES('600519.SH','茅台','','t','t')")
+    con.execute("INSERT INTO stock_float VALUES('600519.SH','t','2009-05-25',1e8,5.0,'股东')")
+    # 事件: 30天前
+    con.execute("INSERT INTO stock_events VALUES('600519.SH',?,?,'t','','low')",
+                ((dt.date.today() - dt.timedelta(days=30)).isoformat(), "test"))
+    con.commit(); con.close()
+    ds = SR.data_freshness("600519.SH", env)
+    assert ds["解禁"]["fresh"] is True    # 有数据即fresh(天然稀疏)
+    assert ds["事件"]["fresh"] is True   # 30天前在季频判定内

@@ -163,11 +163,13 @@ def data_freshness(code: str, path=None) -> dict:
         "事件": q("SELECT MAX(ev_date) FROM stock_events WHERE ts_code=?"),
     }
     con.close()
-    quarterly = {"财务", "资产负债", "利润", "现金流", "股东", "解禁"}
+    quarterly = {"财务", "资产负债", "利润", "现金流", "股东", "解禁", "事件"}
     out = {}
     for name, row in qmap.items():
         last = row[0] if row and row[0] else None
-        if name in quarterly:
+        if name == "解禁":
+            fresh = bool(last)              # 天然稀疏: 有数据即fresh(茅台2009后无解禁)
+        elif name in quarterly:
             fresh = bool(last and last[:7] >= month_ago)
         else:
             fresh = bool(last and last >= week_ago)

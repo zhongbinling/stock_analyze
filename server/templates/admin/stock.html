@@ -285,7 +285,7 @@ function renderMargin(d) {
     xAxis: {type: 'category', data: d.dates, ...AX},
     yAxis: [{type: 'value', scale: true, name: '融资(亿)', ...AX},
             {type: 'value', scale: true, name: '融券(亿)', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
@@ -310,7 +310,7 @@ function renderProfit(d, mode) {
     xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', name: '亿', ...AX},
             {type: 'value', name: '%', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
@@ -338,7 +338,7 @@ function renderVal(d) {
     xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', scale: true, name: 'PE', ...AX},
             {type: 'value', scale: true, name: 'PB', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
@@ -381,7 +381,7 @@ function renderFloat(d) {
     grid: {left: 60, right: 20, top: 24, bottom: 44},
     xAxis: {type: 'category', data: d.data.map(x => x.date.slice(2)), ...AX},
     yAxis: {type: 'value', name: '亿股', ...AX},
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
@@ -429,7 +429,7 @@ function _gridOpt(d, series, y0name = '亿') {
     xAxis: {type: 'category', data: d, ...AX},
     yAxis: [{type: 'value', scale: true, name: y0name, ...AX},
             {type: 'value', scale: true, name: '%/次', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
@@ -476,6 +476,14 @@ function renderFull(d) {
   g3b.setOption(_gridOpt(ds, g3lines, '%'), true);
   $('g4State').textContent = d.pledge_ratio != null
     ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
+  // 户数前向填充: 非标准披露日(如25-11-05)有holders无holdernum → 用前期值
+  const hnFilled = [];
+  let hnPrev = null;
+  for (let i = 0; i < d.inst.dates.length; i++) {
+    const v = d.inst.holder_num[i];
+    hnFilled.push(v != null ? v : hnPrev);
+    if (v != null) hnPrev = v;
+  }
   g4.setOption({
     animation: false, backgroundColor: 'transparent',
     legend: {data: ['机构持仓占比%', '股东户数(万)'], textStyle: {fontSize: 11}, top: 0},
@@ -484,15 +492,14 @@ function renderFull(d) {
     xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AX},
     yAxis: [{type: 'value', name: '%', ...AX},
             {type: 'value', name: '万户', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', yAxisIndex: [0, 1], filterMode: 'weakFilter'},
-               {type: 'inside', xAxisIndex: 0},
+    dataZoom: [{type: 'inside', xAxisIndex: 0},
                {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '机构持仓占比%', type: 'line', data: d.inst.ratio, showSymbol: true,
        symbolSize: 5, lineStyle: {width: 1.6, color: '#6250d6'},
        itemStyle: {color: '#6250d6'}},
-      {name: '股东户数(万)', type: 'bar', yAxisIndex: 1, data: d.inst.holder_num,
+      {name: '股东户数(万)', type: 'bar', yAxisIndex: 1, data: hnFilled,
        barMaxWidth: 18, itemStyle: {color: '#8ba0b6'}}]
   }, true);
 }
