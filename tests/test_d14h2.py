@@ -78,7 +78,8 @@ def test_backfill_margin_two_segments(m_env, monkeypatch):
         got.append((start, end))
         if start > "20100331":                            # 第二页起无更多数据 → 结束分页
             return _marg_df([])
-        return _marg_df([("SSE", "20100331", 1, 1, 1, 100)])
+        return _marg_df([("SSE", "20100331", 1, 1, 1, 100),
+                            ("SZSE", "20100331", 1, 1, 1, 100)])
     import tushare_api
     monkeypatch.setattr(tushare_api, "has_token", lambda: True)
     monkeypatch.setattr(tushare_api, "margin", fake)
