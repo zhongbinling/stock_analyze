@@ -242,6 +242,12 @@ def build_payload(cfg, years=None):
     payload.update(aux)
     # D1-18 M3: 事件标注(macro.db 独立库, 缺失→空)
     payload["events"] = _read_events()
+    # C1: ETF净流入/流出序列(近120日, 副图叠加)
+    try:
+        import fetch_etf_flow as _EF
+        payload["etf_flow"] = _EF.net_flow_series(n_days=120)
+    except Exception:                                         # noqa: BLE001
+        payload["etf_flow"] = []
     # 2026-11-10修复: 事件content可能含抓取来的完整网页HTML(内嵌</script>
     # 广告代码) — JSON不转义它, 浏览器在字符串内提前关闭script标签 →
     # payload截断成裸文本(SyntaxError+%22碎片404)。注入前转义闭合标签。
@@ -380,6 +386,7 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" id="ckPB" checked> 指数PB</label>
   <label><input type="checkbox" id="ckMargin" checked> 两融余额</label>
   <label><input type="checkbox" id="ckEtf" checked> 宽基ETF成交额</label>
+  <label><input type="checkbox" id="ckEtfFlow" checked> ETF净流入</label>
   <label><input type="checkbox" id="ckPEPct" checked> 全A PE分位</label>
   <label><input type="checkbox" id="ckPBPct" checked> 全A PB分位</label>
   <span style="margin-left:10px">事件标注:</span>
@@ -648,6 +655,23 @@ function marginSeries(gi) {
     data: D.margin, showSymbol: false, lineStyle: { width: 1.4, color: '#6250d6' },
     itemStyle: { color: '#6250d6' }, areaStyle: { opacity: 0.08 } }];
 }
+// C1: ETF净流入/流出柱(红=流入/绿=流出, 8只ETF日净申购×收盘价)
+D.etfFlowMap = (() => {
+  const m = {};
+  for (const x of (D.etf_flow || [])) m[x.date] = x.net_yi;
+  return m;
+})();
+function etfFlowSeries(gi) {
+  const data = [];
+  for (let i = 0; i < D.dates.length; i++) {
+    const v = D.etfFlowMap[D.dates[i]];
+    data.push(v != null ? { value: [D.dates[i], v],
+      itemStyle: { color: v >= 0 ? '#e34948' : '#1baf7a' } } : null);
+  }
+  return { name: 'ETF净流入(亿)', type: 'bar', data,
+    barMaxWidth: 4,
+    itemStyle: { color: '#8ba0b6' } };
+}
 function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看不便→色阶
   const out = [];
   Object.keys(D.etf || {}).forEach((c, i) => {
@@ -688,6 +712,9 @@ const PANELS = [
   { key: 'pb',     id: 'ckPB',     name: '宽基指数PB',                  h: 84, build: gi => valSeries(gi, 'pb') },
   { key: 'margin', id: 'ckMargin', name: '两融余额(亿, 沪深北合计)',    h: 84, build: gi => marginSeries(gi) },
   { key: 'etf',    id: 'ckEtf',    name: '宽基ETF成交额(亿·8只堆叠)',   h: 84, build: gi => etfSeries(gi) },
+  { key: 'etfFlow', id: 'ckEtfFlow', name: 'ETF净流入(亿·红进绿出)',      h: 84,
+    build: gi => etfFlowSeries(gi), yaxis: { type: "value", name: "亿",
+      axisLabel: { color: "#898781" }, splitLine: { lineStyle: { color: "#e1e0d9" } } } },
   { key: 'pePct',  id: 'ckPEPct',  name: '全A PE 分位%(全史·近5年)',    h: 84,
     build: gi => pctSeries(gi, 'alla_pe', 'PE'), yaxis: pctAxis },
   { key: 'pbPct',  id: 'ckPBPct',  name: '全A PB 分位%(全史·近5年)',    h: 84,
@@ -696,6 +723,7 @@ const PANELS = [
 function auxDataEmpty(p) {
   if (p.key === 'margin') return !D.margin || !D.margin.some(v => v != null);
   if (p.key === 'etf') return !D.etf || !Object.keys(D.etf).length;
+  if (p.key === 'etfFlow') return !D.etfFlowMap || !Object.keys(D.etfFlowMap).length;
   if (p.key === 'pePct') return !D.mval || !(D.mval.alla_pe_pct || []).some(v => v != null);
   if (p.key === 'pbPct') return !D.mval || !(D.mval.alla_pb_pct || []).some(v => v != null);
   return !D.val || !VAL_SHOW.some(c => D.val[c]);
