@@ -622,7 +622,7 @@ function auxState() {
   // D1-16②: 新面板默认开 — 以默认键补齐存量记忆缺的key(用户已存偏好,
   // 含显式关掉新面板的 false, 不被覆盖)
   return Object.assign({ pe: true, pb: true, margin: true, etf: true,
-                         pePct: true, pbPct: true }, st || {});
+                         etfFlow: true, pePct: true, pbPct: true }, st || {});
 }
 function saveAuxState(st) {
   try { localStorage.setItem(AUX_STORE, JSON.stringify(st)); } catch (e) {}
