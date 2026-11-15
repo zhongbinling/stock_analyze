@@ -668,9 +668,8 @@ function etfFlowSeries(gi) {
     data.push(v != null ? { value: [D.dates[i], v],
       itemStyle: { color: v >= 0 ? '#e34948' : '#1baf7a' } } : null);
   }
-  return { name: 'ETF净流入(亿)', type: 'bar', data,
-    barMaxWidth: 4,
-    itemStyle: { color: '#8ba0b6' } };
+  return [{ name: 'ETF净流入(亿)', type: 'bar', data,
+    barMaxWidth: 4, itemStyle: { color: '#8ba0b6' } }];
 }
 function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看不便→色阶
   const out = [];
