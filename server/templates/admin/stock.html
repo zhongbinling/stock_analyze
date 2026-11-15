@@ -562,13 +562,16 @@ async function loadFresh(code) {
   } catch (e) {}
 }
 
-async function loadAiFin(code) {              // 读扫雷结果(缓存回看)
+async function loadAiFin(code) {              // 读扫雷结果(缓存回看, 切股守卫)
   $('aiFinState').textContent = '加载中…';
   try {
     const r = await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
+    if (curCode !== code) return;           // 已切股: 结果过期不渲染
     renderAiFin(r);
     $('aiFinState').textContent = r.cached ? '● 上次扫雷结果' : '● 就绪';
-  } catch (e) { $('aiFinState').textContent = '--(未扫雷)'; $('freshRow').textContent = ''; }
+  } catch (e) {
+    if (curCode === code) $('aiFinState').textContent = '--(未扫雷)';
+  }
 }
 $('btnSkUpd').onclick = async () => {          // 数据更新
   if (!curCode) { alert('请先选择股票'); return; }
@@ -585,20 +588,22 @@ $('btnSkUpd').onclick = async () => {          // 数据更新
 };
 $('btnAiFin').onclick = async () => {          // 一键扫雷
   if (!curCode) { alert('请先选择股票'); return; }
+  const scanCode = curCode;                  // 切股守卫: 结果回来对不上则弃
   let stale = false;
   try {
-    const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(curCode));
+    const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(scanCode));
     stale = Object.values(d.datasets || {}).some(x => !x.fresh);
   } catch (e) {}
   if (stale && !confirm('部分数据不新鲜(橙色标记)。\n建议先[数据更新]。\n是否直接继续扫雷?')) return;
-  $('aiFinState').textContent = '⏳ 扫雷中(本地27B约1-3分钟)…';
+  $('aiFinState').textContent = '⏳ ' + scanCode + ' 扫雷中(本地27B约1-3分钟)…';
   $('btnAiFin').disabled = true;
   try {
     const r = await api('/admin/api/stock/scan', {method: 'POST',
-      body: JSON.stringify({code: curCode, force: true})});
+      body: JSON.stringify({code: scanCode, force: true})});
+    if (curCode !== scanCode) { $('aiFinState').textContent = '● 已切股, 旧扫雷仅入库不显示'; return; }
     renderAiFin(r);
     $('aiFinState').textContent = '● 扫雷完成(已入库)';
-  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+  } catch (e) { if (curCode === scanCode) $('aiFinState').textContent = '✗ ' + e.message; }
   finally { $('btnAiFin').disabled = false; }
 };
 
