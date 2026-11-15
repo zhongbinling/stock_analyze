@@ -418,8 +418,8 @@ const grids = [
   { top: 286, height: 60,  left: '52%', width: '46%' },  // 涨停/跌停(右中)
   { top: 360, height: 80,  left: '3%',  width: '95%' },  // 炸板率/接力率(全宽底)
 ];
-const catAxis = (gi) => ({
-  type: "category", gridIndex: gi, data: D.dates, show: gi === 4,
+const catAxis = (gi, dates) => ({
+  type: "category", gridIndex: gi, data: dates || D.dates, show: gi === 4,
   axisLine: { lineStyle: { color: C.axis } },
   axisLabel: { color: C.muted }, axisTick: { show: false },
 });
@@ -662,14 +662,12 @@ D.etfFlowMap = (() => {
   return m;
 })();
 function etfFlowSeries(gi) {
-  const data = [];
-  for (let i = 0; i < D.dates.length; i++) {
-    const v = D.etfFlowMap[D.dates[i]];
-    data.push(v != null ? { value: [D.dates[i], v],
-      itemStyle: { color: v >= 0 ? '#e34948' : '#1baf7a' } } : null);
-  }
+  // 用etf_flow自身日期(非D.dates全史) — 22日数据在5000日轴上不可见
+  const flows = D.etf_flow || [];
+  const data = flows.map(x => ({ value: [x.date, x.net_yi],
+    itemStyle: { color: x.net_yi >= 0 ? '#e34948' : '#1baf7a' } }));
   return [{ name: 'ETF净流入(亿)', type: 'bar', data,
-    barMaxWidth: 4, itemStyle: { color: '#8ba0b6' } }];
+    barMaxWidth: 6, itemStyle: { color: '#8ba0b6' } }];
 }
 function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看不便→色阶
   const out = [];
@@ -712,7 +710,8 @@ const PANELS = [
   { key: 'margin', id: 'ckMargin', name: '两融余额(亿, 沪深北合计)',    h: 84, build: gi => marginSeries(gi) },
   { key: 'etf',    id: 'ckEtf',    name: '宽基ETF成交额(亿·8只堆叠)',   h: 84, build: gi => etfSeries(gi) },
   { key: 'etfFlow', id: 'ckEtfFlow', name: 'ETF净流入(亿·红进绿出)',      h: 84,
-    build: gi => etfFlowSeries(gi) },
+    build: gi => etfFlowSeries(gi),
+    xData: (D.etf_flow || []).map(x => x.date) },   // 自有日期(仅22日数据不能铺满5000日全史)
   { key: 'pePct',  id: 'ckPEPct',  name: '全A PE 分位%(全史·近5年)',    h: 84,
     build: gi => pctSeries(gi, 'alla_pe', 'PE'), yaxis: pctAxis },
   { key: 'pbPct',  id: 'ckPBPct',  name: '全A PB 分位%(全史·近5年)',    h: 84,
@@ -743,7 +742,7 @@ function renderAux() {
   vis.forEach((p, pi) => {
     const gi = 5 + pi;
     opt.grid.push({ top, height: p.h, left: '3%', width: '95%', containLabel: true, right: 20 });
-    opt.xAxis.push(catAxis(gi));
+    opt.xAxis.push(p.xData ? catAxis(gi, p.xData) : catAxis(gi));
     opt.yAxis.push(p.yaxis ? p.yaxis(gi) : valAxis(gi));   // D1-16②: 分位轴定域覆盖
     opt.title.push({ text: p.name, left: '3%', top: (top - 14) + 'px',
                      textStyle: { fontSize: 10, color: C.muted } });
