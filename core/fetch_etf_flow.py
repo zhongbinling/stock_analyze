@@ -57,6 +57,46 @@ def refresh(path=None, lookback: int = 30) -> int:
     return total
 
 
+def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
+    """历史回补: fund_share按年分块×8只ETF(接口支持全史, 实测2018整年247行)。
+    逐年窗口+间隔控频(限频20/min层内); upsert幂等 — 中断/限频失败重跑只补缺块。
+    价格侧etf_daily已有2006起全史, 份额补齐即得净流入长史。"""
+    import datetime as dt
+    if not T.has_token():
+        return -1
+    beg = dt.datetime.strptime(start, "%Y%m%d").date()
+    today = dt.date.today()
+    chunks = []
+    lo = beg
+    while lo <= today:
+        hi = min(dt.date(lo.year, 12, 31), today)
+        chunks.append((lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")))
+        lo = dt.date(lo.year + 1, 1, 1)
+    con = ensure_db(path)
+    total, fails = 0, 0
+    for code in ETF_CODES:
+        for s, e in chunks:
+            try:
+                df = T.call("fund_share", "ts_code,trade_date,fd_share",
+                            ts_code=code, start_date=s, end_date=e)
+                rows = [(code, str(r["trade_date"]), float(r["fd_share"]))
+                        for _, r in df.iterrows()]
+                if rows:
+                    con.executemany(
+                        "INSERT INTO etf_share(code,trade_date,fd_share) VALUES(?,?,?) "
+                        "ON CONFLICT(code,trade_date) DO UPDATE SET "
+                        "fd_share=excluded.fd_share", rows)
+                    con.commit()
+                    total += len(rows)
+            except Exception as ex:  # noqa: BLE001   # 限频/网络: 跳过该块, 重跑再补
+                fails += 1
+                print(f"  ✗ {code} {s}~{e}: {str(ex)[:60]}")
+            time.sleep(pace_s)
+    con.close()
+    print(f"[etf_flow] 回补: +{total}行({fails}块失败, 重跑可续)")
+    return total
+
+
 def net_flow_series(path=None, n_days: int = 120) -> list:
     """净流入/流出序列: 每日8只ETF份额差×收盘价 → 亿, [{date, net_yi, flows:{code:yi}}]"""
     con = ensure_db(path)
@@ -99,9 +139,13 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--refresh", action="store_true")
+    ap.add_argument("--backfill", metavar="START", nargs="?", const="20210101",
+                    help="历史回补(默认2021起, 可给更早YYYYMMDD)")
     a = ap.parse_args()
     if a.refresh:
         refresh()
+    elif a.backfill:
+        backfill(a.backfill)
     else:
         import json
         s = net_flow_series()

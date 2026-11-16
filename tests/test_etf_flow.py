@@ -88,3 +88,67 @@ def test_refresh_stores(env, monkeypatch):
     n2 = con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0]
     con.close()
     assert n2 == 2
+
+
+# ── 历史回补(fund_share全史可回补, 2018实测247行/年) ──
+
+def _mk_fake(calls, fail_chunks=()):
+    import pandas as pd
+
+    def fake(api, fields="", **kw):
+        calls.append((kw.get("ts_code"), kw.get("start_date"), kw.get("end_date")))
+        if (kw.get("ts_code"), kw.get("start_date")) in fail_chunks:
+            raise RuntimeError("每分钟最多访问该接口20次")
+        return pd.DataFrame({"ts_code": [kw["ts_code"]],
+                             "trade_date": [kw["start_date"]],
+                             "fd_share": [100.0]})
+    return fake
+
+
+def test_backfill_chunks_pace_idempotent(env, monkeypatch):
+    """按年分块×8ETF逐块拉取; 块间控频sleep; upsert幂等(二跑不重复)"""
+    import datetime as dt
+    import fetch_etf_flow as EF
+    calls, sleeps = [], []
+    monkeypatch.setattr(EF.T, "has_token", lambda: True)
+    monkeypatch.setattr(EF.T, "call", _mk_fake(calls))
+    monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
+    n = EF.backfill("20240101", env, pace_s=6)
+    today = dt.date.today()                     # 期望年块动态构造(与实现同构)
+    chunks, lo = [], dt.date(2024, 1, 1)
+    while lo <= today:
+        hi = min(dt.date(lo.year, 12, 31), today)
+        chunks.append((lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")))
+        lo = dt.date(lo.year + 1, 1, 1)
+    assert n == 8 * len(chunks)
+    assert calls == [(c, s, e) for c in EF.ETF_CODES for s, e in chunks]
+    assert sleeps == [6] * (8 * len(chunks))          # 每块后控频
+    con = sqlite3.connect(str(env))
+    assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
+    con.close()
+    n2 = EF.backfill("20240101", env, pace_s=6)       # 幂等: upsert不重复
+    con = sqlite3.connect(str(env))
+    assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
+    con.close()
+    assert n2 == n
+
+
+def test_backfill_rate_limit_tolerant(env, monkeypatch):
+    """限频块失败跳过不中断, 其余块照常入库"""
+    import fetch_etf_flow as EF
+    fails = {(c, "20240101") for c in EF.ETF_CODES}   # 每只ETF的2024块都限频
+    calls = []
+    monkeypatch.setattr(EF.T, "has_token", lambda: True)
+    monkeypatch.setattr(EF.T, "call", _mk_fake(calls, fails))
+    monkeypatch.setattr(EF.time, "sleep", lambda s: None)
+    n = EF.backfill("20240101", env, pace_s=0)
+    assert n > 0                                       # 其余块正常
+    assert len(calls) == n + len(fails)                # 失败块也消耗了调用
+
+
+def test_backfill_registered_and_window():
+    """注册到统一回补入口(BACKFILLS) + viewer窗口扩为1年"""
+    src = (CORE / "fetch_daily.py").read_text(encoding="utf-8")
+    assert '"etf_flow"' in src and 'fetch_etf_flow").backfill(start)' in src
+    vsrc = (CORE / "viewer.py").read_text(encoding="utf-8")
+    assert "net_flow_series(n_days=250)" in vsrc

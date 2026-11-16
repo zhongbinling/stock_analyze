@@ -245,7 +245,7 @@ def build_payload(cfg, years=None):
     # C1: ETF净流入/流出序列(近120日, 副图叠加)
     try:
         import fetch_etf_flow as _EF
-        payload["etf_flow"] = _EF.net_flow_series(n_days=120)
+        payload["etf_flow"] = _EF.net_flow_series(n_days=250)  # 回补后有长史, 窗口1年
     except Exception:                                         # noqa: BLE001
         payload["etf_flow"] = []
     # 2026-11-10修复: 事件content可能含抓取来的完整网页HTML(内嵌</script>
