@@ -245,7 +245,9 @@ def build_payload(cfg, years=None):
     # C1: ETF净流入/流出序列(近120日, 副图叠加)
     try:
         import fetch_etf_flow as _EF
-        payload["etf_flow"] = _EF.net_flow_series(n_days=250)  # 回补后有长史, 窗口1年
+        # 全史窗口(共享轴联动缩放); flows明细JS不用, 剥离瘦身(~5000日payload)
+        payload["etf_flow"] = [{"date": x["date"], "net_yi": x["net_yi"]}
+                               for x in _EF.net_flow_series(n_days=6000)]
     except Exception:                                         # noqa: BLE001
         payload["etf_flow"] = []
     # 2026-11-10修复: 事件content可能含抓取来的完整网页HTML(内嵌</script>
@@ -662,12 +664,16 @@ D.etfFlowMap = (() => {
   return m;
 })();
 function etfFlowSeries(gi) {
-  // 用etf_flow自身日期(非D.dates全史) — 22日数据在5000日轴上不可见
-  const flows = D.etf_flow || [];
-  const data = flows.map(x => ({ value: [x.date, x.net_yi],
-    itemStyle: { color: x.net_yi >= 0 ? '#e34948' : '#1baf7a' } }));
+  // 共享D.dates全史轴(与其他子图dataZoom联动) — 份额已回补2006起全史;
+  // 净流入自各ETF上市逐步丰富(早期仅510050), 无数据日null(轴连续)
+  const data = [];
+  for (let i = 0; i < D.dates.length; i++) {
+    const v = D.etfFlowMap[D.dates[i]];
+    data.push(v != null ? { value: [D.dates[i], v],
+      itemStyle: { color: v >= 0 ? '#e34948' : '#1baf7a' } } : null);
+  }
   return [{ name: 'ETF净流入(亿)', type: 'bar', xAxisIndex: gi, yAxisIndex: gi,
-    data, barMaxWidth: 6, itemStyle: { color: '#8ba0b6' } }];
+    data, barWidth: 2, itemStyle: { color: '#8ba0b6' } }];
 }
 function etfSeries(gi) {             // 8只堆叠=总额观感, 图例式查看不便→色阶
   const out = [];
@@ -709,9 +715,8 @@ const PANELS = [
   { key: 'pb',     id: 'ckPB',     name: '宽基指数PB',                  h: 84, build: gi => valSeries(gi, 'pb') },
   { key: 'margin', id: 'ckMargin', name: '两融余额(亿, 沪深北合计)',    h: 84, build: gi => marginSeries(gi) },
   { key: 'etf',    id: 'ckEtf',    name: '宽基ETF成交额(亿·8只堆叠)',   h: 84, build: gi => etfSeries(gi) },
-  { key: 'etfFlow', id: 'ckEtfFlow', name: 'ETF净流入(亿·红进绿出)',      h: 84,
-    build: gi => etfFlowSeries(gi),
-    xData: (D.etf_flow || []).map(x => x.date) },   // 自有日期(仅22日数据不能铺满5000日全史)
+  { key: 'etfFlow', id: 'ckEtfFlow', name: 'ETF净流入(亿·红进绿出·与其他图联动缩放)', h: 84,
+    build: gi => etfFlowSeries(gi) },
   { key: 'pePct',  id: 'ckPEPct',  name: '全A PE 分位%(全史·近5年)',    h: 84,
     build: gi => pctSeries(gi, 'alla_pe', 'PE'), yaxis: pctAxis },
   { key: 'pbPct',  id: 'ckPBPct',  name: '全A PB 分位%(全史·近5年)',    h: 84,

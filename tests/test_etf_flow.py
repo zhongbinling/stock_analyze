@@ -147,8 +147,13 @@ def test_backfill_rate_limit_tolerant(env, monkeypatch):
 
 
 def test_backfill_registered_and_window():
-    """注册到统一回补入口(BACKFILLS) + viewer窗口扩为1年"""
+    """注册到统一回补入口(BACKFILLS, 默认2006起) + viewer全史窗口共享轴联动"""
     src = (CORE / "fetch_daily.py").read_text(encoding="utf-8")
     assert '"etf_flow"' in src and 'fetch_etf_flow").backfill(start)' in src
+    assert '"etf_share", None, "trade_date"' in src and '"20060101"' in src
     vsrc = (CORE / "viewer.py").read_text(encoding="utf-8")
-    assert "net_flow_series(n_days=250)" in vsrc
+    assert "net_flow_series(n_days=6000)" in vsrc        # 全史窗口
+    assert "barWidth: 2" in vsrc and "D.etfFlowMap[D.dates[i]]" in vsrc  # 共享轴
+    assert '"date": x["date"], "net_yi": x["net_yi"]' in vsrc  # payload剥离flows瘦身
+    html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
+    assert "ds: 'etf_flow'" in html                       # 修复页可见

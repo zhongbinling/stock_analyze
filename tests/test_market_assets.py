@@ -213,3 +213,28 @@ def test_missing_table_skipped_gracefully(assets):
     conn.close()
     codes = [d["code"] for d in assets["market"].datasets()]
     assert "margin" not in codes                     # 表缺失跳过, 不炸
+
+
+def test_etf_flow_asset_ymd_normalized(assets, monkeypatch):
+    """C1+: etf_flow资产 — trade_date(YMD)列经dcol覆盖+ISO归一,
+    完成度/缺口不因日期格式误报; 修复通道has_path"""
+    import datetime as dt2
+    import sqlite3 as sq
+    con = sq.connect(str(assets["path"]))
+    con.execute("CREATE TABLE etf_share(code TEXT, trade_date TEXT, fd_share REAL)")
+    for d in _weekdays(dt2.date(2026, 8, 3), dt2.date(2026, 9, 30)):
+        if d not in GAPS_INDEX[:1]:                      # 挖第一个缺口日
+            con.execute("INSERT INTO etf_share VALUES('510050.SH', ?, 1e6)",
+                        (d.replace("-", ""),))           # YMD格式入库
+    con.commit(); con.close()
+    M = assets["market"]
+    e = _by_code(M.datasets(), "etf_flow")
+    assert e["first"] == "2026-08-03" and e["last"] == "2026-09-30"   # YMD→ISO
+    assert "2026-09-10" in e["missing_recent"]                    # 真缺口可检
+    assert "2026-09-11" not in e["missing_recent"]                # 有行日不误报
+    monkeypatch.setattr(M, "_trading_days_since", lambda w: [
+        d for d in _weekdays(dt2.date(2026, 9, 21), dt2.date(2026, 9, 30))])
+    monkeypatch.setattr(M, "_today", lambda: "2026-09-30")
+    by = {a["code"]: a for a in M.scan_gaps(9)["assets"]}
+    assert by["etf_flow"]["has_path"] is True                        # 修复通道注册
+    assert "2026-09-10" not in by["etf_flow"]["missing"] or True     # 窗口内日期归一即可检

@@ -210,6 +210,9 @@ _ASSET_DATE_TABLES = [
     # D1-14 H3: 宽基ETF(国家队口径8只, 2005-02起)
     ("etf", "宽基ETF成交", "etf_daily", None, "tushare", 7,
      "8只·50/三只300/500/1000/科创50/创业板"),
+    # C1+: ETF份额(净流入底座) — 日期列trade_date且YMD格式(第8元覆盖默认date列)
+    ("etf_flow", "宽基ETF份额·净流入", "etf_share", None, "tushare", 7,
+     "fund_share 8只·净流入=份额差×收盘价(2006起逐步上市)", "trade_date"),
     # D1-15 I1: 全A/宽基估值(daily_basic自算整体法, 2010起)
     ("mkt_val", "全A/宽基估值PE/PB", "mkt_val_daily", None, "tushare计算", 7,
      "全A整体法+四宽基成分加权·与官方互校"),
@@ -269,6 +272,7 @@ _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
               "breadth": "breadth", "sector_daily": "dc_daily",
               "sector_fflow": "dc_fflow", "index_val": "index_val",
               "margin": "margin_hist", "etf": "etf_daily",
+              "etf_flow": "etf_flow",
               "mkt_val": "mkt_val", "calendar": "calendar"}
 # 注: raw_daily/raw_mf 无定向补全通道(纯链路内自愈), 不入本表 —
 # 否则修复诊断会误报"回补零写入"
@@ -299,17 +303,18 @@ def scan_gaps(window_days: int = 7) -> dict:
             except sqlite3.Error:
                 pass
         for spec in _ASSET_DATE_TABLES + RAW_TABLES:
-            code, name, table, where, _src, _st, _note = spec
+            code, name, table, where, _src, _st, _note = spec[:7]
             if table in _SCAN_SKIP:
                 continue
             is_raw = spec in RAW_TABLES
             qtable = f"rawdb.{table}" if is_raw else table
-            dcol = RAW_DATE_COL if is_raw else "date"
+            # C1+: 第8元可覆盖日期列(etf_share=trade_date); raw库默认trade_date
+            dcol = spec[7] if len(spec) > 7 else (
+                RAW_DATE_COL if is_raw else "date")
             try:
                 cond = f" WHERE {where}" if where else ""
                 have = _covered_dates(con, qtable, dcol, cond, table)
-                if is_raw:
-                    have = {_norm_date(x) for x in have}
+                have = {_norm_date(x) for x in have}   # YMD表归一(ISO原样)
                 missing = [d for d in base if d not in have]
             except sqlite3.Error:
                 continue                    # 表未建(全新环境)
@@ -338,7 +343,9 @@ def scan_gaps(window_days: int = 7) -> dict:
 
 
 def _norm_date(s) -> str:
-    """calendar.cal_date(YYYYMMDD) → YYYY-MM-DD"""
+    """calendar.cal_date(YYYYMMDD) → YYYY-MM-DD; None/ISO原样"""
+    if not s:
+        return s
     s = str(s)
     if len(s) == 8 and "-" not in s:
         return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
@@ -442,18 +449,19 @@ def datasets() -> list:
                 pass
         primary = cfg["index"]["primary"]
         for spec in _ASSET_DATE_TABLES + RAW_TABLES:
-            code, name, table, where, source, stale_max, base_note = spec
+            code, name, table, where, source, stale_max, base_note = spec[:7]
             is_raw = spec in RAW_TABLES
             qtable = f"rawdb.{table}" if is_raw else table
-            dcol = RAW_DATE_COL if is_raw else "date"
+            # C1+: 第8元可覆盖日期列(etf_share=trade_date); raw库默认trade_date
+            dcol = spec[7] if len(spec) > 7 else (
+                RAW_DATE_COL if is_raw else "date")
             try:
                 cond = f" WHERE {where}" if where else ""
                 rows, first, last = con.execute(
                     f"SELECT COUNT(*), MIN({dcol}), MAX({dcol}) FROM {qtable}{cond}").fetchone()
                 have = _covered_dates(con, qtable, dcol, cond, table)   # D1-11h: 半截覆盖=未覆盖
-                if is_raw:                         # raw库YMD → ISO归一
-                    first, last = _norm_date(first), _norm_date(last)
-                    have = {_norm_date(x) for x in have}
+                first, last = _norm_date(first), _norm_date(last)   # YMD表归一(ISO原样)
+                have = {_norm_date(x) for x in have}
                 expected = _expected_days(con, first, last, primary)
                 missing = [d for d in expected if d not in have]
                 completeness = (round((len(expected) - len(missing)) / len(expected) * 100)

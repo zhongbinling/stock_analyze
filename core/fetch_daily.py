@@ -696,7 +696,7 @@ BACKFILLS = {
                   lambda start: __import__("fetch_etf").run(start), "20050223"),
     "etf_flow": ("宽基ETF份额·净流入历史回补(fund_share全史, 按年分块控频)",
                  [("etf_share", None, "trade_date")],
-                 lambda start: __import__("fetch_etf_flow").backfill(start), "20210101"),
+                 lambda start: __import__("fetch_etf_flow").backfill(start), "20060101"),
     "mkt_val": ("全A/宽基估值回补(2010起, 自算整体法)",
                 [("mkt_val_daily", None, "date")],
                 lambda start: __import__("fetch_mktval").run(start), "20100101"),
