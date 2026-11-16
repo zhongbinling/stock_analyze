@@ -125,6 +125,11 @@ def rt_series(conn, snap: dict, minutes: list) -> list:
         for c in ("open", "high", "low", "close", "volume", "amount",
                   "volume2", "amount2"):
             row[c] = orig.iloc[0].get(c) if len(orig) else None
+        # review修复: 库缺快照日(盘中自愈/当日链未跑)时深综量额从snap带
+        # — 否则vol_total只剩沪市(~40%缺口), 自愈块量能分量与tick点跳变
+        for c in ("volume2", "amount2"):
+            if row.get(c) is None and snap.get(c) is not None:
+                row[c] = snap.get(c)
         row["date"] = ts_d
         raw = pd.concat([raw, pd.DataFrame([row])], ignore_index=True)
         # 合成行None会使列变object → derive/pct_pos数值运算炸(池字段同理)

@@ -176,6 +176,24 @@ def test_rt_series_hist_prefix_no_lookahead(rt_env):
     conn.close()
 
 
+def test_rt_series_synth_volume2_from_snap(rt_env):
+    """review修复: 库缺快照日(盘中自愈场景) — 合成行深综量额带自snap,
+    vol_total不只剩沪市(~40%缺口致自愈块与tick点分量跳变)"""
+    import rt_score as RT
+    from metrics import derive as real_derive
+    conn = rt_env["connect"]()
+    seen = {}
+
+    def spy(df):
+        seen["v2"] = df["volume2"].iloc[-1]
+        return real_derive(df)
+    rt_env["monkeypatch"].setattr(RT, "derive", spy)
+    snap = {"date": "2099-01-01", "volume2": 4.1e8, "amount2": 4.2e11}
+    out = RT.rt_series(conn, snap, [{"t": "09:30", "close": 3300, "cumvol": 1e6}])
+    assert out[0] is not None and seen["v2"] == 4.1e8   # snap兜底生效
+    conn.close()
+
+
 # ══════════ ③ fetch_*断点续传 ══════════
 
 def _seed_market_db(p: Path, n_days=15):
