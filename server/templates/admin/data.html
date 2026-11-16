@@ -90,12 +90,12 @@
   <h2>实时行情库 <span class="hint" id="rtStat">加载中…</span>
     <a class="btn small" style="float:right" href="/admin/realtime">实时页·历史回看 →</a></h2>
   <p class="hint">独立库 realtime.db(按天一行 rt_day); 交易日盘中自动采样(15s档), 盘后/盘前自动分钟重建;
-    已纳入备份基础块(日/周/手动)</p>
+    每日15:35自动回补源窗口内缺口/半日档(东财主源+新浪备源); 已纳入备份基础块(日/周/手动)</p>
   <div class="row-flex" style="gap:10px;flex-wrap:wrap">
     <span class="hint" id="rtStatDetail">--</span>
     <button class="btn primary" id="btnRtBackfill">立即补采 / 重建当日</button>
     <span class="hint" id="rtHistDetail"></span>
-    <button class="btn" id="btnRtHist" title="东财近5个交易日分钟线重建缺口日(含情绪回算)">回补历史缺口</button>
+    <button class="btn" id="btnRtHist" title="东财(主)/新浪(备)近5个交易日分钟线: 重建缺口日+修复半日档(含情绪回算)">回补历史缺口</button>
     <span class="hint" id="rtBfMsg"></span>
   </div>
 </section>
@@ -688,7 +688,7 @@ async function loadRtStat() {
       + ` · 最新日 <b>${d.latest_n}</b> 点 · 今日 ${d.today_n} 点 · ${d.size_kb} KB`
       + ` · 采集开关 <b>${d.enabled ? '开' : '关'}</b>`
       + ` · 最近备份 <b>${d.backup_at || '—'}</b>`
-      + ` · 历史自功能上线(${d.first || '—'})起积累, 深史无源可补(分钟线仅近3日)`;
+      + ` · 历史自功能上线(${d.first || '—'})起积累, 深史无免费源(分钟线窗口≈5个交易日)`;
   } catch (e) { $('rtStat').textContent = e.message; }
 }
 $('btnRtBackfill').onclick = async () => {
@@ -726,17 +726,22 @@ loadNewsStat();
   } catch (e) { $('rtBfMsg').textContent = e.message; }
 };
 loadRtStat();
-// 历史缺口探测+一键回补
+// 历史缺口探测+一键回补(缺口日+半日档)
 async function loadRtHist() {
   try {
     const d = await (await fetch('/admin/api/rt/hist_gap')).json();
-    $('rtHistDetail').innerHTML = d.missing.length
-      ? `<b style="color:#e67e22">近5源日缺 ${d.missing.length} 日</b>(${d.missing.join(', ')})`
-      : `近5源日全覆盖✓`;
+    const parts = d.partial || [];
+    const bits = [];
+    if (d.missing.length)
+      bits.push(`<b style="color:#e34948">源窗缺 ${d.missing.length} 日</b>(${d.missing.join(', ')})`);
+    if (parts.length)
+      bits.push(`<b style="color:#e67e22">半日档 ${parts.length} 日</b>(${parts.join(', ')})`);
+    $('rtHistDetail').innerHTML = bits.length ? bits.join(' · ')
+      : `近${(d.src_days || []).length}源日全覆盖✓`;
   } catch (e) { $('rtHistDetail').textContent = ''; }
 }
 $('btnRtHist').onclick = async () => {
-  if (!confirm('回补近5个交易日内的缺口日?\n(东财分钟线重建, 含逐分钟情绪回算, 已有日不动)')) return;
+  if (!confirm('回补源窗口内(近5个交易日)的缺口日与半日档?\n(双源分钟线重建+逐分钟情绪回算, 健康全日档不动)')) return;
   $('rtBfMsg').textContent = '⏳ 已入队…';
   try {
     const r = await (await fetch('/admin/api/rt/backfill_hist', {method: 'POST',

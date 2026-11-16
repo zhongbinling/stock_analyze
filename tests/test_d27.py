@@ -75,4 +75,4 @@ def test_page_gates():
                "fontWeight = 'bold'"):                                 # 选中态
         assert mk in html, f"缺: {mk}"
     data_html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
-    assert "最近备份" in data_html and "深史无源可补" in data_html
+    assert "最近备份" in data_html and "深史无免费源" in data_html

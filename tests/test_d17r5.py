@@ -82,8 +82,9 @@ def test_hydrate_restores_today_from_db(env):
 def test_backfill_builds_and_fuses(env):
     rt, mp = env["rt"], env["mp"]
     _mock_final(mp, datetime.now().strftime("%Y-%m-%d"))
-    _mock_minute(mp, ["0930 3676.92 100000", "0931 3678.0 200000"],
-                 ["0930 7700.0 120000", "0931 7710.0 240000"])
+    # D1-29: 罐头跨全日(09:30~15:00) — 健康判定含尾部完整(末样本≥14:55)
+    _mock_minute(mp, ["0930 3676.92 100000", "1500 3678.0 440000"],
+                 ["0930 7700.0 120000", "1500 7710.0 240000"])
     mp.setattr(rt, "_fetch_etf_amount_yi", lambda: 384.0)
     when = _after_close_today()
     assert rt.backfill_today(when) == "ok"

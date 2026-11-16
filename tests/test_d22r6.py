@@ -66,15 +66,17 @@ def test_backfill_preopen_rebuilds_thin_yesterday(env):
 
 
 def test_backfill_healthy_day_skipped(env):
-    """健康行(n≥100)不再重建; 幂等缓存"""
+    """全日健康档(首≤09:35且末≥14:55)不再重建; 幂等缓存"""
     rt, mp = env["rt"], env["mp"]
     _mock_final(mp, "2026-10-29")
     _mock_minute(mp)
     mp.setattr(rt, "_fetch_etf_amount_yi", lambda: 1.0)
     rt.ensure_db()
     con = sqlite3.connect(str(env["db"]))
+    # D1-29: 健康判定含尾部完整 — 罐头时刻跨全日(旧版n≥100但全在09:xx也算健康)
+    ts = ["09:15:00", "11:30:00", "14:00:00", "15:05:00"]
     con.execute("INSERT INTO rt_day VALUES(?,?,?,?)",
-                ("2026-10-29", "x", 150, json.dumps({"samples": [{"t": f"09:{i:02d}:00"} for i in range(150)]})))
+                ("2026-10-29", "x", len(ts), json.dumps({"samples": [{"t": t} for t in ts]})))
     con.commit(); con.close()
     assert rt.backfill_today(datetime(2026, 10, 29, 16, 0)) == "have"
     assert rt.backfill_today(datetime(2026, 10, 30, 1, 0)) == "have"  # 缓存

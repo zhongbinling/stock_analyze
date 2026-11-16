@@ -96,15 +96,42 @@ def quote_from_qt(a: dict, b: dict, fallback_date: str) -> dict:
             "amount2": (_f(b.get("amount_wan")) or 0) * 1e4}
 
 
+POOL_FIELDS = ("zt_count", "dt_count", "zb_rate", "lb_max", "jl_rate")
+
+
 def rt_series(conn, snap: dict, minutes: list) -> list:
     """D1-23: 分钟级实时情绪序列(回放重建用) — 取数一次, 逐分钟改末行
-    derive+分量+加权(全向量化, 242点≈10s)。池分量(涨停/接力)盘中历史
-    不可得, 用终值近似(snap即收盘快照)。minutes: [{t, close, cumvol}]"""
+    derive+分量+加权(全向量化, 242点≈10s)。池分量盘中历史不可得, 用终值近似。
+    minutes: [{t, close, cumvol}]
+    D1-29: 末行=快照日合成行, 前缀严格早于快照日 — 旧版直接改写库内最新行,
+    回补历史日时未来日混入滚动窗口(look-ahead), 且库缺快照日时昨日行被覆盖;
+    池字段优先取snap盘中真值, 否则回退库内该日行(mood_raw收盘值)。"""
     cfg = SC.load_cfg()
     import pandas as pd
     raw = fetch_frame(conn, cfg["index"]["primary"], cfg["index"]["secondary"])
     if not len(raw) or not minutes:
         return []
+    d = snap.get("date")
+    if d:
+        ts_d = pd.Timestamp(d)
+        orig = raw[raw["date"] == ts_d].tail(1)
+        raw = raw[raw["date"] < ts_d].reset_index(drop=True)
+        if not len(raw):
+            return []
+        row = {k: snap.get(k) for k in POOL_FIELDS}
+        for k in POOL_FIELDS:
+            if row[k] is None and len(orig):
+                row[k] = orig.iloc[0].get(k)
+        for c in ("open", "high", "low", "close", "volume", "amount",
+                  "volume2", "amount2"):
+            row[c] = orig.iloc[0].get(c) if len(orig) else None
+        row["date"] = ts_d
+        raw = pd.concat([raw, pd.DataFrame([row])], ignore_index=True)
+        # 合成行None会使列变object → derive/pct_pos数值运算炸(池字段同理)
+        for col in ("open", "high", "low", "close", "volume", "amount",
+                    "volume2", "amount2", *POOL_FIELDS):
+            if col in raw.columns:
+                raw[col] = pd.to_numeric(raw[col], errors="coerce")
     out, hi, lo, open_ = [], None, None, None
     for i, m in enumerate(minutes):
         c, v = m.get("close"), m.get("cumvol")

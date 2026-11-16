@@ -151,6 +151,31 @@ def test_rt_series_identical_minute_idempotent(rt_env):
     conn.close()
 
 
+def test_rt_series_hist_prefix_no_lookahead(rt_env):
+    """D1-29: 回放历史日 — 前缀严格早于目标日(未来日不入滚动窗口),
+    末行=目标日合成行, 池字段带自库内该日行(旧版改写最新行=look-ahead)"""
+    import rt_score as RT
+    from metrics import derive as real_derive
+    conn = rt_env["connect"]()
+    dates = rt_env["dates"]
+    d = dates[-3]                          # 库内还有 -2/-1 两个未来日
+    seen = {}
+
+    def spy(df):
+        seen["tail"] = [str(x)[:10] for x in df["date"].tail(3)]
+        seen["zt"] = df["zt_count"].iloc[-1]
+        return real_derive(df)
+    rt_env["monkeypatch"].setattr(RT, "derive", spy)
+    ms = [{"t": "09:30", "close": 3300, "cumvol": 1e6},
+          {"t": "15:00", "close": 3310, "cumvol": 2e8}]
+    out = RT.rt_series(conn, {"date": d}, ms)
+    assert out[0] is not None and out[1] is not None
+    assert seen["tail"][-1] == d                      # 末行=目标日
+    assert dates[-1] not in seen["tail"] and dates[-2] not in seen["tail"]
+    assert seen["zt"] == 50                           # mood_raw该日池字段随行
+    conn.close()
+
+
 # ══════════ ③ fetch_*断点续传 ══════════
 
 def _seed_market_db(p: Path, n_days=15):

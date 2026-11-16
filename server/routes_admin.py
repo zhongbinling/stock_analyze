@@ -443,7 +443,7 @@ def api_rt_backfill():
 @bp_admin.get("/api/rt/hist_gap")
 @require_level(7)
 def api_rt_hist_gap():
-    """历史管理: 东财近5日源覆盖vs库存缺口"""
+    """历史管理: 双源近5日覆盖vs库存 → 缺失日+半日档"""
     from server import rt
     return jsonify(rt.hist_gap_map())
 
@@ -451,13 +451,15 @@ def api_rt_hist_gap():
 @bp_admin.post("/api/rt/backfill_hist")
 @require_level(7)
 def api_rt_backfill_hist():
-    """历史管理: 一键回补缺口日(分钟重建+情绪, 异步入队)"""
+    """历史管理: 一键回补缺失日+修复半日档(分钟重建+情绪, 异步入队)"""
     from server import jobs as J
     from server import rt
 
     def fn(append):
         r = rt.backfill_hist()
-        append(f"历史回补: 补{len(r['filled'])}日 {r['filled']}, 跳过{r.get('skipped', 0)}")
+        append(f"历史回补: 补{len(r['filled'])}日 {r['filled']}, "
+               f"修{len(r.get('repaired', []))}日 {r.get('repaired', [])}, "
+               f"跳过{r.get('skipped', 0)}")
         return 0
     ok, msg = J.enqueue("rt_hist", fn, target="实时历史回补", trigger="manual")
     return jsonify({"ok": ok, "msg": msg + " — 已入队, 进度见任务中心"})

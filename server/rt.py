@@ -280,9 +280,8 @@ _day_cache = {}
 def backfill_today(now: datetime = None) -> str | None:
     """R6a 盘后/盘前补采(目标日制): 目标日=快照源当前服务的交易日。
     - 目标=今天且未收盘 → None(盘中由tick负责)
-    - 已有行 n≥100(健康) → have(按日缓存不再试)
-    - 否则重建: 当日盘后空行 / **盘前服务昨日的瘦行**(降级日自愈,
-      原守卫"快照日≠今天即放弃"浪费了预凌晨窗口)
+    - 已有全日健康档(首≤09:35且末≥14:55, D1-29含截尾判定) → have(按日缓存)
+    - 否则重建: 当日盘后空行 / 半日档(截尾/缺早盘) / 盘前服务昨日的瘦行
     返回 ok=已建/重建 / have=已有健康行 / None=条件不满足"""
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -308,15 +307,12 @@ def backfill_today(now: datetime = None) -> str | None:
         return None
     if _day_cache.get(target):
         return "have"
-    existing = day(target)
-    if existing and len(existing["samples"]) >= 100:
-        # D1-23b: 午间重启会丢上午(实测10-30首样本12:55) — 盘后若首样本
-        # 晚于09:35(缺早盘)仍重建为全日分钟线
-        first_t = existing["samples"][0]["t"] if existing["samples"] else "99"
-        if first_t <= "09:35:00":
-            _day_cache[target] = True
-            return "have"
-        print(f"[rt] {target} 为半日样本(自{first_t}起), 盘后重建全日")
+    existing = _day_samples(target)                    # 轻量读档(免meta网络)
+    if existing and _day_complete(existing):
+        _day_cache[target] = True
+        return "have"
+    if existing:
+        print(f"[rt] {target} 为半日档(首{existing[0]['t']} 末{existing[-1]['t']}), 盘后重建全日")
     samples = _minute_samples(snap.get("amount1") or 0)
     final = _sample_from("15:00:00", snap, rt, etf)
     if samples:
@@ -338,6 +334,7 @@ def backfill_today(now: datetime = None) -> str | None:
         for smp in samples:
             if smp.get("etf") is None and smp["t"] in etf_m:
                 smp["etf"] = etf_m[smp["t"]]
+        _carry_fields(samples, existing or [])
         samples[-1].update({k: v for k, v in final.items()
                             if v is not None and samples[-1].get(k) is None})
     else:
@@ -455,16 +452,22 @@ def days() -> list:
     return out
 
 
-# ── 实时行情历史管理: 东财trends2近5日回补 ──
+# ── 实时行情历史管理: 双源分钟线回补(近5个交易日) ──
 
 EM_TRENDS_URL = ("https://push2his.eastmoney.com/api/qt/stock/trends2/get"
-                 "?secid=1.000001&fields1=f1,f2,f3&fields2=f51,f53,f56,f58"
+                 "?secid=1.000001&fields1=f1,f2,f3&fields2=f51,f53,f56,f57"
                  "&ndays=5&iscr=0")
+SINA_MIN_URL = ("https://quotes.sina.cn/cn/api/json_v2.php/"
+                "CN_MarketDataService.getKLineData?symbol=sh000001"
+                "&scale=1&ma=no&datalen=1023")
 
 
 def _em_trends_days() -> dict:
-    """东财trends2(ndays=5实测上限) → {date: [(t, close, cumvol, cumamt), ...]}
-    字段: "2026-11-09 09:30,3624.58,5974886,3619.254"(cumamt亿)"""
+    """东财trends2(ndays=5实测上限; 8/10/15返回null) →
+    {date: [(t, close, cumvol, cumamt), ...]}
+    字段语义(2026-11对照tushare真值逐日校验, 量/额总和偏差<1e-7):
+    f56=每分钟成交量增量(手), f57=每分钟成交额增量(元) — 均需逐分钟累计;
+    旧版取f58当"累计额亿"实为均价(点位), f56增量当累计 — 已修正。"""
     from probe_rt import _curl
     code, body = _curl(EM_TRENDS_URL, timeout=10)
     if code != 200:
@@ -482,37 +485,141 @@ def _em_trends_days() -> dict:
         if len(dt2) < 2:
             continue
         try:
-            rec = (dt2[1][:5], float(p[1]), float(p[2]), float(p[3]))
+            c, v, a = float(p[1]), float(p[2]), float(p[3])
         except ValueError:                    # 非数值 → 脏行跳过
             continue
-        out.setdefault(dt2[0], []).append(rec)  # 解析成功才建组
+        arr = out.setdefault(dt2[0], [])
+        prev = arr[-1] if arr else None
+        arr.append((dt2[1][:5], c, (prev[2] if prev else 0.0) + v,
+                    round((prev[3] if prev else 0.0) + a / 1e8, 1)))
     return out
 
 
-def hist_gap_map() -> dict:
-    """近5交易日源覆盖 vs 库内存档 → 缺口日清单(管理卡展示)"""
+def _sina_minute_days() -> dict:
+    """新浪1分钟K线备源(datalen=1023≈4日, 窗口头部为残日) → 同em形状。
+    口径(2026-11对照tushare真值): volume=股(÷100转手), amount=元(累计÷1e8亿)。"""
+    from probe_rt import _curl
+    code, body = _curl(SINA_MIN_URL, timeout=10)
+    if code != 200:
+        return {}
+    try:
+        arr = json.loads(body)
+    except ValueError:
+        return {}
+    if not isinstance(arr, list):
+        return {}
+    out, cv, ca, prev_d = {}, 0.0, 0.0, None
+    for x in sorted(arr, key=lambda r: str(r.get("day", ""))):
+        try:
+            d, t = x["day"][:10], x["day"][11:16]
+            c = float(x["close"])
+            v = float(x["volume"]) / 100.0
+            a = float(x["amount"]) / 1e8
+        except (KeyError, TypeError, ValueError):
+            continue
+        if d != prev_d:                       # 日界 → 累计清零
+            cv = ca = 0.0
+            prev_d = d
+        cv += v
+        ca += a
+        out.setdefault(d, []).append((t, c, cv, round(ca, 1)))
+    return out
+
+
+def _hist_src_days() -> dict:
+    """回补源: 东财trends2(5日, 主) ∪ 新浪分钟线(≈4日, 备) — 同日东财优先。
+    东财被WAF/限流时新浪兜底; 新浪头部残日在回补端有完整性守卫。"""
     src = _em_trends_days()
+    if not src or len(src) < 5:
+        try:
+            for d, pts in _sina_minute_days().items():
+                src.setdefault(d, pts)
+        except Exception as e:                               # noqa: BLE001
+            print(f"[rt] 新浪备源失败: {e}")
+    return src
+
+
+def _day_complete(samples: list) -> bool:
+    """全日健康档: 首样本≤09:35(不缺早盘) 且 末样本≥14:55(收盘完整)。
+    半日档两类: 盘中断档截尾(如11-11止于14:14) / 服务晚启动缺早盘 —
+    旧版只查首样本, 截尾档被误判健康永不修复(11-11实测668点止于14:14)。"""
+    return bool(samples) and samples[0]["t"] <= "09:35:00" \
+        and samples[-1]["t"] >= "14:55:00"
+
+
+def _carry_fields(new_samples: list, old_samples: list,
+                  keys=("zt", "jl", "etf")) -> None:
+    """半日档重建: 旧tick样本的真值字段(涨停/接力/ETF)按时间前值填充到
+    新分钟样本 — 仅填到旧档末样本分钟为止(超出无据, 留None不造平尾)。
+    旧档时刻带秒(tick)与新分钟样本(HH:MM)统一截断到分钟后比较。"""
+    olds = [s for s in (old_samples or [])
+            if any(s.get(k) is not None for k in keys)]
+    if not new_samples or not olds:
+        return
+    horizon = max(s["t"][:5] for s in olds)
+    last, i = {k: None for k in keys}, 0
+    for s in new_samples:
+        if s["t"][:5] > horizon:
+            break                            # 旧档覆盖区间之外: 不外推
+        while i < len(olds) and olds[i]["t"][:5] <= s["t"][:5]:
+            for k in keys:
+                if olds[i].get(k) is not None:
+                    last[k] = olds[i][k]
+            i += 1
+        for k in keys:
+            if s.get(k) is None and last[k] is not None:
+                s[k] = last[k]
+
+
+def _day_samples(date_iso: str) -> list | None:
+    """轻量读档: 仅样本不带meta/昨日曲线(day()会触发网络) — 回补判定用"""
+    ensure_db()
+    con = sqlite3.connect(str(RT_DB), timeout=30)
+    row = con.execute("SELECT payload FROM rt_day WHERE date=?",
+                      (date_iso,)).fetchone()
+    con.close()
+    if not row:
+        return None
+    return json.loads(row[0]).get("samples", [])
+
+
+def hist_gap_map() -> dict:
+    """源窗口覆盖 vs 库内存档 → 缺失日/半日档清单(管理卡展示)"""
+    src = _hist_src_days()
     have = set(days())
+    partial = sorted(d for d in have & set(src)
+                     if (lambda s: s and not _day_complete(s))(_day_samples(d) or []))
     return {"src_days": sorted(src), "missing": sorted(d for d in src if d not in have),
+            "partial": partial,
             "have_recent": sorted(d for d in have if d >= sorted(src)[0]) if src else []}
 
 
-def backfill_hist() -> dict:
-    """一键回补: 缺口日用东财分钟线重建(终值融合+情绪框架); 幂等。
-    注意: 情绪分数按重建日收盘数据回算(框架一次+末行改写), 与backfill_today
-    同构; ETF分钟映射同样适用。返回 {filled: [dates], skipped: n}"""
-    src = _em_trends_days()
+def backfill_hist(now: datetime = None) -> dict:
+    """一键回补: 源窗口(近5个交易日)内 缺失日+半日档 统一分钟重建(含情绪
+    回算/真值字段保留); 幂等, 健康全日档不动; 源本身不完整的残日跳过。
+    半日档修复(11-11实测: tick止于14:14后停机, 旧版只查首样本判健康, 截尾
+    档永不重建)。返回 {filled: 缺失日, repaired: 半日档, skipped: n}"""
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    hm = now.hour * 60 + now.minute
+    src = _hist_src_days()
     if not src:
-        return {"filled": [], "skipped": 0, "msg": "源不可达"}
-    have = set(days())
-    filled = []
+        return {"filled": [], "repaired": [], "skipped": 0, "msg": "源不可达"}
+    filled, repaired = [], []
     for d in sorted(src):
-        if d in have:
-            continue
+        if d == today and hm < 15 * 60 + 6:
+            continue                     # 当日未收盘: tick负责, 不动
         pts = src[d]
+        if not (pts[0][0] <= "09:35" and pts[-1][0] >= "14:55"):
+            continue                     # 源残日(如新浪窗口头部): 不造半日档
+        existing = _day_samples(d)
+        old_samples = existing
+        if old_samples and _day_complete(old_samples):
+            continue                     # 健康全日档不动
         samples = [{"t": t, "close": c, "cumvol": v, "cumamt": a,
                     "score": None, "v1": None, "stage": None,
                     "zt": None, "jl": None, "etf": None} for t, c, v, a in pts]
+        _carry_fields(samples, old_samples or [])
         try:                                   # 逐分钟情绪(框架改末行)
             import rt_score
             from db import connect
@@ -521,11 +628,20 @@ def backfill_hist() -> dict:
                 snap = {"date": d, "close": pts[-1][1],
                         "volume1": pts[-1][2], "amount1": (pts[-1][3] or 0) * 1e8}
                 scores = rt_score.rt_series(conn, snap, samples)
+                stage = None
+                if hasattr(rt_score, "replay"):   # 收盘终值档位(库内日线+mood)
+                    try:
+                        rp = rt_score.replay(conn, d)
+                        stage = rp.get("stage") if rp else None
+                    except Exception:                              # noqa: BLE001
+                        stage = None               # 日线缺该日: 档位置空不连累分数
             finally:
                 conn.close()
             for smp, sc in zip(samples, scores):
                 if sc is not None:
                     smp["score"] = smp["v1"] = sc
+                if stage:
+                    smp["stage"] = stage
         except Exception as e:                               # noqa: BLE001
             print(f"[rt] 历史回补{d}情绪失败(仅量价): {e}")
         con = sqlite3.connect(str(RT_DB), timeout=30)
@@ -536,9 +652,32 @@ def backfill_hist() -> dict:
                      json.dumps({"samples": samples}, ensure_ascii=False)))
         con.commit()
         con.close()
-        filled.append(d)
-        print(f"[rt] 历史回补 {d}: {len(samples)}点")
-    return {"filled": filled, "skipped": len(src) - len(filled)}
+        (repaired if old_samples else filled).append(d)
+        print(f"[rt] 历史回补 {d}: {len(samples)}点"
+              + ("(半日档修复)" if old_samples else ""))
+    return {"filled": filled, "repaired": repaired,
+            "skipped": len(src) - len(filled) - len(repaired)}
+
+
+_hist_auto = {"date": None}
+
+
+def _hist_auto_once(now: datetime = None) -> None:
+    """每日15:35后自动跑一次历史回补: 缺口日/半日档修复不再依赖手动按钮
+    (源窗口仅约5个交易日, 漏采超窗即永久缺失)。当日去重, 失败不阻塞轮询。"""
+    now = now or datetime.now()
+    if now.hour * 60 + now.minute < 15 * 60 + 35:
+        return
+    d = now.strftime("%Y-%m-%d")
+    if _hist_auto["date"] == d:
+        return
+    _hist_auto["date"] = d
+    try:
+        r = backfill_hist(now)
+        if r.get("filled") or r.get("repaired"):
+            print(f"[rt] 自动历史回补: 补{r['filled']} 修{r['repaired']}")
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[rt] 自动历史回补失败: {e}")
 
 
 _app = None
@@ -556,6 +695,7 @@ def _loop() -> None:
             if enabled:
                 if tick() == "idle":
                     backfill_today()      # R5b: 盘后一次(内部自检幂等)
+                    _hist_auto_once()     # D1-29: 每日15:35后自动回补窗口缺口/半日档
             time.sleep(INTERVAL_S)
         except Exception:                       # noqa: BLE001
             time.sleep(INTERVAL_S)
