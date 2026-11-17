@@ -174,11 +174,12 @@ def _load_manifest() -> dict:
 
 
 def _save_manifest(m: dict):
-    """原子写: .part + 改名 — 写入中途被杀不再截断清单(曾致全量条目丢失)"""
+    """原子写: .part + 改名 — 写入中途被杀不再截断清单(曾致全量条目丢失)。
+    retries=3(30s): 小文件AV锁窗口短, 减半锁内等待(manifest锁超时60s)"""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     part = MANIFEST.with_name("manifest.json.part")
     part.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
-    _win_replace(part, MANIFEST)
+    _win_replace(part, MANIFEST, retries=3)
 
 
 @contextlib.contextmanager
@@ -488,7 +489,7 @@ def run_all(btype: str = "manual", retention: dict | None = None,
     D1-11 C3: assets 子集保持 ASSETS 顺序; 未知名 → 结果带error不落任何备份。
     """
     t0 = time.time()
-    files, err = [], None
+    files, failed, err = [], [], None
     btype = _norm_type(btype)
     sel = list(ASSETS)
     if assets:
@@ -518,6 +519,7 @@ def run_all(btype: str = "manual", retention: dict | None = None,
             except Exception as ex:  # noqa: BLE001
                 # 单资产失败不中断其余(曾因zip改名AV锁失败中止整轮,
                 # 该晚后续资产全部未备) — prune也照常执行
+                failed.append(a)
                 _log(f"✗ {a} [{btype}] 快照异常(继续其余资产): "
                      f"{type(ex).__name__}: {ex}")
                 continue
@@ -530,7 +532,13 @@ def run_all(btype: str = "manual", retention: dict | None = None,
     except Exception as ex:  # noqa: BLE001
         err = f"{type(ex).__name__}: {ex}"
         _log(f"✗ [{btype}] 异常: {err}")
-    return {"btype": btype, "status": "fail" if err else "ok",
+    # 部分失败可见性: 服务端只认status≠ok落fail — 单资产失败曾随隔离被
+    # 静默吞成done; partial显式携带failed清单, 全灭才是fail
+    status = "fail" if (err or (failed and not files)) else (
+        "partial" if failed else "ok")
+    if failed and not err:
+        err = f"{len(failed)}/{len(sel)}资产失败: {','.join(failed)}(详见备份日志)"
+    return {"btype": btype, "status": status, "failed": failed,
             "files": files, "files_n": len(files),
             "total_mb": round(sum(f["size"] for f in files) / 1048576, 1),
             "duration_s": round(time.time() - t0, 1), "error": err}

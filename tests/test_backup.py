@@ -598,7 +598,9 @@ def test_run_all_asset_isolation(env, monkeypatch):
     monkeypatch.setattr(B, "snapshot", fake_snapshot)
     monkeypatch.setattr(B, "prune", lambda *a, **kw: calls.append("prune"))
     r = B.run_all("daily")
-    assert r["status"] == "ok" and r["files_n"] == len(calls) - 2  # app失败+prune
+    assert r["status"] == "partial" and r["failed"] == ["app"]   # 部分失败显式可见
+    assert r["files_n"] == len(calls) - 2                        # app失败+prune两非文件项
+    assert "app" in r["error"]                                   # 服务端日志可见失败清单
     assert "prune" in calls                                      # prune未被跳过
     assert set(r["files"][0]["asset"] for f in r["files"]) <= {"sentiment", "secret",
                                                                "token", "cfg_core",
