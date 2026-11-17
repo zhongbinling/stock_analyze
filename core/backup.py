@@ -95,7 +95,10 @@ def _log(msg: str):
 def _win_replace(src: Path, dst: Path, retries: int = 5):
     """Windows原子重命名带重试+降级 — WinError 5(拒绝访问)多由杀毒/索引器
     锁文件引起(实测周备1.4GB的AV扫描可锁30s+, 3×2s重试仍不够)。
-    策略: replace→10s间隔重试5次(50s)→copy+unlink降级(绕锁)→抛。"""
+    策略: replace→10s间隔重试5次(50s)→copy+unlink降级(绕锁)→抛。
+    修复: copy成功即成功 — 曾因src.unlink仍被锁而误报失败, 导致整个
+    run_all中断(实测11-08~11-14每晚[daily]异常, 后续资产全跳过);
+    残留src由_sweep_stale_parts兜底清理。"""
     for i in range(retries):
         try:
             src.replace(dst)
@@ -107,10 +110,14 @@ def _win_replace(src: Path, dst: Path, retries: int = 5):
     # 降级: copy到目标(新文件不受旧锁影响) + unlink源(可能仍锁→容忍)
     try:
         shutil.copy2(str(src), str(dst))
-        src.unlink(missing_ok=True)  # .part残留由_sweep_stale_parts清
-        return
     except PermissionError:
         pass                        # copy也锁 → 清理后抛原异常
+    else:
+        try:
+            src.unlink(missing_ok=True)
+        except OSError:
+            _log(f"⚠ 源残留(AV锁未释放, 稍后sweep清理): {src.name}")
+        return                      # copy成功即成功
     try:
         src.unlink(missing_ok=True)
     except OSError:
@@ -133,7 +140,18 @@ _ENTRY_REQ = ("file", "asset", "kind", "sha256", "size", "time", "date",
 
 def _load_manifest() -> dict:
     if MANIFEST.exists():
-        m = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        try:
+            m = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        except ValueError:      # 写入中途被杀截断(旧版write_text非原子) — 存证+空清单
+            ts2 = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            keep = MANIFEST.with_name(f"manifest.corrupt_{ts2}.json")
+            try:
+                shutil.copy2(MANIFEST, keep)
+            except OSError:
+                pass
+            _log(f"✗ manifest.json 非法JSON(截断?), 已存证 {keep.name}; "
+                 f"磁盘备份仍在 — 跑 `python backup.py rebuild` 找回孤儿条目")
+            m = {"entries": []}
         raw = m.get("entries", [])
         if not isinstance(raw, list):
             raw = []
@@ -156,8 +174,11 @@ def _load_manifest() -> dict:
 
 
 def _save_manifest(m: dict):
+    """原子写: .part + 改名 — 写入中途被杀不再截断清单(曾致全量条目丢失)"""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    MANIFEST.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    part = MANIFEST.with_name("manifest.json.part")
+    part.write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    _win_replace(part, MANIFEST)
 
 
 @contextlib.contextmanager
@@ -227,6 +248,22 @@ def _integrity_ok(p: Path) -> bool:
         return False
 
 
+# pre类快照最小间隔: 新闻回补轮次/修复任务高频触发, 每轮1.4GB×N次的拷贝+
+# zip重建放大IO与AV锁窗口(实测一夜10+份pre-backfill) — 45min内已有新鲜
+# 保护快照则跳过; pre-restore除外(恢复前的兜底不可省)
+_PRE_MIN_GAP_S = 45 * 60
+
+
+def _pre_throttled(btype: str, last: dict | None, now=None) -> bool:
+    if not btype.startswith("pre") or btype == "pre-restore" or not last:
+        return False
+    try:
+        t_last = dt.datetime.strptime(last["time"], "%Y-%m-%d %H:%M:%S")
+    except (KeyError, ValueError, TypeError):
+        return False
+    return ((now or dt.datetime.now()) - t_last).total_seconds() < _PRE_MIN_GAP_S
+
+
 def snapshot(asset: str, btype: str = "manual", compress: bool = True,
              folder: str | None = None) -> dict | None:
     """单资产快照: 在线备份→校验→sha去重→子目录(可选zip)→manifest; 缺失/未变化None
@@ -248,6 +285,12 @@ def snapshot(asset: str, btype: str = "manual", compress: bool = True,
         return None
     m = _load_manifest()
     last = next((e for e in reversed(m["entries"]) if e["asset"] == asset), None)
+    last_pre = next((e for e in reversed(m["entries"])
+                     if e["asset"] == asset and str(e.get("type", "")).startswith("pre")), None)
+    if _pre_throttled(btype, last_pre):
+        _log(f"= {asset} [{btype}] 节流跳过(45min内已有新鲜pre快照: "
+             f"{last_pre['time']})")
+        return None
     # 快速去重: 源sha与上次快照时的源sha一致 → 免拷贝直接跳过。注: sqlite backup
     # 副本间字节稳定但与源文件不完全相同, 故条目单独记src_sha256(源文件口径),
     # 不能拿sha256(副本口径)比对; 各库均delete日志模式, 源sha可代表已提交内容
@@ -407,16 +450,26 @@ def _decompress_if_copy(p: Path) -> Path:
 
 
 def _sweep_stale_parts(max_age_s: float = 3600.0):
-    """清理崩溃残留: 超过1小时且只含.part(或空)的快照目录整目录移除
+    """清理崩溃/降级残留: 超过1小时且只含.part(或空)的快照目录整目录移除;
+    根级 *.zip.part / *.part 同样清理(_win_replace降级成功后的源残留 —
+    实测5个1.4GB的zip.part长期滞留)。
 
     正常流程不会留下此类目录(成功→zip/明文成员, 未变化跳过→rmtree);
-    只有进程被杀(Ctrl+C/断电)会残留。时限避开并发在途的快照。
+    只有进程被杀(Ctrl+C/断电)或AV锁残留。时限避开并发在途的快照。
     """
     if not BACKUP_DIR.exists():
         return
     now = time.time()
     for d in BACKUP_DIR.iterdir():
-        if not d.is_dir() or "_" not in d.name:
+        if d.is_file():
+            if d.name.endswith(".part") and now - d.stat().st_mtime > max_age_s:
+                try:
+                    d.unlink()
+                    _log(f"~ 清理根级残留 {d.name}")
+                except OSError:
+                    pass
+            continue
+        if "_" not in d.name:
             continue
         try:
             if now - d.stat().st_mtime <= max_age_s:
@@ -460,7 +513,14 @@ def run_all(btype: str = "manual", retention: dict | None = None,
                 n += 1
                 run_folder = f"{base}_{n}"
         for a in sel:
-            e = snapshot(a, btype, compress=compress, folder=run_folder)
+            try:
+                e = snapshot(a, btype, compress=compress, folder=run_folder)
+            except Exception as ex:  # noqa: BLE001
+                # 单资产失败不中断其余(曾因zip改名AV锁失败中止整轮,
+                # 该晚后续资产全部未备) — prune也照常执行
+                _log(f"✗ {a} [{btype}] 快照异常(继续其余资产): "
+                     f"{type(ex).__name__}: {ex}")
+                continue
             if e:
                 files.append({"file": e["file"], "asset": a, "size": e["size"]})
         d = BACKUP_DIR / run_folder       # 全部跳过时清掉空占位目录

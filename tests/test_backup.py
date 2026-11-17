@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import shutil
 import sqlite3
+import time
 
 import pytest
 
@@ -536,3 +537,107 @@ def test_win_replace_retries_and_fallback(tmp_path, monkeypatch):
                         lambda s, t: (_ for _ in ()).throw(PermissionError(5, "锁")))
     B._win_replace(src2, dst2)
     assert dst2.exists() and dst2.read_text() == "data"
+
+
+# ── 备份可靠性加固(manifest脱节事故复盘: 磁盘79GB在而清单仅10条) ──
+
+def test_load_manifest_corrupt_json_tolerated(env):
+    """manifest非JSON(写入中途被杀截断) → 存证+空清单, 不再整链路崩"""
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    B.MANIFEST.write_text('{"entries": [{"file": "xx', encoding="utf-8")  # 截断
+    m = B._load_manifest()
+    assert m["entries"] == []
+    assert list(env["bdir"].glob("manifest.corrupt_*.json"))    # 损坏件存证
+    # 净化后的正常路径不受影响
+    B.MANIFEST.write_text(json.dumps({"entries": []}), encoding="utf-8")
+    assert B._load_manifest() == {"entries": []}
+
+
+def test_save_manifest_atomic(env):
+    """原子写: 落盘后无 .part 残留; 清单可回读"""
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    B._save_manifest({"entries": [{"file": "a.db", "asset": "sentiment",
+                                   "kind": "sqlite", "sha256": "x", "size": 1,
+                                   "time": "2026-11-18 00:00:00", "date": "20261118",
+                                   "type": "daily", "integrity": "ok"}]})
+    assert not (env["bdir"] / "manifest.json.part").exists()
+    assert len(B._load_manifest()["entries"]) == 1
+
+
+def test_win_replace_copy_success_is_success(env, monkeypatch):
+    """copy降级成功但src仍被AV锁(unlink失败) → 视为成功不再误报
+    (曾致每晚[daily]整轮中断, 后续资产全部未备)"""
+    import pathlib
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    src = env["bdir"] / "x.zip.part"
+    dst = env["bdir"] / "x.zip"
+    src.write_bytes(b"payload")
+    # replace恒锁(AV) → copy成功 → unlink源仍锁 → 应视为成功
+    monkeypatch.setattr(pathlib.Path, "replace",
+                        lambda self, tgt: (_ for _ in ()).throw(PermissionError(5, "锁")))
+
+    def unlink_locked(self, missing_ok=False):
+        if self.name.endswith(".part"):
+            raise PermissionError(5, "AV锁")
+        return orig_unlink(self, missing_ok)
+    orig_unlink = pathlib.Path.unlink
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink_locked)
+    B._win_replace(src, dst, retries=1)         # 不抛即通过(跳过重试等待)
+    assert dst.read_bytes() == b"payload"
+
+
+def test_run_all_asset_isolation(env, monkeypatch):
+    """单资产异常不再中断整轮(其余资产照备, prune照常)"""
+    calls = []
+
+    def fake_snapshot(a, btype, compress=True, folder=None):
+        calls.append(a)
+        if a == "app":
+            raise PermissionError(5, "AV锁zip改名")
+        return {"file": f"{folder}/{a}.db", "asset": a, "size": 10}
+    monkeypatch.setattr(B, "snapshot", fake_snapshot)
+    monkeypatch.setattr(B, "prune", lambda *a, **kw: calls.append("prune"))
+    r = B.run_all("daily")
+    assert r["status"] == "ok" and r["files_n"] == len(calls) - 2  # app失败+prune
+    assert "prune" in calls                                      # prune未被跳过
+    assert set(r["files"][0]["asset"] for f in r["files"]) <= {"sentiment", "secret",
+                                                               "token", "cfg_core",
+                                                               "cfg_server"}
+
+
+def test_sweep_root_part_files(env):
+    """根级 *.part(zip改名降级残留, 实测5个1.4GB滞留) 超时被清"""
+    import os
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    stale = env["bdir"] / "daily_20261108_223500.zip.part"
+    fresh = env["bdir"] / "inflight.zip.part"
+    stale.write_bytes(b"x")
+    fresh.write_bytes(b"x")
+    old = time.time() - 7200
+    os.utime(stale, (old, old))
+    B._sweep_stale_parts()
+    assert not stale.exists() and fresh.exists()
+
+
+def test_pre_throttle_45min(env, monkeypatch):
+    """pre类45min节流(新闻轮次高频触发); pre-restore不节流; 超时/首份不节流"""
+    import datetime as dtm
+    recent = {"time": (dtm.datetime.now() - dtm.timedelta(minutes=10))
+              .strftime("%Y-%m-%d %H:%M:%S")}
+    old = {"time": (dtm.datetime.now() - dtm.timedelta(hours=2))
+           .strftime("%Y-%m-%d %H:%M:%S")}
+    assert B._pre_throttled("pre-backfill", recent) is True
+    assert B._pre_throttled("pre-calc", recent) is True
+    assert B._pre_throttled("pre-restore", recent) is False    # 恢复兜底不省
+    assert B._pre_throttled("pre-backfill", old) is False
+    assert B._pre_throttled("pre-backfill", None) is False
+    assert B._pre_throttled("daily", recent) is False
+    # 端到端: 10分钟前的pre条目 → 新pre-backfill跳过, daily不受影响
+    env["bdir"].mkdir(parents=True, exist_ok=True)
+    ent = {"file": "pre-backfill_old.zip/sentiment.db", "asset": "sentiment",
+           "kind": "sqlite", "sha256": "zz", "src_sha256": "yy", "size": 1,
+           "time": recent["time"], "date": "20261118", "type": "pre-backfill",
+           "integrity": "ok"}
+    B._save_manifest({"entries": [ent]})
+    assert B.snapshot("sentiment", "pre-backfill") is None      # 节流
+    assert B.snapshot("sentiment", "daily") is not None         # daily正常备

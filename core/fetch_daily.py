@@ -664,6 +664,9 @@ def backfill_sector_history(start="20120101"):
 
 # ---------------------------------------------------------------- D1-2: 统一补全入口
 
+# 数据集 → 额外pre快照资产(修复写入非sentiment.db的库时, 该库也要有回滚保护)
+_PRE_BACKFILL_ASSETS = {"stock_daily": ("stock",), "stock_hist": ("stock",)}
+
 # dataset: (标签, [(表, 计数列None=全行, 日期列)], 执行函数(start), 默认起始日)
 # 增量度量=执行前后按日计数差集, 不改既有回补函数内部; 重复执行幂等(函数自身跳过已有日期)
 BACKFILLS = {
@@ -751,6 +754,9 @@ def run_backfill(dataset, start=None) -> dict:
     try:
         from backup import snapshot
         snapshot("sentiment", "pre-backfill")
+        # 修复目标库不止sentiment的数据集补对应pre快照(stock.db等)
+        for extra in _PRE_BACKFILL_ASSETS.get(dataset, ()):
+            snapshot(extra, "pre-backfill")
     except Exception as e:  # noqa: BLE001
         print(f"[backfill] pre-backfill快照失败(继续): {e}")
     conn = connect()
