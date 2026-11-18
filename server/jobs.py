@@ -683,45 +683,56 @@ def task_generate(def_id, scheduled=False):
 
 # ---------------------------------------------------------------- D1-2/D1-3: 数据补全
 
-# 与 core/fetch_daily.py BACKFILLS 的 dataset 键一致(路由校验复用; 不import fetch_daily避免拉起pandas)
-BACKFILL_DATASETS = {"zt_est": "涨停家数·估算回补(2012-2019)",
-                     "zt_ts": "涨停结构·tushare回补(2020起)",
-                     "breadth": "涨跌家数·tushare回补(2018起)",
-                     "calendar": "交易日历·刷新",
-                     "sector_history": "板块日线·历史回补(东财, 目标2012起)",
-                     "sw_breadth": "板块涨跌家数·SW层级(2005起)",
-                     "sw_pool": "涨停结构·SW层级(2005起, 含全市场段)",
-                     "sw_fflow": "主力资金流·SW层级(2007起)",
-                     "sw_daily": "SW行业指数日线(官方~2012-08起)",
-                     "dc_daily": "板块日线·tushare近端(推荐)",
-                     "dc_fflow": "板块资金流·tushare(2023-09起)",
-                     "index_val": "指数估值PE/PB(2014-06起)",
-                     "margin_hist": "两融余额历史(2010-03起)",
-                     "etf_daily": "宽基ETF日线(2005-02起)",
-                     "mkt_val": "全A/宽基估值(2010起·自算)",
-                    "float_hist": "月度解禁·share_float(2006起)",
-                    "news_fetch": "宏观新闻抓取(2018起·major_news+em快讯)",
-                    "stock_daily": "个股数据·自选池日增",
-                    "stock_hist": "个股数据·自选池全量补全"}
-# 默认起始日(与 core BACKFILLS 第4元素保持同步): start 留空时使用, 避免统一默认
-# 20200102 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
-BACKFILL_DEFAULT_START = {"zt_est": "20120101", "zt_ts": "20200102",
-                          "breadth": "20180102", "calendar": "20240101",
-                          "sector_history": "20120101",
-                          "sw_breadth": "20050101",
-                          "sw_pool": "20050101",
-                          "sw_fflow": "20070101",
-                          "sw_daily": "19990101",
-                          "dc_daily": "20260901",
-                          "dc_fflow": "20230901",
-                          "index_val": "20140601",
-                          "margin_hist": "20100331",
-                          "etf_daily": "20050223",
-                          "mkt_val": "20100101",
-                          "float_hist": "20060101",
-                          "news_fetch": "20180601",
-                          "stock_daily": "20180601",
-                          "stock_hist": "20050101"}
+# D1-30: dataset清单与默认起始日单源派生自 core/fetch_daily.py BACKFILLS
+# (label=spec[0], def_start=spec[3])。曾为两份独立手维护清单 — etf_flow
+# 注册后双双漂移, 修复入口报"dataset 应为 …(无etf_flow)"400实测。
+# 懒加载: 首次访问才import fetch_daily(拉起pandas), 保持jobs模块导入零重依赖。
+class _LazySpecMap(dict):
+    """BACKFILLS派生映射: 键→spec[i]; 首次访问任意方式时构建"""
+
+    def __init__(self, idx: int):
+        super().__init__()
+        self._idx = idx
+        self._loaded = False
+
+    def _ensure(self):
+        if not self._loaded:
+            import sys as _sys
+            if str(CORE) not in _sys.path:
+                _sys.path.insert(0, str(CORE))
+            import fetch_daily as _FD
+            self.update({k: v[self._idx] for k, v in _FD.BACKFILLS.items()})
+            self._loaded = True
+
+    def __getitem__(self, k):
+        self._ensure()
+        return super().__getitem__(k)
+
+    def __contains__(self, k):
+        self._ensure()
+        return super().__contains__(k)
+
+    def get(self, k, d=None):
+        self._ensure()
+        return super().get(k, d)
+
+    def __iter__(self):
+        self._ensure()
+        return super().__iter__()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+    def __len__(self):
+        self._ensure()
+        return super().__len__()
+
+
+BACKFILL_DATASETS = _LazySpecMap(0)      # dataset → 标签(路由校验/任务label)
+# 默认起始日(派生BACKFILLS第4元素): start留空时使用, 避免统一默认20200102
+# 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
+BACKFILL_DEFAULT_START = _LazySpecMap(3)  # dataset → 默认YYYYMMDD
 
 
 def task_backfill(dataset: str, start: str, trigger: str = "manual",

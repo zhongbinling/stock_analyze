@@ -80,3 +80,27 @@ def test_backup_block_ui_hints_raw_policy():
     from backup import RAW_POLICY
     assert "raw_daily" in RAW_POLICY
     assert "daily" not in RAW_POLICY["raw_daily"]["types"]  # 策略确实排除日备
+
+
+def test_backfill_datasets_single_source():
+    """jobs侧dataset清单/默认起始日派生自BACKFILLS(第四/五份清单根治):
+    键集一致 + etf_flow在列(曾因手维护漂移致修复入口400) + 懒加载可访问"""
+    import fetch_daily as FD
+    from server import jobs as J
+    assert set(J.BACKFILL_DATASETS) == set(FD.BACKFILLS)
+    assert set(J.BACKFILL_DEFAULT_START) == set(FD.BACKFILLS)
+    assert "etf_flow" in J.BACKFILL_DATASETS
+    assert J.BACKFILL_DEFAULT_START["etf_flow"] == FD.BACKFILLS["etf_flow"][3]
+    # 派生值真源一致(标签/起始日)
+    assert J.BACKFILL_DATASETS["zt_est"] == FD.BACKFILLS["zt_est"][0]
+
+
+def test_repair_api_accepts_registered_dataset(server_app):
+    """端到端: 修复入口POST注册表内数据集不再400(etf_flow实测回归)"""
+    c = server_app["client"]
+    r = c.post("/admin/api/backfill/run", json={"dataset": "etf_flow"})
+    assert r.status_code == 200
+    from server import jobs as J
+    item = J._q.get_nowait()
+    assert item["kind"] == "backfill" and "净流入" in item["target"]  # target=中文标签
+    J._queue_log.clear()
