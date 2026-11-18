@@ -57,6 +57,11 @@ def _post_and_pull(server_app, body):
         jobs.set_setting("ai_local_enabled", "1")
     assert c.post("/admin/api/ai/analyze-all", json=body).status_code == 200
     item = jobs._q.get_nowait()
+    for e in jobs._queue_log:   # D1-30去重: 取走即完结(测试充当执行器),
+        if e.get("state") == "queued" and e["kind"] == item["kind"] \
+                and e["target"] == item["target"]:   # 否则幽灵queued条目
+            e["state"] = "done"                      # 拦同target二次入队
+            break
     with server_app["app"].app_context():
         jobs.set_setting("ai_local_enabled", "0")
     return item
