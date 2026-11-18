@@ -136,8 +136,10 @@ def test_backfill_recalc_enqueue_failure_message(app):
     """队列满 → 入队失败, 日志明示'入队失败'而非自相矛盾的'已入队'"""
     with app["app"].app_context():
         app["jobs"].set_setting("backfill_recalc", "1")
-    while app["jobs"].enqueue("noop", lambda a: 0)[0]:   # 填满队列(上限20); 注意enqueue返回元组恒真
-        pass
+    # 填满队列(上限20); D1-30去重后同键重复会被拒 — 用唯一target填满
+    n = 0
+    while app["jobs"].enqueue("noop", lambda a: 0, target=f"fill{n}")[0]:
+        n += 1
     collected = []
     from server import jobs
     result = {"dataset": "zt_ts", "status": "ok", "date_from": "2026-09-24",

@@ -186,7 +186,15 @@ _HEARTBEAT_TTL = 900                           # 心跳有效期(秒): 超时视
 
 
 def enqueue(kind, fn, target="", trigger="manual"):
-    """入队; 返回 (ok, msg) — 登记簿同步记录(kind/target/序号/时间)"""
+    """入队; 返回 (ok, msg) — 登记簿同步记录(kind/target/序号/时间)
+    D1-30: 同(kind,target)去重 — queued/running态的重复入队直接拒。
+    曾致冲突: 手动补全与定时链叠加时同任务连跑两遍(全史回补类白烧
+    一轮限频调用); 完成态(done)不拦 — 失败重跑/定时重入不受影响。"""
+    for e in _queue_log:
+        if (e.get("kind") == kind and e.get("target") == target
+                and e.get("state") in ("queued", "running")):
+            st = "运行" if e.get("state") == "running" else "排队"
+            return False, f"同任务正在{st}中, 已忽略重复入队"
     if _q.qsize() >= QUEUE_CAP:
         return False, "任务队列已满(20), 请稍后再试"
     seq = next(_q_seq)

@@ -134,9 +134,12 @@ def server_app(tmp_path, monkeypatch):
     app.config["WTF_CSRF_ENABLED"] = False
     app.config["TESTING"] = True
     # 全局任务队列排空(前序测试自动入队的 recalc 等残留会污染 queue_size 断言)
+    # D1-30: 登记簿一并清 — enqueue同键去重后, 跨测试残留的queued条目
+    # 会把后续测试的合法入队误判为重复(409/queue_size=0实测)
     from server import jobs as _jobs
     while not _jobs._q.empty():
         _jobs._q.get_nowait()
+    _jobs._queue_log.clear()
     with app.app_context():
         SV.db.create_all()
         from server.models import User
