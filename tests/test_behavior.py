@@ -152,3 +152,17 @@ def test_bt_page_gates():
                        errors="replace", timeout=120)
     os.unlink(p)
     assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+
+
+def test_bt_compute_and_save_validation(server_app):
+    """review修复回归: 全不勾因子→400(曾静默回退默认权重);
+    策略保存阈值非法/无因子→400"""
+    c = server_app["client"]
+    r = c.post("/admin/api/backtest/compute", json={"factors": {}})
+    assert r.status_code == 400 and "至少勾选一个因子" in r.get_json()["msg"]
+    assert c.post("/admin/api/backtest/strategies", json={
+        "name": "坏阈值", "factors": {"pe_pct": -40},
+        "entry": "abc", "exit": -20}).status_code == 400
+    assert c.post("/admin/api/backtest/strategies", json={
+        "name": "空因子", "factors": {}, "entry": 30,
+        "exit": -30}).status_code == 400

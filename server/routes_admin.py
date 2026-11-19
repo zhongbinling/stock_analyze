@@ -249,17 +249,20 @@ def api_bt_factors():
 @bp_admin.post("/api/backtest/compute")
 @require_level(7)
 def api_bt_compute():
-    """因子组合+状态概率+回测(只读计算~5s首算/0.1s缓存; 交互式同步返回)"""
+    """因子组合+状态概率+回测(只读计算~5s首算/0.1s缓存; 交互式同步返回)。
+    review: 全不勾因子曾静默回退默认权重 — 用户以为在测自己的组合"""
     import behavior as BH
     d = request.get_json(force=True, silent=True) or {}
     weights = {k: v for k, v in (d.get("factors") or {}).items()
                if isinstance(v, (int, float)) and -100 <= v <= 100}
+    if not weights:
+        return jsonify({"ok": False, "msg": "请至少勾选一个因子"}), 400
     try:
         entry = max(-100, min(100, int(d.get("entry", BH.DEFAULT_ENTRY))))
         exit_ = max(-100, min(100, int(d.get("exit", BH.DEFAULT_EXIT))))
     except (TypeError, ValueError):
         return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
-    r = BH.payload(weights or None, entry, exit_)
+    r = BH.payload(weights, entry, exit_)
     r["ok"] = True
     return jsonify(r)
 
@@ -294,9 +297,16 @@ def api_bt_strategy_save():
     name = str(d.get("name", "")).strip()
     if not name or len(name) > 32:
         return jsonify({"ok": False, "msg": "名称需1~32字"}), 400
-    cfg = {"factors": {k: v for k, v in (d.get("factors") or {}).items()
-                       if isinstance(v, (int, float))},
-           "entry": d.get("entry"), "exit": d.get("exit")}
+    weights = {k: v for k, v in (d.get("factors") or {}).items()
+               if isinstance(v, (int, float))}
+    if not weights:
+        return jsonify({"ok": False, "msg": "策略需至少一个因子"}), 400
+    try:                        # review: 阈值类型校验(曾可存任意串, 加载即坏)
+        entry = int(d.get("entry"))
+        exit_ = int(d.get("exit"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
+    cfg = {"factors": weights, "entry": entry, "exit": exit_}
     s = BehaviorStrategy.query.filter_by(name=name).first()
     from server.jobs import _now
     if s:
