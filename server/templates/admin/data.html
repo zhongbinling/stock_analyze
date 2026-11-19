@@ -693,11 +693,14 @@ async function loadRtStat() {
   } catch (e) { $('rtStat').textContent = e.message; }
 }
 $('btnRtBackfill').onclick = async () => {
-  $('rtBfMsg').textContent = '⏳ 执行中…';
+  // D1-31: 改入任务队列(曾同步执行 — 半日档重建后rt_series逐分钟情绪
+  // ~10s+阻塞请求, 且任务中心不可见无法确认是否运行)
+  $('rtBfMsg').textContent = '⏳ 已入队…';
   try {
     const r = await api('/admin/api/rt/backfill', {method: 'POST', body: '{}'});
-    $('rtBfMsg').textContent = r.msg + ` (${r.result})`;
-    loadRtStat();
+    $('rtBfMsg').textContent = r.msg;
+    poll(true);                        // 任务中心即时可见
+    setTimeout(loadRtStat, 20000);     // 完成后刷新实时库状态
 // D1-28 N1: 宏观新闻抓取卡
 async function loadNewsStat() {
   try {

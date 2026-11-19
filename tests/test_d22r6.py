@@ -106,16 +106,29 @@ def test_stats(env):
 
 
 def test_rt_stats_and_backfill_api(server_app, monkeypatch, tmp_path):
-    from server import rt
+    from server import rt, jobs
     monkeypatch.setattr(rt, "RT_DB", tmp_path / "rt.db")
     c = server_app["client"]
     r = c.get("/admin/api/rt/stats")
     assert r.status_code == 200 and "days" in r.get_json()
+    # D1-31: 入队语义 — 立即返回, 结果由任务fn产出(任务中心可见)
     monkeypatch.setattr(rt, "backfill_now", lambda: "ok")
     r = c.post("/admin/api/rt/backfill")
-    assert r.status_code == 200 and r.get_json()["msg"] == "已补采/重建"
+    assert r.status_code == 200 and "已入队" in r.get_json()["msg"]
+    item = jobs._q.get_nowait()
+    assert item["kind"] == "rt_backfill" and "立即补采" in item["target"]
+    logs = []
+    assert item["fn"](logs.append) == 0 and any("已补采/重建" in l for l in logs)
+    for e in jobs._queue_log:               # 取走即完结(去重语义)
+        if e.get("state") == "queued" and e["kind"] == "rt_backfill":
+            e["state"] = "done"
+            break
     monkeypatch.setattr(rt, "backfill_now", lambda: "idle")
-    assert "盘中" in c.post("/admin/api/rt/backfill").get_json()["msg"]
+    assert c.post("/admin/api/rt/backfill").status_code == 200
+    item2 = jobs._q.get_nowait()
+    logs2 = []
+    assert item2["fn"](logs2.append) == 0 and any("盘中" in l for l in logs2)
+    jobs._queue_log.clear()
 
 
 def test_mgmt_card_and_fallback_gates():

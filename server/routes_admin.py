@@ -432,12 +432,22 @@ def api_rt_stats():
 @bp_admin.post("/api/rt/backfill")
 @require_level(7)
 def api_rt_backfill():
-    """D1-22 R6c: 立即补采(盘后重建/盘前自愈瘦行, 同步秒级)"""
+    """D1-31: 立即补采入任务队列(曾同步"秒级" — 半日档重建改造后
+    rt_series逐分钟情绪回算~10s+阻塞请求, 且任务中心不可见, 用户
+    无法确认是否运行; 入队后与更新链串行不并发写库, 双击由去重拦)"""
+    from server import jobs as J
     from server import rt
-    r = rt.backfill_now()
-    return jsonify({"ok": r in ("ok", "have"), "result": r,
-                    "msg": {"ok": "已补采/重建", "have": "已有健康数据",
-                            "idle": "当前无可补采目标(盘中由实时采集负责)"}.get(r, r)})
+
+    def fn(append):
+        r = rt.backfill_now()
+        append({"ok": "已补采/重建当日", "have": "已有健康数据(无需补采)",
+                "idle": "当前无可补采目标(盘中由实时采集负责)"}.get(r, f"结果: {r}"))
+        return 0
+    ok, msg = J.enqueue("rt_backfill", fn, target="实时行情·立即补采",
+                        trigger="manual")
+    if not ok:
+        return jsonify({"ok": False, "msg": msg}), 409
+    return jsonify({"ok": True, "msg": "已入队 — 进度与结果见任务中心"})
 
 
 @bp_admin.get("/api/rt/hist_gap")
