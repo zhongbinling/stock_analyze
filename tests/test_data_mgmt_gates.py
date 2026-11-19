@@ -104,3 +104,35 @@ def test_repair_api_accepts_registered_dataset(server_app):
     item = J._q.get_nowait()
     assert item["kind"] == "backfill" and "净流入" in item["target"]  # target=中文标签
     J._queue_log.clear()
+
+
+def test_execute_entry_finalized_on_crash(server_app, monkeypatch):
+    """D1-30r回归: DB故障贯穿任务执行(Job建行后commit全炸) —
+    登记簿条目仍必终结且异常不外泄杀worker; 去重不死锁"""
+    from server import db as sdb
+    from server import jobs as J
+    J._queue_log.clear()
+    while not J._q.empty():
+        J._q.get_nowait()
+    ok, _ = J.enqueue("boom", lambda a: 0, target="t")
+    item = J._q.get_nowait()
+    # 首次commit(Job建行)成功, 之后全部炸(append/收尾全被击穿)
+    n = {"c": 0}
+    real = sdb.session.commit
+
+    def flaky():
+        n["c"] += 1
+        if n["c"] >= 2:
+            raise RuntimeError("db down")
+        real()
+    monkeypatch.setattr(sdb.session, "commit", flaky)
+    with server_app["app"].app_context():
+        J._execute(item)          # 不抛(收尾失败只打日志)
+    ent = next(e for e in J._queue_log if e["kind"] == "boom")
+    assert ent["state"] == "done"               # finally终结, 去重不死锁
+    assert n["c"] >= 3                          # 故障确实贯穿了执行
+    ok2, _ = J.enqueue("boom", lambda a: 0, target="t")   # 同键可再入队
+    assert ok2
+    J._queue_log.clear()
+    while not J._q.empty():
+        J._q.get_nowait()

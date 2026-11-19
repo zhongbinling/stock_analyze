@@ -169,8 +169,14 @@ def _worker_loop(app):
         item = _q.get()
         while _paused["on"]:                   # 暂停: 挂起取件(已出队的这条照跑)
             time.sleep(2)
-        with app.app_context():
-            _execute(item)
+        try:
+            with app.app_context():
+                _execute(item)
+        except Exception as e:                 # noqa: BLE001
+            # D1-30r: worker线程不可死 — _execute抛错(DB提交失败等)曾直接
+            # 杀线程且无日志, 整个任务队列从此停摆(后续任务永queued)
+            print(f"[jobs] ✗ 任务执行异常(worker继续): "
+                  f"{item['kind']}/{item['target']}: {type(e).__name__}: {e}")
 
 
 def queue_size() -> int:
@@ -288,47 +294,62 @@ def is_paused() -> bool:
 
 
 def _execute(item):
+    """执行单个任务。D1-30r结构约束:
+    - 登记簿条目(queued→running→done)必须无条件终结 — 去重依赖状态机,
+      残留running条目会把同键入队死锁到重启;
+    - 任何DB层异常不外泄杀worker(循环另有兜底), 任务行收尾失败只打日志"""
     from server.models import Job
     for e in _queue_log:                       # 任务运行中心: 消费登记簿条目
         if e.get("state") == "queued" and e["kind"] == item["kind"]                 and e["target"] == item["target"]:
             e["state"] = "running"
             break
-    job = Job(kind=item["kind"], target=item["target"], trigger=item["trigger"],
-              status="running", started_at=_now())
-    db.session.add(job)
-    db.session.commit()
+    t0 = time.time()
     lines = []
     _prog = re.compile(r"\[(\d+)/(\d+)\]")           # D1-10 U2: 从日志 [n/N] 解析进度
+    job = None
 
     def append(line):
         lines.append(str(line)[:2000])
         del lines[:-400]
-        job.log = "\n".join(lines)
-        m = _prog.search(str(line))                  # 逐日/分步标记 → progress
-        if m and int(m.group(2)) > 0:
-            job.progress = round(int(m.group(1)) / int(m.group(2)) * 100, 1)
+        if job is not None:
+            job.log = "\n".join(lines)
+            m = _prog.search(str(line))              # 逐日/分步标记 → progress
+            if m and int(m.group(2)) > 0:
+                job.progress = round(int(m.group(1)) / int(m.group(2)) * 100, 1)
         db.session.commit()
 
-    t0 = time.time()
-    append(f"[{utcnow_str()}] 开始: {item['kind']} {item['target'] or ''}")
     rc = 1
     try:
+        job = Job(kind=item["kind"], target=item["target"], trigger=item["trigger"],
+                  status="running", started_at=_now())
+        db.session.add(job)
+        db.session.commit()
+        append(f"[{utcnow_str()}] 开始: {item['kind']} {item['target'] or ''}")
         rc = int(item["fn"](append) or 0)
     except Exception as e:  # noqa: BLE001
-        append(f"! 异常: {type(e).__name__}: {e}")
+        try:
+            append(f"! 异常: {type(e).__name__}: {e}")
+        except Exception:                                    # noqa: BLE001
+            pass                 # 报错append也炸(DB故障): 不再向外抛
         rc = 1
-    job.rc = rc
-    job.status = "done" if rc == 0 else "fail"
-    job.duration_s = round(time.time() - t0, 1)
-    job.finished_at = _now()
-    append(f"[{utcnow_str()}] 结束: {'成功' if rc == 0 else '失败'} ({job.duration_s}s)")
-    db.session.commit()
-    for e in _queue_log:                       # 任务运行中心: 该条完结, 移出排队视图
-        if e.get("state") == "running" and e["kind"] == item["kind"]                 and e["target"] == item["target"]:
-            e["state"] = "done"
-            break
-    if item["kind"] == "update":
-        _post_update_check(item, rc, job)      # D1-10 A1: 失败重试判定
+    finally:
+        for e in _queue_log:       # 必终结: 去重死锁防线(纯内存操作不炸)
+            if (e.get("state") == "running" and e["kind"] == item["kind"]
+                    and e["target"] == item["target"]):
+                e["state"] = "done"
+                break
+    if job is not None:
+        try:
+            job.rc = rc
+            job.status = "done" if rc == 0 else "fail"
+            job.duration_s = round(time.time() - t0, 1)
+            job.finished_at = _now()
+            append(f"[{utcnow_str()}] 结束: {'成功' if rc == 0 else '失败'} ({job.duration_s}s)")
+            db.session.commit()
+        except Exception as e:                              # noqa: BLE001
+            print(f"[jobs] ⚠ 任务收尾落库失败({item['kind']}/{item['target']}): {e}")
+        if item["kind"] == "update":
+            _post_update_check(item, rc, job)      # D1-10 A1: 失败重试判定
 
 
 # ---------------------------------------------------------------- 子进程执行
