@@ -3,11 +3,18 @@
 {% block content %}
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
 <section class="card">
-  <h2>市场状态 · 牛/熊/震荡概率
+  <h2>市场状态 · 牛/熊/震荡概率 + 牛熊比
     <span class="hint" id="regNow">加载中…</span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovReg" checked> 叠加上证</label></h2>
-  <div id="chartRegime" style="height:240px"></div>
-  <p class="hint">120日动量双sigmoid划分: 强上涨趋势→牛, 深跌→熊, 中间带→震荡; 概率和恒为100%</p>
+  <div id="chartRegime" style="height:260px"></div>
+  <p class="hint">120日动量双sigmoid划分: 强上涨趋势→牛, 深跌→熊, 中间带→震荡; 概率和恒100% · 橙线=牛熊比(牛-熊概率差, -100深熊~+100强牛)</p>
+</section>
+<section class="card">
+  <h2>国家队ETF动向 · 净申购/赎回/持仓
+    <span class="hint" id="ntNow"></span>
+    <label class="chk" style="float:right"><input type="checkbox" id="ovNt" checked> 叠加上证(归一)</label></h2>
+  <div id="chartNt" style="height:260px"></div>
+  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓变化proxy) · 大额申购常现于市场低迷期(护盘)</p>
 </section>
 <section class="card">
   <h2>市场行为指数 (-100 ~ +100)
@@ -49,8 +56,8 @@ const CSRF = document.querySelector('meta[name="csrf-token"]').content;
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const chR = echarts.init($('chartRegime')), chC = echarts.init($('chartComp')),
-      chB = echarts.init($('chartBt'));
-window.addEventListener('resize', () => [chR, chC, chB].forEach(c => c.resize()));
+      chB = echarts.init($('chartBt')), chN = echarts.init($('chartNt'));
+window.addEventListener('resize', () => [chR, chC, chB, chN].forEach(c => c.resize()));
 const AX = {axisLine: {lineStyle: {color: '#c3c2b7'}}, axisLabel: {color: '#898781', fontSize: 10}};
 const DZ = [{type: 'inside', xAxisIndex: 0},
             {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
@@ -111,6 +118,9 @@ function renderAll(r) {
      showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#898781'}},
     {name: '熊%', type: 'line', stack: 'reg', data: r.regime.bear, areaStyle: {opacity: .5},
      showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#2f5cd6'}}];
+  regSeries.push({name: '牛熊比', type: 'line', yAxisIndex: 2, showSymbol: false,
+                  data: r.regime.bb, lineStyle: {width: 1.6, color: '#e67e22'},
+                  itemStyle: {color: '#e67e22'}});
   if ($('ovReg').checked)
     regSeries.push({name: '上证', type: 'line', yAxisIndex: 1, showSymbol: false,
                     data: r.regime.closes, lineStyle: {width: 1.2, color: '#2f5cd6'},
@@ -119,11 +129,39 @@ function renderAll(r) {
     animation: false, backgroundColor: 'transparent',
     legend: {data: regSeries.map(s => s.name), textStyle: {fontSize: 10}, top: 0},
     tooltip: {trigger: 'axis'},
-    grid: {left: 44, right: 52, top: 26, bottom: 44},
+    grid: {left: 44, right: 96, top: 26, bottom: 44},
     xAxis: {type: 'category', data: r.regime.dates, ...AX},
     yAxis: [{type: 'value', max: 100, name: '%', ...AX},
-            {type: 'value', scale: true, name: '上证', ...AX, splitLine: {show: false}}],
+            {type: 'value', scale: true, name: '上证', ...AX, splitLine: {show: false}},
+            {type: 'value', min: -100, max: 100, offset: 48, position: 'right',
+             name: '牛熊比', ...AX, splitLine: {show: false}}],
     dataZoom: DZ, series: regSeries}, true);
+  // 国家队动向卡: 净申购柱 + 累计持仓线 + 上证归一叠加
+  const nt = r.nt || {dates: [], ma5: [], cum: []};
+  const lastNt = nt.ma5.length ? nt.ma5[nt.ma5.length - 1] : null;
+  $('ntNow').innerHTML = lastNt == null ? '' :
+    `最新5日均净申购 <b style="color:${lastNt >= 0 ? '#e34448' : '#1baf7a'}">${lastNt > 0 ? '+' : ''}${lastNt}亿</b>`
+    + ` · 累计 <b>${nt.cum[nt.cum.length - 1] ?? '--'}亿</b>`;
+  const ntSeries = [{name: '净申购5日均(亿)', type: 'bar', data: nt.ma5,
+                     barMaxWidth: 4, itemStyle: {color: p => p.value >= 0 ? '#e34448' : '#1baf7a'}},
+                    {name: '累计净申购(亿)', type: 'line', yAxisIndex: 1, showSymbol: false,
+                     data: nt.cum, lineStyle: {width: 1.6, color: '#e67e22'},
+                     itemStyle: {color: '#e67e22'}}];
+  if ($('ovNt').checked)
+    ntSeries.push({name: '上证(归一)', type: 'line', yAxisIndex: 2, showSymbol: false,
+                   data: r.overlay_index.norm, lineStyle: {width: 1.2, color: '#2f5cd6'},
+                   itemStyle: {color: '#2f5cd6'}});
+  chN.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ntSeries.map(s => s.name), textStyle: {fontSize: 10}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 52, right: 96, top: 26, bottom: 44},
+    xAxis: {type: 'category', data: nt.dates, ...AX},
+    yAxis: [{type: 'value', scale: true, name: '亿', ...AX},
+            {type: 'value', scale: true, name: '累计亿', ...AX, splitLine: {show: false}},
+            {type: 'value', scale: true, offset: 48, position: 'right', name: '上证',
+             ...AX, splitLine: {show: false}}],
+    dataZoom: DZ, series: ntSeries}, true);
   // 行为指数卡
   const last = r.composite[r.composite.length - 1];
   $('biNow').innerHTML = `当前: <b style="color:${last >= 0 ? '#e34448' : '#2f5cd6'}">${last > 0 ? '+' : ''}${last}</b>`
@@ -178,6 +216,7 @@ function renderAll(r) {
 $('btnCompute').onclick = compute;
 $('ovReg').onchange = () => cur && renderAll(cur);
 $('ovComp').onchange = () => cur && renderAll(cur);
+$('ovNt').onchange = () => cur && renderAll(cur);
 $('btnSave').onclick = async () => {
   const name = $('stName').value.trim();
   if (!name) { $('btMsg').textContent = '✗ 请先填策略名'; return; }

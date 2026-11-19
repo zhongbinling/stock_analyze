@@ -76,7 +76,8 @@ def test_bt_page_and_factors_api(server_app):
     assert c.get("/admin/backtest").status_code == 200
     d = c.get("/admin/api/backtest/factors").get_json()
     keys = {f["key"] for f in d["factors"]}
-    assert {"sentiment", "pe_pct", "buffett", "margin", "fflow", "breadth"} <= keys
+    assert {"sentiment", "pe_pct", "buffett", "margin", "fflow", "breadth",
+            "bb_ratio", "nt_flow"} <= keys   # D1-31b: 牛熊比+国家队净申购
     assert d["defaults"]["entry"] == 30
 
 
@@ -137,9 +138,10 @@ def test_bt_strategy_crud(server_app):
 
 def test_bt_page_gates():
     html = (REPO / "server" / "templates" / "admin" / "backtest.html").read_text(encoding="utf-8")
-    for mk in ("chartRegime", "chartComp", "chartBt", "facTable", "btnCompute",
-               "btnSave", "stList", "data-load", "api/backtest/compute",
-               "api/backtest/strategies", "叠加上证"):
+    for mk in ("chartRegime", "chartComp", "chartBt", "chartNt", "facTable",
+               "btnCompute", "btnSave", "stList", "data-load",
+               "api/backtest/compute", "api/backtest/strategies", "叠加上证",
+               "牛熊比", "国家队ETF动向", "累计净申购", "r.regime.bb", "r.nt"):
         assert mk in html, f"缺: {mk}"
     import shutil, subprocess, tempfile, os, re
     blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
@@ -166,3 +168,12 @@ def test_bt_compute_and_save_validation(server_app):
     assert c.post("/admin/api/backtest/strategies", json={
         "name": "空因子", "factors": {}, "entry": 30,
         "exit": -30}).status_code == 400
+
+
+def test_bb_series_direction():
+    """牛熊比=牛-熊概率差(tanh): 强涨→正, 深跌→负, 前120日None"""
+    up = [(f"d{i}", 100.0 + i) for i in range(150)]
+    dn = [(f"d{i}", 300.0 - i) for i in range(150)]
+    assert BH._bb_series(up)[-1][1] > 50
+    assert BH._bb_series(dn)[-1][1] < -50
+    assert BH._bb_series(up)[0][1] is None

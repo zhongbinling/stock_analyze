@@ -33,6 +33,9 @@ FACTOR_DEFS = [
     ("margin", "两融余额分位", 15, "三所两融余额合计分位; 杠杆资金入场=顺势"),
     ("fflow", "主力资金流", 25, "SW一级主力净流入5日均分位; 主力买入=顺势"),
     ("breadth", "板块温度宽度", 10, "BK板块温度均值分位; 普涨=顺势"),
+    # D1-31b: 用户追加 — 牛熊比(反向) + 国家队ETF净申购(份额口径非成交量推断)
+    ("bb_ratio", "牛熊比(牛-熊)", -10, "120日动量牛熊概率差×100(tanh); 极度熊市=历史底部区(默认反向小权重)"),
+    ("nt_flow", "国家队ETF净申购", 15, "8只国家队宽基ETF日净申购额(份额差×收盘价)5日均分位; 大额申购=护盘/长线入场(2006起全史)"),
 ]
 DEFAULT_ENTRY = 30          # 行为指数≥entry → 买入
 DEFAULT_EXIT = -30          # ≤exit → 空仓
@@ -82,6 +85,20 @@ def _fetch_factors_impl(path=None):
     out["fflow"] = ff5
     # 板块温度宽度: BK板块日均分
     out["breadth"] = _bk_mean(p)
+    # D1-31b: 国家队ETF净申购(份额差×收盘价, 2006起全史) — 5日均平滑
+    try:
+        import fetch_etf_flow as _EF
+        nf = _EF.net_flow_series(path=p, n_days=6000)   # [{date, net_yi}]
+        raw_nt = [(x["date"], x["net_yi"]) for x in nf]
+        vals = []
+        nt5 = []
+        for i, (d, v) in enumerate(raw_nt):
+            vals.append(v or 0.0)
+            if i >= 4:
+                nt5.append((d, round(sum(vals[-5:]) / 5, 2)))
+        out["nt_flow"] = nt5
+    except Exception:                                        # noqa: BLE001
+        out["nt_flow"] = []
     # 巴菲特: 复用macro的series(date, ratio) — GDP TTM口径
     try:
         sys.path.insert(0, str(BASE.parent))
@@ -104,7 +121,7 @@ def _bk_mean(path):
         con.close()
 
 
-_RAW_MAP = {"pe_pct": "pe_pct_raw", "buffett": "buffett_raw"}
+_RAW_MAP = {"pe_pct": "pe_pct_raw", "buffett": "buffett_raw", "bb_ratio": "bb_raw"}
 
 # 因子原始数据进程内缓存(拉取~5s, 主要耗在sw_fflow 186万行GROUP BY);
 # 权重/阈值交互计算复用缓存(只读数据, TTL内新鲜度足够)
@@ -248,16 +265,41 @@ def _index_close(path=None):
     return idx, etf
 
 
+def _bb_series(idx):
+    """牛熊比(牛-熊概率差×100 = tanh(k·mom/2)): 与regime同源的单一标量线"""
+    out, hist = [], []
+    for d, c in idx:
+        hist.append(c)
+        if len(hist) < 121:
+            out.append((d, None))
+            continue
+        m = hist[-1] / hist[-121] - 1.0
+        out.append((d, round(math.tanh(REGIME_K * m / 2) * 100, 1)))
+    return out
+
+
 def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
-    """API载荷: 因子组合+状态概率+回测(对照510300, 上证兜底)+上证叠加"""
+    """API载荷: 因子组合+状态概率+回测(对照510300, 上证兜底)+上证叠加
+    D1-31b: 牛熊比因子+regime线、国家队ETF动向(日净申购+累计持仓proxy)"""
     weights = {k: w for k, w in (weights or {k: dw for k, _, dw, _ in FACTOR_DEFS}).items()
                if isinstance(w, (int, float))}
     factors_raw = fetch_factors(path)
-    dates, comp = composite(factors_raw, weights)
     idx, etf = _index_close(path)
+    factors_raw["bb_raw"] = _bb_series(idx)          # 牛熊比由上证派生
+    dates, comp = composite(factors_raw, weights)
     bench, bench_name = (etf, "510300ETF") if len(etf) > 500 else (idx, "上证指数")
     bt = backtest(dates, comp, bench, entry, exit_)
     reg = regime([d for d, _ in idx], [c for _, c in idx])
+    bb = _bb_series(idx)
+    # 国家队动向: 日净申购(亿) + 累计(持仓proxy) — 全史
+    nt_raw = fetch_factors(path).get("nt_flow") or []
+    nt_dates, nt_ma5, cum = [], [], 0.0
+    nt_cum = []
+    for d, v in nt_raw:
+        nt_dates.append(d)
+        nt_ma5.append(v)
+        cum += v
+        nt_cum.append(round(cum, 1))
     # 上证叠加归一化(与组合共轴期间, 首日=100)
     dset = set(dates)
     overlay = []
@@ -271,12 +313,16 @@ def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
     for key, name, dw, desc in FACTOR_DEFS:
         raw_key = _RAW_MAP.get(key, key)
         series = factors_raw.get(raw_key) or []
+        if key == "bb_ratio":
+            series = [(d, v) for d, v in bb if v is not None]
         pct_series = _expanding_pct(series)
         factors_now[key] = {"name": name, "weight": weights.get(key, 0),
                             "pct": pct_series[-1][1] if pct_series else None}  # as-of最新
     return {"dates": dates, "composite": comp,
             "regime": {"dates": [d for d, _ in idx],
-                       "closes": [c for _, c in idx], **reg},
+                       "closes": [c for _, c in idx],
+                       "bb": [v for _, v in bb], **reg},
+            "nt": {"dates": nt_dates, "ma5": nt_ma5, "cum": nt_cum},
             "overlay_index": {"dates": [d for d, _ in overlay],
                               "norm": [v for _, v in overlay]},
             "backtest": {**bt, "bench_name": bench_name},
