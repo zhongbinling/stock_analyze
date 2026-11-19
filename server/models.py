@@ -115,6 +115,17 @@ class DataSource(db.Model):
     note = db.Column(db.String(128))
 
 
+class BehaviorStrategy(db.Model):
+    """D1-31 历史回测: 行为指数策略模板(因子勾选+权重+买卖阈值)"""
+    __tablename__ = "behavior_strategies"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(32), unique=True, nullable=False)
+    config_json = db.Column(db.Text, nullable=False)       # {factors,entry,exit}
+    created_at = db.Column(db.DateTime)
+    updated_at = db.Column(db.DateTime)
+
+
 class AppSetting(db.Model):
     """调度策略等键值设置"""
     __tablename__ = "app_settings"

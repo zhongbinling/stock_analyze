@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% block title %}历史回测 · 行为指数 · {{ app_name }}{% endblock %}
+{% block content %}
+<script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
+<section class="card">
+  <h2>市场状态 · 牛/熊/震荡概率
+    <span class="hint" id="regNow">加载中…</span>
+    <label class="chk" style="float:right"><input type="checkbox" id="ovReg" checked> 叠加上证</label></h2>
+  <div id="chartRegime" style="height:240px"></div>
+  <p class="hint">120日动量双sigmoid划分: 强上涨趋势→牛, 深跌→熊, 中间带→震荡; 概率和恒为100%</p>
+</section>
+<section class="card">
+  <h2>市场行为指数 (-100 ~ +100)
+    <span class="hint" id="biNow"></span>
+    <label class="chk" style="float:right"><input type="checkbox" id="ovComp" checked> 叠加上证(归一)</label></h2>
+  <div id="chartComp" style="height:300px"></div>
+  <p class="hint">因子组合的expanding分位加权(无前视); ≥买入阈值持有多头, ≤卖出阈值空仓 — 详见下方回测</p>
+</section>
+<section class="card">
+  <h2>因子面板 · 组合与回测 <span class="hint" id="btMsg">调整后点[计算回测]</span></h2>
+  <div class="row-flex" style="align-items:flex-start;gap:16px;flex-wrap:wrap">
+    <table class="table" id="facTable" style="flex:1;min-width:420px"></table>
+    <div style="min-width:220px">
+      <p class="hint">买卖阈值(滞回)</p>
+      <div class="row-flex"><label class="hint">买入≥</label>
+        <input class="input narrow" id="btEntry" type="number" value="30" step="5">
+        <label class="hint">卖出≤</label>
+        <input class="input narrow" id="btExit" type="number" value="-30" step="5"></div>
+      <button class="btn primary" id="btnCompute">计算回测</button>
+      <p class="hint" style="margin-top:10px">保存为策略</p>
+      <div class="row-flex"><input class="input" id="stName" placeholder="策略名(1~32字)" maxlength="32">
+        <button class="btn" id="btnSave">保存</button></div>
+      <div id="btMetrics" class="hint" style="margin-top:10px">--</div>
+    </div>
+  </div>
+</section>
+<section class="card">
+  <h2>回测对照 · <span class="hint" id="btBench"></span></h2>
+  <div id="chartBt" style="height:300px"></div>
+  <p class="hint">信号收盘生成次日执行(无前视) · 持有期取基准收益 · 空仓期0收益 · 默认基准510300ETF(上证兜底)</p>
+</section>
+<section class="card">
+  <h2>策略列表 <span class="hint">选中加载即还原因子与阈值并重算</span></h2>
+  <div id="stList">--</div>
+</section>
+</section>
+<script>
+const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const chR = echarts.init($('chartRegime')), chC = echarts.init($('chartComp')),
+      chB = echarts.init($('chartBt'));
+window.addEventListener('resize', () => [chR, chC, chB].forEach(c => c.resize()));
+const AX = {axisLine: {lineStyle: {color: '#c3c2b7'}}, axisLabel: {color: '#898781', fontSize: 10}};
+const DZ = [{type: 'inside', xAxisIndex: 0},
+            {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
+             borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}];
+let FACERS = [], cur = null;
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, Object.assign({}, opts, {headers: Object.assign(
+    {'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})}));
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  return j;
+}
+
+function renderFacPanel(factors, weights) {
+  $('facTable').innerHTML = '<tr><th></th><th>因子</th><th>当前分位</th><th>权重</th><th>说明</th></tr>'
+    + factors.map(f => `<tr>
+      <td><input type="checkbox" data-fk="${esc(f.key)}" ${weights[f.key] ? 'checked' : ''}></td>
+      <td>${esc(f.name)}</td><td class="hint" id="fp_${esc(f.key)}">--</td>
+      <td><input class="input narrow" type="number" data-fw="${esc(f.key)}"
+        value="${weights[f.key] ?? f.default_w}" step="5" min="-100" max="100" style="width:70px"></td>
+      <td class="hint" style="text-align:left">${esc(f.desc)}</td></tr>`).join('');
+}
+
+function collectWeights() {
+  const w = {};
+  document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
+    if (cb.checked) {
+      const inp = document.querySelector(`#facTable [data-fw="${cb.dataset.fk}"]`);
+      w[cb.dataset.fk] = +inp.value || 0;
+    }
+  });
+  return w;
+}
+
+async function compute() {
+  $('btMsg').textContent = '⏳ 计算中(首算~5s, 缓存0.1s)…';
+  try {
+    const r = await api('/admin/api/backtest/compute', {method: 'POST',
+      body: JSON.stringify({factors: collectWeights(),
+                            entry: +$('btEntry').value, exit: +$('btExit').value})});
+    cur = r;
+    renderAll(r);
+    $('btMsg').textContent = `共${r.dates.length}日 (${r.dates[0]} ~ ${r.dates[r.dates.length-1]})`;
+  } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
+}
+
+function renderAll(r) {
+  // 状态卡: 堆叠面积 + 上证叠放
+  const i = r.regime.dates.length - 1;
+  $('regNow').innerHTML = `当前: <b style="color:#e34448">牛 ${r.regime.bull[i]}%</b> · `
+    + `<b style="color:#898781">震荡 ${r.regime.range[i]}%</b> · `
+    + `<b style="color:#2f5cd6">熊 ${r.regime.bear[i]}%</b>`;
+  const regSeries = [
+    {name: '牛%', type: 'line', stack: 'reg', data: r.regime.bull, areaStyle: {opacity: .5},
+     showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#e34448'}},
+    {name: '震荡%', type: 'line', stack: 'reg', data: r.regime.range, areaStyle: {opacity: .5},
+     showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#898781'}},
+    {name: '熊%', type: 'line', stack: 'reg', data: r.regime.bear, areaStyle: {opacity: .5},
+     showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#2f5cd6'}}];
+  if ($('ovReg').checked)
+    regSeries.push({name: '上证', type: 'line', yAxisIndex: 1, showSymbol: false,
+                    data: r.regime.closes, lineStyle: {width: 1.2, color: '#2f5cd6'},
+                    itemStyle: {color: '#2f5cd6'}});
+  chR.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: regSeries.map(s => s.name), textStyle: {fontSize: 10}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 44, right: 52, top: 26, bottom: 44},
+    xAxis: {type: 'category', data: r.regime.dates, ...AX},
+    yAxis: [{type: 'value', max: 100, name: '%', ...AX},
+            {type: 'value', scale: true, name: '上证', ...AX, splitLine: {show: false}}],
+    dataZoom: DZ, series: regSeries}, true);
+  // 行为指数卡
+  const last = r.composite[r.composite.length - 1];
+  $('biNow').innerHTML = `当前: <b style="color:${last >= 0 ? '#e34448' : '#2f5cd6'}">${last > 0 ? '+' : ''}${last}</b>`
+    + ` · 买入线 +${r.entry} / 卖出线 ${r.exit}`;
+  const compSeries = [{name: '行为指数', type: 'line', data: r.composite, showSymbol: false,
+                       lineStyle: {width: 1.6, color: '#e67e22'}, itemStyle: {color: '#e67e22'},
+                       markLine: {symbol: 'none', silent: true, data: [
+                         {yAxis: r.entry, lineStyle: {color: '#e34448', type: 'dashed'}},
+                         {yAxis: r.exit, lineStyle: {color: '#2f5cd6', type: 'dashed'}}]}}];
+  if ($('ovComp').checked)
+    compSeries.push({name: '上证(归一)', type: 'line', yAxisIndex: 1, showSymbol: false,
+                     data: r.overlay_index.norm, lineStyle: {width: 1.2, color: '#2f5cd6'},
+                     itemStyle: {color: '#2f5cd6'}});
+  chC.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: compSeries.map(s => s.name), textStyle: {fontSize: 10}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 48, right: 52, top: 26, bottom: 44},
+    xAxis: {type: 'category', data: r.dates, ...AX},
+    yAxis: [{type: 'value', min: -110, max: 110, ...AX},
+            {type: 'value', scale: true, name: '归一', ...AX, splitLine: {show: false}}],
+    dataZoom: DZ, series: compSeries}, true);
+  // 因子当前分位
+  document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
+    const el = $('fp_' + cb.dataset.fk), fn = (r.factors_now || {})[cb.dataset.fk];
+    el.textContent = fn && fn.pct != null ? fn.pct : '--';
+  });
+  // 回测卡
+  const m = r.backtest.metrics;
+  $('btBench').textContent = `基准 ${r.backtest.bench_name} · ${m.n_days}日`;
+  $('btMetrics').innerHTML = m ? [
+    `策略总收益 <b style="color:${m.total_ret >= 0 ? '#e34448' : '#2f5cd6'}">${m.total_ret}%</b>`,
+    `基准 <b>${m.bench_ret}%</b>`, `超额 <b>${(m.total_ret - m.bench_ret).toFixed(1)}%</b>`,
+    `年化 ${m.cagr ?? '--'}% vs ${m.bench_cagr ?? '--'}%`, `最大回撤 ${m.max_dd}%`,
+    `交易 ${m.n_trades}次`, `胜率 ${m.win_rate ?? '--'}%`, `夏普 ${m.sharpe ?? '--'}`
+  ].join(' · ') : '--';
+  chB.setOption({
+    animation: false, backgroundColor: 'transparent',
+    legend: {data: ['策略净值', `${r.backtest.bench_name}买入持有`], textStyle: {fontSize: 10}, top: 0},
+    tooltip: {trigger: 'axis'},
+    grid: {left: 48, right: 20, top: 26, bottom: 44},
+    xAxis: {type: 'category', data: r.backtest.dates, ...AX},
+    yAxis: {type: 'value', scale: true, name: '净值', ...AX},
+    dataZoom: DZ,
+    series: [{name: '策略净值', type: 'line', data: r.backtest.equity, showSymbol: false,
+              lineStyle: {width: 1.6, color: '#e67e22'}, itemStyle: {color: '#e67e22'}},
+             {name: `${r.backtest.bench_name}买入持有`, type: 'line', showSymbol: false,
+              data: r.backtest.bench_equity, lineStyle: {width: 1.2, color: '#8ba0b6'},
+              itemStyle: {color: '#8ba0b6'}}]}, true);
+}
+
+$('btnCompute').onclick = compute;
+$('ovReg').onchange = () => cur && renderAll(cur);
+$('ovComp').onchange = () => cur && renderAll(cur);
+$('btnSave').onclick = async () => {
+  const name = $('stName').value.trim();
+  if (!name) { $('btMsg').textContent = '✗ 请先填策略名'; return; }
+  try {
+    const r = await api('/admin/api/backtest/strategies', {method: 'POST',
+      body: JSON.stringify({name, factors: collectWeights(),
+                            entry: +$('btEntry').value, exit: +$('btExit').value})});
+    $('btMsg').textContent = '✓ ' + r.msg;
+    loadStrategies();
+  } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
+};
+
+async function loadStrategies() {
+  try {
+    const d = await api('/admin/api/backtest/strategies');
+    $('stList').innerHTML = d.strategies.length
+      ? '<table class="table"><tr><th>策略</th><th>更新时间</th><th></th></tr>'
+        + d.strategies.map(s => `<tr><td>${esc(s.name)}</td>
+          <td class="hint">${esc(s.updated_at)}</td>
+          <td><button class="btn small" data-load="${s.id}">加载</button>
+              <button class="btn small" data-del="${s.id}">删除</button></td></tr>`).join('')
+        + '</table>'
+      : '<p class="hint">暂无策略 — 调整因子组合后保存</p>';
+    $('stList').querySelectorAll('[data-load]').forEach(b => b.onclick = () => {
+      const s = d.strategies.find(x => x.id === +b.dataset.load);
+      if (!s) return;
+      const w = s.config.factors || {}, e = s.config.entry ?? 30, x = s.config.exit ?? -30;
+      renderFacPanel(FACERS, {...w});
+      document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
+        cb.checked = w[cb.dataset.fk] != null && w[cb.dataset.fk] !== 0;
+        document.querySelector(`#facTable [data-fw="${cb.dataset.fk}"]`).value
+          = w[cb.dataset.fk] ?? 0;
+      });
+      $('btEntry').value = e; $('btExit').value = x;
+      $('stName').value = s.name;
+      compute();
+    });
+    $('stList').querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('删除该策略?')) return;
+      try { await api(`/admin/api/backtest/strategies/${b.dataset.del}/delete`,
+                      {method: 'POST', body: '{}'}); loadStrategies(); }
+      catch (e2) { alert(e2.message); }
+    });
+  } catch (e) { $('stList').textContent = '✗ ' + e.message; }
+}
+
+(async function init() {
+  try {
+    const d = await api('/admin/api/backtest/factors');
+    FACERS = d.factors;
+    const w = {};
+    d.factors.forEach(f => w[f.key] = f.default_w);
+    renderFacPanel(d.factors, w);
+    $('btEntry').value = d.defaults.entry; $('btExit').value = d.defaults.exit;
+  } catch (e) { $('btMsg').textContent = '✗ ' + e.message; return; }
+  await compute();
+  loadStrategies();
+})();
+</script>
+{% endblock %}

@@ -228,6 +228,105 @@ def stock_page():
     return render_template("admin/stock.html", pool=FS.pool_list())
 
 
+# ── D1-31: 历史回测(市场状态/行为指数/因子策略) ──
+
+@bp_admin.get("/backtest")
+@require_level(7)
+def backtest_page():
+    return render_template("admin/backtest.html")
+
+
+@bp_admin.get("/api/backtest/factors")
+@require_level(7)
+def api_bt_factors():
+    import behavior as BH
+    return jsonify({"factors": [
+        {"key": k, "name": n, "default_w": w, "desc": d}
+        for k, n, w, d in BH.FACTOR_DEFS],
+        "defaults": {"entry": BH.DEFAULT_ENTRY, "exit": BH.DEFAULT_EXIT}})
+
+
+@bp_admin.post("/api/backtest/compute")
+@require_level(7)
+def api_bt_compute():
+    """因子组合+状态概率+回测(只读计算~5s首算/0.1s缓存; 交互式同步返回)"""
+    import behavior as BH
+    d = request.get_json(force=True, silent=True) or {}
+    weights = {k: v for k, v in (d.get("factors") or {}).items()
+               if isinstance(v, (int, float)) and -100 <= v <= 100}
+    try:
+        entry = max(-100, min(100, int(d.get("entry", BH.DEFAULT_ENTRY))))
+        exit_ = max(-100, min(100, int(d.get("exit", BH.DEFAULT_EXIT))))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
+    r = BH.payload(weights or None, entry, exit_)
+    r["ok"] = True
+    return jsonify(r)
+
+
+@bp_admin.get("/api/backtest/strategies")
+@require_level(7)
+def api_bt_strategies():
+    from server.models import BehaviorStrategy
+    rows = (BehaviorStrategy.query.order_by(BehaviorStrategy.id.desc()).all())
+    return jsonify({"strategies": [
+        {"id": s.id, "name": s.name, "config": _bt_cfg(s),
+         "updated_at": s.updated_at.strftime("%Y-%m-%d %H:%M") if s.updated_at else ""}
+        for s in rows]})
+
+
+def _bt_cfg(s):
+    import json as _j
+    try:
+        return _j.loads(s.config_json or "{}")
+    except ValueError:
+        return {}
+
+
+@bp_admin.post("/api/backtest/strategies")
+@require_level(7)
+def api_bt_strategy_save():
+    """保存/更新策略(同名覆盖): {name, factors, entry, exit}"""
+    import json as _j
+    from server.models import BehaviorStrategy
+    from server import db as sdb
+    d = request.get_json(force=True, silent=True) or {}
+    name = str(d.get("name", "")).strip()
+    if not name or len(name) > 32:
+        return jsonify({"ok": False, "msg": "名称需1~32字"}), 400
+    cfg = {"factors": {k: v for k, v in (d.get("factors") or {}).items()
+                       if isinstance(v, (int, float))},
+           "entry": d.get("entry"), "exit": d.get("exit")}
+    s = BehaviorStrategy.query.filter_by(name=name).first()
+    from server.jobs import _now
+    if s:
+        s.config_json = _j.dumps(cfg, ensure_ascii=False)
+        s.updated_at = _now()
+        msg = f"策略[{name}]已更新"
+    else:
+        s = BehaviorStrategy(name=name, config_json=_j.dumps(cfg, ensure_ascii=False),
+                             created_at=_now(), updated_at=_now())
+        sdb.session.add(s)
+        msg = f"策略[{name}]已保存"
+    sdb.session.commit()
+    audit("bt_strategy_save", target=name)
+    return jsonify({"ok": True, "msg": msg, "id": s.id})
+
+
+@bp_admin.post("/api/backtest/strategies/<int:sid>/delete")
+@require_level(7)
+def api_bt_strategy_delete(sid):
+    from server.models import BehaviorStrategy
+    from server import db as sdb
+    s = sdb.session.get(BehaviorStrategy, sid)
+    if not s:
+        return jsonify({"ok": False, "msg": "策略不存在"}), 404
+    sdb.session.delete(s)
+    sdb.session.commit()
+    audit("bt_strategy_delete", target=s.name)
+    return jsonify({"ok": True, "msg": f"策略[{s.name}]已删除"})
+
+
 @bp_admin.get("/api/stock/search")
 @require_level(7)
 def api_stock_search():
