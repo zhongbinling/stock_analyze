@@ -48,7 +48,7 @@ def test_page_gates():
     gen = (REPO / "server" / "templates" / "admin" / "generate.html").read_text(encoding="utf-8")
     assert 'value="briefing"' in gen and "btnBriefing" in gen
     dash = (REPO / "server" / "templates" / "admin" / "dashboard.html").read_text(encoding="utf-8")
-    assert "数据简报" in dash and "19:00/07:00" in dash
+    assert "数据简报" in dash and "22:40/07:00" in dash   # D1-31: 晚间槽位后移
 
 
 def test_task_briefing_creates_rundata(server_app, monkeypatch):

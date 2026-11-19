@@ -198,7 +198,10 @@ def test_event_through_date_in_header(benv):
 
 
 def test_jobs_briefing_evening_after_ai():
-    """晚间简报22:40(晚于当晚AI事件分析~21:30完成), 非19:00"""
+    """晚间简报22:40(晚于当晚AI事件分析~21:30完成), 非19:00; UI文案同步"""
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
     assert "hour=22, minute=40" in src
     assert "CronTrigger(hour=19, minute=0, day_of_week" not in src  # 旧槽位清退
+    for page in ("dashboard.html", "generate.html"):
+        h = (REPO / "server" / "templates" / "admin" / page).read_text(encoding="utf-8")
+        assert "22:40" in h and "19:00" not in h, f"{page}简报时刻文案过期"
