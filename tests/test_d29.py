@@ -31,7 +31,7 @@ def test_briefing_type_registered():
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
     assert "task_briefing" in src
     assert "briefing_evening" in src and "briefing_morning" in src
-    assert 'CronTrigger(hour=19, minute=0' in src
+    assert 'CronTrigger(hour=22, minute=40' in src   # D1-31: 晚间简报晚于当晚AI分析(~21:30)
     assert 'CronTrigger(hour=7, minute=0' in src
 
 

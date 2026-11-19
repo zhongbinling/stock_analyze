@@ -338,9 +338,12 @@ def refresh(path=None, backfill: bool = True) -> bool:
     (用户实测: '修复最近30天'里新闻回补吃掉全部配额)。"""
     import datetime as dt
     done = days_done(SRC_MN, path)
+    inc = 0                                          # 本次major_news实拉行数
     for back in range(3):
         d = (dt.date.today() - dt.timedelta(days=back)).strftime("%Y%m%d")
-        fetch_day(d, path, with_content=True)      # 近期稀疏日顺带拉content
+        n = fetch_day(d, path, with_content=True)   # 近期稀疏日顺带拉content
+        if isinstance(n, int) and n > 0:
+            inc += n
     if backfill:
         # 渐进回补: 从最近未覆盖日往前推10日(多层限频下安全余量)
         probe = dt.date.today() - dt.timedelta(days=4)
@@ -353,11 +356,17 @@ def refresh(path=None, backfill: bool = True) -> bool:
                     break
                 if isinstance(n, int) and n >= 0:
                     filled += 1
+                    if n > 0:
+                        inc += n
             probe -= dt.timedelta(days=1)
-    refresh_em(path)
-    refresh_sina(path)                  # D1-28 N1+: 新浪快讯20条
-    refresh_ths(path)                   # D1-28 N1+: 同花顺快讯20条
+    n_em = refresh_em(path)
+    n_sina = refresh_sina(path)              # D1-28 N1+: 新浪快讯20条
+    n_ths = refresh_ths(path)                # D1-28 N1+: 同花顺快讯20条
     _summary(path)
+    # D1-31: 「本次增量」行 — _summary是库存快照, 曾以"major_news: 66330行"
+    # 混在增量日志流里被误读为本次拉了6万条(用户实测困惑)
+    print(f"[news] 本次增量: major_news +{inc}行 · em +{n_em or 0} · "
+          f"sina +{n_sina or 0} · ths +{n_ths or 0}")
     return True
 
 
@@ -434,7 +443,7 @@ def _summary(path=None):
         "COUNT(DISTINCT substr(pub_time,1,10)) FROM news_raw GROUP BY src").fetchall()
     con.close()
     for src, n, lo, hi, nd in rows:
-        print(f"[news] {src}: {n}行 / {nd}日 ({lo}~{hi})")
+        print(f"[news] 库存 {src}: {n}行 / 覆盖{nd}日 ({lo}~{hi})")
 
 
 def sync_map(path=None) -> dict:

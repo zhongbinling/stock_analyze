@@ -46,10 +46,52 @@ def generate_html(out=None) -> Path:
     d5 = sdates[5] if len(sdates) >= 6 else None     # 5个交易日前
     prev_scores = {c: s for c, s in con.execute(
         "SELECT code, score FROM sector_scores WHERE date=?", (d5,))} if d5 else {}
-    hot_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=? ORDER BY score DESC LIMIT 5", (latest_d,)).fetchall() if latest_d else []
-    cold_raw = con.execute("SELECT code, score FROM sector_scores WHERE date=? ORDER BY score ASC LIMIT 5", (latest_d,)).fetchall() if latest_d else []
     # D1-30r: BK/SW3代码→中文名(简报可读性; 映射移至hot/cold构建处带代码)
     name_map = {r[0]: r[1] for r in con.execute("SELECT code, name FROM sectors")}
+    def _trend(code, score):
+        """简报增强: 5日分差箭头(升=红↑热度升, 降=蓝↓); prev_scores按代码键控"""
+        p = prev_scores.get(code)
+        if p is None or score is None:
+            return ""
+        d = score - p
+        if abs(d) < 0.05:
+            return ' <small style="color:#898781">→持平</small>'
+        return (f' <small style="color:{"#e34448" if d > 0 else "#2f5cd6"}">'
+                f'{"↑" if d > 0 else "↓"}{abs(d):.1f}</small>')
+
+    def _side_html(rows, color):
+        if not rows:
+            return '<tr><td colspan="2" style="color:#999">无数据</td></tr>'
+
+        def _nm(c):
+            # 代码内嵌名(SW1_银行)剥前缀; BK码查sectors名; 兜底原码
+            if c.startswith("SW"):
+                return c.split("_", 1)[-1]
+            return name_map.get(c, c)
+        return "".join(
+            f'<tr><td>{_nm(c)}{_trend(c, s)}</td>'
+            f'<td style="color:{color}">{s:+.1f}</td></tr>' for c, s in rows)
+
+    # D1-31: 板块冷热按层级分列(曾全库混排 — SW3细分级~258个天然包揽TOP5,
+    # 一二级与行业被挤出榜, 用户观感'混在一起'; 分层后各看各的TOP5)
+    LEVELS = (("SW1_*", "申万一级"), ("SW2_*", "申万二级"),
+              ("SW3_*", "申万三级"), ("BK*", "行业(东财)"))
+    level_html = ""
+    for pat, label in LEVELS:
+        hot_l = con.execute(
+            "SELECT code, score FROM sector_scores WHERE date=? AND code GLOB ? "
+            "ORDER BY score DESC LIMIT 5", (latest_d, pat)).fetchall() if latest_d else []
+        cold_l = con.execute(
+            "SELECT code, score FROM sector_scores WHERE date=? AND code GLOB ? "
+            "ORDER BY score ASC LIMIT 5", (latest_d, pat)).fetchall() if latest_d else []
+        level_html += (
+            f'<h3 style="font-size:13px;color:#444;margin:12px 0 4px">{label}</h3>'
+            f'<table style="width:48%;display:inline-table"><tr><th>最热</th><th>分</th></tr>'
+            + _side_html(hot_l, "#e34448") + '</table>'
+            f'<table style="width:48%;display:inline-table;margin-left:2%">'
+            '<tr><th>最冷</th><th>分</th></tr>'
+            + _side_html(cold_l, "#2f5cd6") + '</table>')
+
     # 3. 估值水位
     val = con.execute("SELECT date,alla_pe,alla_pb,pe300 FROM mkt_val_daily ORDER BY date DESC LIMIT 1").fetchone()
     # 4. 两融
@@ -68,6 +110,9 @@ def generate_html(out=None) -> Path:
     _evs = MC.list_events(level_min=2, d_from=d7, limit=5000)["events"]
     ev24 = [e for e in _evs if e["date"] >= h24]
     ev7 = [e for e in _evs if h24 > e["date"]]
+    # D1-31: 事件截至标注 — 简报是时点快照, 晚间AI分析完成晚于旧19:00简报,
+    # 读者需一眼看出事件新鲜度(曾误以为7天窗口漏抓近两日)
+    ev_through = _evs[0]["date"] if _evs else "无"
 
     def _fmt_pct(v): return f"{v*100:.0f}%" if v is not None else "--"  # viewer小数→%
     def _pct_bar(v, label=""):
@@ -155,23 +200,6 @@ def generate_html(out=None) -> Path:
             + '</td></tr>'
             for e in sorted(evs, key=lambda x: -x["level"])[:15])
 
-    def _trend(code, score):
-        """简报增强: 5日分差箭头(升=红↑热度升, 降=蓝↓); prev_scores按代码键控"""
-        p = prev_scores.get(code)
-        if p is None or score is None:
-            return ""
-        d = score - p
-        if abs(d) < 0.05:
-            return ' <small style="color:#898781">→持平</small>'
-        return (f' <small style="color:{"#e34448" if d > 0 else "#2f5cd6"}">'
-                f'{"↑" if d > 0 else "↓"}{abs(d):.1f}</small>')
-
-    # (名称, 分, 代码) — 显示用名称, 趋势按代码查5日前
-    hot = [(name_map.get(c, c), s2, c) for c, s2 in hot_raw]
-    cold = [(name_map.get(c, c), s2, c) for c, s2 in cold_raw]
-    hot_html = "".join(f'<tr><td>{nm}{_trend(code, s)}</td><td style="color:#e34448">{s:+.1f}</td></tr>' for nm, s, code in hot)
-    cold_html = "".join(f'<tr><td>{nm}{_trend(code, s)}</td><td style="color:#2f5cd6">{s:+.1f}</td></tr>' for nm, s, code in cold)
-
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>数据简报 · {today}</title>
@@ -188,10 +216,9 @@ small{{color:#999}}
 <button class="noprint" onclick="window.print()" style="float:right;font-size:12px;
 padding:2px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer">🖨 导出PDF/打印</button></h2>
 <table>{rows_score}{rows_val}{rows_bf}{mg_html}{etf_html}</table></div>
-<div class="card"><h2>🔥 板块冷热 TOP5 (最新日)</h2>
-<table style="width:48%;display:inline-table"><tr><th>最热</th><th>分</th></tr>{hot_html}</table>
-<table style="width:48%;display:inline-table;margin-left:2%"><tr><th>最冷</th><th>分</th></tr>{cold_html}</table></div>
-<div class="card"><h2>📰 近24小时事件 (L2+)</h2><table>{ev_rows(ev24)}</table>
+<div class="card"><h2>🔥 板块冷热 TOP5 (最新日 · 按层级分列)</h2>
+{level_html}</div>
+<div class="card"><h2>📰 近24小时事件 (L2+ · 分析截至 {ev_through})</h2><table>{ev_rows(ev24)}</table>
 <h2 style="margin-top:12px">📰 24小时~7天事件</h2><table>{ev_rows(ev7)}</table>
 <p><small>数据来源: sentiment.db / macro.db · 自动生成于 {time.strftime('%Y-%m-%d %H:%M:%S')} ({time.time()-t0:.1f}s)</small></p></div>
 </body></html>"""

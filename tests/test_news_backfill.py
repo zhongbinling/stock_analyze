@@ -172,3 +172,34 @@ def test_cli_wiring():
     # (限频"capped"非False)已由test_run_returns_capped锁定
     import fetch_daily as FD
     assert "news_fetch" in FD.BACKFILLS
+
+
+def test_refresh_logs_increment_vs_inventory(tmp_path, monkeypatch, capsys):
+    """D1-31: 库存快照标'库存'、refresh链尾打'本次增量' — 曾以
+    'major_news: 66330行'库存数混在增量流里被误读为本次拉6万条"""
+    import datetime as dt
+    import sqlite3
+    import fetch_news as FN
+    db = tmp_path / "macro.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE news_raw(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "src TEXT, pub_time TEXT, title TEXT, url TEXT, content TEXT, "
+                "fetched_at TEXT)")
+    con.executemany("INSERT INTO news_raw(src,pub_time,title) VALUES(?,?,?)", [
+        ("major_news", "2026-11-18 09:00:00", "旧闻1"),
+        ("major_news", "2026-11-19 10:00:00", "旧闻2"),
+        ("em_flash", "2026-11-19 11:00:00", "旧快讯")])
+    con.commit(); con.close()
+    monkeypatch.setattr(FN, "MACRO_DB", db)
+    # 近3日两日新增2+3行, 三路快讯各1行
+    def fake_day(d, path=None, with_content=False):
+        return 2 if d == dt.date.today().strftime("%Y%m%d") else 3
+    monkeypatch.setattr(FN, "fetch_day", fake_day)
+    monkeypatch.setattr(FN, "days_done", lambda src, path=None: set())
+    monkeypatch.setattr(FN, "refresh_em", lambda p=None: 1)
+    monkeypatch.setattr(FN, "refresh_sina", lambda p=None: 1)
+    monkeypatch.setattr(FN, "refresh_ths", lambda p=None: 1)
+    assert FN.refresh(db, backfill=False) is True
+    out = capsys.readouterr().out
+    assert "库存 major_news: 2行 / 覆盖2日" in out          # 库存口径(非本次)
+    assert "本次增量: major_news +8行" in out               # 近3日 2+3+3

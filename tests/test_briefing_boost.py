@@ -162,3 +162,43 @@ def test_print_pdf_button(benv):
     assert "导出PDF/打印" in html and "window.print()" in html
     assert "@media print" in html and ".noprint" in html
     assert 'class="noprint"' in html
+
+
+# ── D1-31: 板块冷热分层 + 事件截至标注 ──
+
+def test_sector_levels_separated(benv):
+    """四层级各自TOP5分列(曾全库混排 — SW3细分级包揽榜单, 一二级被挤出)"""
+    con = sqlite3.connect(str(benv / "sentiment.db"))
+    # 三个层级各放不同分数: SW1最高(应进SW1榜), SW2中, SW3更高
+    for d_off in (0, 2, 4, 6, 8, 10):
+        d = _d(d_off)
+        con.execute("INSERT INTO sector_scores VALUES(?,?,?)", (d, "SW1_801010", 40.0))
+        con.execute("INSERT INTO sector_scores VALUES(?,?,?)", (d, "SW2_801020", 50.0))
+        con.execute("INSERT INTO sector_scores VALUES(?,?,?)", (d, "SW3_801030", 60.0))
+    con.commit()
+    con.close()
+    html = _gen(benv)
+    for label in ("申万一级", "申万二级", "申万三级", "行业(东财)"):
+        assert label in html, f"缺层级: {label}"
+    assert "按层级分列" in html
+    # SW3的60分出现在申万三级段, 且各层级互不混排(每段独立h3)
+    import re as _re
+    segs = _re.split(r'<h3[^>]*>', html)[1:]
+    by_label = {seg[:seg.index("</h3>")]: seg for seg in segs}
+    assert "801010" in by_label["申万一级"]                 # SW1_801010剥前缀
+    assert "801030" in by_label["申万三级"]
+    assert "801030" not in by_label["申万一级"]             # 不串层
+    assert "半导体" in by_label["行业(东财)"]               # BK夹具行仍在
+
+
+def test_event_through_date_in_header(benv):
+    """事件卡头部带'分析截至'最新事件日 — 时点快照新鲜度自明"""
+    html = _gen(benv)
+    assert "分析截至" in html and f"分析截至 {_d()}" in html
+
+
+def test_jobs_briefing_evening_after_ai():
+    """晚间简报22:40(晚于当晚AI事件分析~21:30完成), 非19:00"""
+    src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
+    assert "hour=22, minute=40" in src
+    assert "CronTrigger(hour=19, minute=0, day_of_week" not in src  # 旧槽位清退

@@ -880,11 +880,13 @@ def _sync_cron_jobs(app):
                            CronTrigger(hour=gh, minute=gm, day_of_week="mon-fri"),
                            id="daily_generate")
 
-    # D1-29: 简报双时刻(盘后19:00 + 次日07:00) — 受auto_generate开关
+    # D1-29: 简报双时刻(晚间 + 次日07:00) — 受auto_generate开关
+    # D1-31: 晚间19:00→22:40 — 实测当晚AI事件分析~21:30完成(最新事件
+    # created_at 21:32), 19:00版永远缺当天事件(用户观感'只展示到前日')
     if ag:
         _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
                                            target="数据简报", trigger="schedule"),
-                           CronTrigger(hour=19, minute=0, day_of_week="mon-fri"),
+                           CronTrigger(hour=22, minute=40, day_of_week="mon-fri"),
                            id="briefing_evening")
         _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
                                            target="数据简报", trigger="schedule"),
