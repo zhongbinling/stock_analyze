@@ -598,7 +598,10 @@ const DIM_COLOR = {财务: '#e34448', 筹码: '#6250d6', 估值: '#2f5cd6', 事�
 // D1-31: 数据集徽标→可点选按钮: 点选=从扫雷"不新鲜"确认中忽略该项(灰调+
 // 删除线), localStorage记忆 — 稀疏源(如无两融标的)不再反复弹确认;
 // 默认态显示文字+✓/!新鲜度
-const skMuted = new Set(JSON.parse(localStorage.getItem('skMutedDs') || '[]'));
+// D1-31r: localStorage损坏值守卫 — 顶层抛错会杀掉整页脚本
+let _mutedInit = [];
+try { _mutedInit = JSON.parse(localStorage.getItem('skMutedDs') || '[]'); } catch (e) {}
+const skMuted = new Set(Array.isArray(_mutedInit) ? _mutedInit : []);
 let skUpdatedAt = 0;                     // 数据更新时间戳(3分钟内扫雷免确认)
 
 function renderFresh(ds) {               // 数据集状态徽标行(可点选忽略)
