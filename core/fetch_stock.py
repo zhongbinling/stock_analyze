@@ -513,7 +513,10 @@ def holders_payload(code: str, path=None) -> dict:
         (ts_code,))}
     con.close()
     out = []
+    hn_prev = None                          # D1-31: as-of填充(旧→新遍历时携带)
     for end_date in reversed(periods):        # 旧→新累积prev_ratio(环比=较上期)
+        if hnum.get(end_date) is not None:
+            hn_prev = hnum[end_date]
         rows = []
         for name, amt, ratio in allp[end_date]:
             chg = None
@@ -523,7 +526,10 @@ def holders_payload(code: str, path=None) -> dict:
             rows.append({"name": name, "amount": amt, "ratio": ratio,
                          "chg": chg, "tag": _holder_tag(name)})
             prev_ratio[name] = ratio
-        out.append({"end_date": end_date, "holder_num": hnum.get(end_date),
+        out.append({"end_date": end_date,
+                    "holder_num": hnum.get(end_date) if hnum.get(end_date) is not None
+                    else hn_prev,       # D1-31: 非标准披露日(如25-11-05临时
+                                        # 披露)无holdernum → 最近一期as-of
                     "holders": rows})
     out.reverse()                              # 输出恢复倒序(最新在前)
     return {"ok": True, "code": ts_code, "periods": periods, "data": out}
@@ -671,6 +677,7 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
     # 机构持仓: 全期十大流通中 机构类(公募/资管/北向/国家队/私募) 持股占比合计
     # (图表修复: 原LIMIT 3仅2026三期且DESC倒序 → 全期+正序)
     inst = []
+    hn_prev = None                          # D1-31: as-of股东户数填充携带
     for (end_date,) in con.execute(
             "SELECT DISTINCT end_date FROM stock_holders WHERE ts_code=? "
             "ORDER BY end_date ASC", (ts_code,)).fetchall():
@@ -682,7 +689,10 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
                                                     "私募", "金融机构")), 2)
         hn = con.execute("SELECT holder_num FROM stock_holdernum WHERE ts_code=? "
                          "AND end_date=?", (ts_code, end_date)).fetchone()
-        inst.append((end_date, ratio_sum, hn[0] if hn else None))
+        if hn and hn[0] is not None:
+            hn_prev = hn[0]
+        inst.append((end_date, ratio_sum,
+                     hn[0] if hn and hn[0] is not None else hn_prev))  # as-of填
     con.close()
     dates = sorted({r[0] for r in inc} | set(fin) | set(bs))
     E = 1e8                                    # 元→亿

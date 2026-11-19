@@ -190,3 +190,52 @@ def test_freshness_sparse_data(env):
     ds = SR.data_freshness("600519.SH", env)
     assert ds["解禁"]["fresh"] is True    # 有数据即fresh(天然稀疏)
     assert ds["事件"]["fresh"] is True   # 30天前在季频判定内
+
+
+# ── D1-31: 股东户数as-of填充 + Y自适应 + 徽标点选/扫雷免打扰 ──
+
+def test_holder_num_asof_fill(env):
+    """非标准披露日(临时披露, 如茅台25-11-05/19)有holders无holdernum →
+    数据层as-of填充最近一期(页面层兜底之外, 扫雷输入等消费方同样受益)"""
+    import fetch_stock as FS
+    con = FS._conn(env)
+    con.execute("INSERT INTO stock_pool VALUES('600519.SH','茅台','','t','t')")
+    # holders披露日: 季度 + 非标准11-05; holdernum仅季度
+    for d in ("2025-09-30", "2025-11-05", "2025-12-31"):
+        con.execute("INSERT INTO stock_holders VALUES(?,?,?,?,?)",
+                    ("600519.SH", d, "香港中央结算有限公司", 1e6, 5.0))
+    for d, n in (("2025-09-30", 238512.0), ("2025-12-31", 255892.0)):
+        con.execute("INSERT INTO stock_holdernum VALUES(?,?,?)",
+                    ("600519.SH", d, n))
+    con.commit(); con.close()
+    hp = FS.holders_payload("600519", env)
+    by_d = {x["end_date"]: x["holder_num"] for x in hp["data"]}
+    assert by_d["2025-11-05"] == 238512.0     # as-of=最近一期(非None)
+    assert by_d["2025-12-31"] == 255892.0
+    # full payload的inst通道同样填充
+    fp = FS.finance_full_payload("600519.SH", path=env)
+    i = fp["inst"]["dates"].index("2025-11-05")
+    assert fp["inst"]["holder_num"][i] == 238512.0
+
+
+def test_stock_page_yfit_and_chips_gates():
+    """页面门禁: _fitY自适应helper+datazoom挂载/徽标点选(muted)/扫雷3分钟免确认"""
+    import re
+    html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
+    assert "function _fitY" in html                       # X缩放→Y重算
+    assert ".on('datazoom', () => _fitY(c))" in html      # 十图挂载
+    assert "fresh-chip" in html and "skMuted" in html     # 点选忽略
+    assert ".fresh-chip.muted" in html                    # 灰调+删除线样式
+    assert "skUpdatedAt < 3 * 60 * 1000" in html          # 刚更新免确认
+    # JS语法门禁(node哑元不需要 — 该页无Jinja变量混入script)
+    import shutil, subprocess, tempfile, os
+    blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
+    main = max(blocks, key=len)
+    fd, p = tempfile.mkstemp(suffix=".js"); os.close(fd)
+    open(p, "w", encoding="utf-8").write(main)
+    r = subprocess.run([shutil.which("node"), "-e",
+                        'new Function(require("fs").readFileSync(process.argv[1],"utf8"))', p],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=120)
+    os.unlink(p)
+    assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"

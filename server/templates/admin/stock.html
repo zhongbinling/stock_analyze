@@ -1,6 +1,11 @@
 {% extends "base.html" %}
 {% block title %}避雷针 · 个股分析 · {{ app_name }}{% endblock %}
 {% block content %}
+<style>
+/* D1-31: 数据集徽标忽略态 — 灰调+删除线(点选恢复); 页面无head块就近放行内 */
+.fresh-chip.muted { color: #999 !important; border-color: #ddd !important;
+  text-decoration: line-through; background: transparent; }
+</style>
 <section class="card">
   <h2>避雷针 · 个股分析 <span class="hint" id="stState">A股个股风险体检(A1: K线+均线+量额)</span></h2>
   <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
@@ -413,6 +418,48 @@ const g1 = echarts.init($('chartG1')), g1b = echarts.init($('chartG1b')),
       g4 = echarts.init($('chartG4'));
 window.addEventListener('resize', () => [g1, g1b, g2, g2b, g3, g3b, g4].forEach(c => c.resize()));
 
+// ── D1-31: X缩放后Y轴自动适配可视窗口 ──
+// 8a82eeb曾移除Y轴手动缩放并声称scale:true自动适配 — 实际scale仅按全量
+// 数据定范围, 缩到局部窗口后曲线压扁; 真正自适应需datazoom事件里
+// 按可视区间重算各y轴min/max(用户实测九图均压扁)
+function _fitY(c) {
+  const opt = c.getOption();
+  if (!opt.xAxis || !opt.xAxis[0].data || !opt.dataZoom) return;
+  const total = opt.xAxis[0].data.length;
+  if (!total) return;
+  const z = opt.dataZoom[0];
+  let i0 = z.startValue != null ? z.startValue : Math.floor((z.start || 0) / 100 * total);
+  let i1 = z.endValue != null ? z.endValue : Math.ceil((z.end || 100) / 100 * total);
+  i0 = Math.max(0, Math.min(i0, total - 1));
+  i1 = Math.max(i0 + 1, Math.min(i1, total));
+  const ext = {};                                   // yAxisIndex → [min,max]
+  opt.series.forEach(s => {
+    if (s.type === 'candlestick') return;           // K线沿用自身轴逻辑
+    let lo = Infinity, hi = -Infinity;
+    for (let i = i0; i < i1; i++) {
+      const v = (s.data || [])[i];
+      const x = (v != null && typeof v === 'object') ? v.value : v;
+      if (x != null && isFinite(+x)) { if (+x < lo) lo = +x; if (+x > hi) hi = +x; }
+    }
+    if (lo === Infinity) return;
+    const yi = s.yAxisIndex || 0;
+    const a = ext[yi] || (ext[yi] = [Infinity, -Infinity]);
+    if (lo < a[0]) a[0] = lo;
+    if (hi > a[1]) a[1] = hi;
+  });
+  const patch = opt.yAxis.map((ya, i) => {
+    const a = ext[i];
+    if (!a || !isFinite(a[0]) || !isFinite(a[1])) return {};
+    const span = a[1] - a[0];
+    const pad = span * 0.08 || Math.max(Math.abs(a[1]), Math.abs(a[0]), 1) * 0.1;
+    const lo = a[0] - pad, hi = a[1] + pad;
+    return {min: +lo.toFixed(4), max: +hi.toFixed(4)};
+  });
+  if (patch.some(p => Object.keys(p).length)) c.setOption({yAxis: patch}, {silent: true});
+}
+[chM, chP, chV, g1, g1b, g2, g2b, g3, g3b, g4].forEach(c =>
+  c.on('datazoom', () => _fitY(c)));
+
 function _bars(name, data, color, yi = 1) {
   return {name, type: 'bar', data, barMaxWidth: 10 * yi,
           itemStyle: {color}, yAxisIndex: 0};
@@ -548,11 +595,25 @@ function renderAiFin(d) {
 
 const DIM_COLOR = {财务: '#e34448', 筹码: '#6250d6', 估值: '#2f5cd6', 事件: '#e67e22'};
 
-function renderFresh(ds) {                     // 数据集状态徽标行
+// D1-31: 数据集徽标→可点选按钮: 点选=从扫雷"不新鲜"确认中忽略该项(灰调+
+// 删除线), localStorage记忆 — 稀疏源(如无两融标的)不再反复弹确认;
+// 默认态显示文字+✓/!新鲜度
+const skMuted = new Set(JSON.parse(localStorage.getItem('skMutedDs') || '[]'));
+let skUpdatedAt = 0;                     // 数据更新时间戳(3分钟内扫雷免确认)
+
+function renderFresh(ds) {               // 数据集状态徽标行(可点选忽略)
   $('freshRow').innerHTML = Object.entries(ds || {}).map(([k, v]) =>
-    `<span class="hint" style="padding:1px 7px;border:1px solid var(--line,#ddd);border-radius:6px;
+    `<span data-ds="${esc(k)}" class="hint fresh-chip ${skMuted.has(k) ? 'muted' : ''}"
+      style="padding:1px 7px;border:1px solid var(--line,#ddd);border-radius:6px;cursor:pointer;
       ${v.fresh ? '' : 'border-color:#e67e22;color:#e67e22'}"
-      title="${k}最新: ${v.last || '无'}">${k}${v.fresh ? '✓' : '!'}</span>`).join('');
+      title="${k}最新: ${v.last || '无'} · 点击${skMuted.has(k) ? '恢复' : '忽略'}(忽略项不再触发扫雷前确认)">${k}${v.fresh ? '✓' : '!'}</span>`).join('');
+  $('freshRow').querySelectorAll('.fresh-chip').forEach(el =>
+    el.onclick = () => {
+      const k = el.dataset.ds;
+      skMuted.has(k) ? skMuted.delete(k) : skMuted.add(k);
+      localStorage.setItem('skMutedDs', JSON.stringify([...skMuted]));
+      loadFresh(curCode);
+    });
 }
 
 async function loadFresh(code) {
@@ -581,6 +642,7 @@ $('btnSkUpd').onclick = async () => {          // 数据更新
     const r = await api('/admin/api/stock/update_all', {method: 'POST',
       body: JSON.stringify({code: curCode})});
     renderFresh(r.datasets);
+    skUpdatedAt = Date.now();                     // D1-31: 刚更新过, 扫雷免确认
     $('aiFinState').textContent = '● 数据已更新';
     load(curCode);                             // 各图表随之刷新
   } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
@@ -592,7 +654,11 @@ $('btnAiFin').onclick = async () => {          // 一键扫雷
   let stale = false;
   try {
     const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(scanCode));
-    stale = Object.values(d.datasets || {}).some(x => !x.fresh);
+    // D1-31: 忽略项(点选灰调)不触发; 刚数据更新3分钟内不弹(用户实测
+    // '更新多次后扫雷仍提示'的困扰 — 更新已尽力, 剩余不新鲜多为源端延迟)
+    const fresh = Date.now() - skUpdatedAt < 3 * 60 * 1000;
+    stale = !fresh && Object.entries(d.datasets || {})
+      .some(([k, x]) => !x.fresh && !skMuted.has(k));
   } catch (e) {}
   if (stale && !confirm('部分数据不新鲜(橙色标记)。\n建议先[数据更新]。\n是否直接继续扫雷?')) return;
   $('aiFinState').textContent = '⏳ ' + scanCode + ' 扫雷中(本地27B约1-3分钟)…';
