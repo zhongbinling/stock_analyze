@@ -127,14 +127,19 @@ def test_api_backup_restore_guards(app_env):
     # 路径穿越 → 拒
     r = c.post("/admin/api/backup/restore", json={"file": "../evil.db"})
     assert r.status_code == 400
-    # 正在运行的任务(已出队, queue_size=0) → 拒
+    # D1-31: 有任务运行中不再拒 — 入队排队串行执行(曾同步忙时直接拒)
     from server.models import Job
+    from server import jobs as _J
     with app_env["app"].app_context():
         db_s = app_env["app"].extensions["sqlalchemy"]
         db_s.session.add(Job(kind="update", status="running"))
         db_s.session.commit()
+    _J._queue_log.clear()
     r = c.post("/admin/api/backup/restore", json={"file": sent_file})
-    assert r.status_code == 409 and "任务" in r.get_json()["msg"]
+    assert r.status_code == 200 and "已入队" in r.get_json()["msg"]
+    item = _J._q.get_nowait()
+    assert item["kind"] == "restore" and "sentiment" in item["target"]
+    _J._queue_log.clear()
     with app_env["app"].app_context():
         Job.query.filter_by(status="running").delete()
         db_s.session.commit()
@@ -375,6 +380,10 @@ def test_api_backup_restore_success_online(app_env):
     conn.close()
     r = app_env["client"].post("/admin/api/backup/restore", json={"file": fname})
     assert r.status_code == 200 and r.get_json()["ok"]
+    from server import jobs as _J2
+    item = _J2._q.get_nowait()                     # D1-31: 入队 → 取出执行
+    assert item["kind"] == "restore"
+    assert item["fn"](lambda s: None) == 0
     conn = sqlite3.connect(str(app_env["sent"]))
     n = conn.execute("SELECT COUNT(*) FROM sentiment").fetchone()[0]
     conn.close()

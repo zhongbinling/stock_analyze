@@ -811,8 +811,9 @@ def api_macro_news_stats():
 @bp_admin.post("/api/macro/news/fetch")
 @require_level(7)
 def api_macro_news_fetch():
-    """D1-28 N1: 抓取控制 — mode=backfill(全史回补)/incremental(近3日+em);
-    backfill异步入队, incremental同步秒级"""
+    """D1-28 N1: 抓取控制 — mode=backfill(全史回补)/incremental(近3日+em)。
+    D1-31: incremental亦入队 — 曾同步'秒级', 实际含tushare限频重试+三路
+    快讯+渐进回补10日, 阻塞请求分钟级且与更新链并发写macro.db"""
     from server import jobs
     d = request.get_json(force=True, silent=True) or {}
     mode = d.get("mode", "incremental")
@@ -823,9 +824,14 @@ def api_macro_news_fetch():
         ok, msg = jobs.enqueue("backfill", jobs.task_backfill("news_fetch", start),
                                target=f"宏观新闻回补(自{start})", trigger="manual")
         return jsonify({"ok": ok, "msg": msg + " — 全史回补已入队(2018海量日较慢), 进度见任务中心"})
-    import fetch_news as FN
-    FN.refresh()
-    return jsonify({"ok": True, "msg": "增量完成(近3日+em快讯)", "sources": FN.sync_map()})
+    def fn(append):
+        import fetch_news as FN
+        FN.refresh()            # 近3日major_news(含content) + em/新浪/同花顺快讯 + 渐进回补10日
+        append("增量拉取完成: 近3日major_news + 三路快讯 + 渐进回补10日")
+        return 0
+    ok, msg = jobs.enqueue("news_inc", fn, target="宏观新闻·增量", trigger="manual")
+    return jsonify({"ok": bool(ok), "msg": msg + (" — 进度与结果见任务中心" if ok else "")}), \
+        (200 if ok else 409)
 
 
 @bp_admin.post("/api/macro/import")
@@ -1184,12 +1190,18 @@ def api_backup_restore():
                         "msg": f"app.db 为服务自身数据库(账号/设置), 在线恢复已拒绝。"
                                f"请停服后在仓库根目录执行: "
                                f"cd core && python backup.py restore \"{fname}\" --yes"}), 409
-    if jobs.queue_size() > 0 or Job.query.filter_by(status="running").count() > 0:
-        return jsonify({"ok": False, "msg": "有任务运行/排队中, 为避免写冲突请稍后再试"}), 409
-    ok = bk.restore(fname, yes=True)
-    audit("backup_restore" if ok else "backup_restore_reject", target=fname)
-    return jsonify({"ok": ok, "msg": "已恢复(恢复前已自动快照 pre-restore)" if ok
-                                     else "恢复失败, 详见 backup.log"}), (200 if ok else 500)
+    # D1-31: 入队执行 — 曾同步阻塞请求2~5分钟(raw_daily 2.5GB校验+快照+拷贝),
+    # 且忙时直接拒; 入队后与更新链串行(排队等待而非拒绝), 重复点击由去重拦
+    def fn(append):
+        ok = _backup_mod().restore(fname, yes=True)   # 内含校验+pre-restore快照
+        append("恢复完成(恢复前已自动快照 pre-restore)" if ok
+               else "恢复失败, 详见 backups/backup.log")
+        return 0 if ok else 1
+    ok, msg = jobs.enqueue("restore", fn, target=f"恢复·{e['asset']}",
+                           trigger="manual")
+    audit("backup_restore_enqueue" if ok else "backup_restore_reject", target=fname)
+    return jsonify({"ok": bool(ok), "msg": msg + (" — 已入队(校验+快照+恢复), 进度见任务中心" if ok else "")}), \
+        (200 if ok else 409)
 
 
 # ---------------- D1-10 U1: 缺口扫描/修复 ----------------

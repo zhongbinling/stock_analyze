@@ -125,7 +125,16 @@ def test_news_api(server_app, monkeypatch, tmp_path):
     assert c.post("/admin/api/macro/news/fetch", json={"mode": "hack"}).status_code == 400
     monkeypatch.setattr(FN, "refresh", lambda path=None: True)
     r = c.post("/admin/api/macro/news/fetch", json={"mode": "incremental"})
-    assert r.status_code == 200 and "增量完成" in r.get_json()["msg"]
+    assert r.status_code == 200 and "已加入队列" in r.get_json()["msg"]  # D1-31入队
+    from server import jobs as _JN
+    inc = _JN._q.get_nowait()
+    assert inc["kind"] == "news_inc"
+    logs = []
+    assert inc["fn"](logs.append) == 0 and any("增量拉取完成" in l for l in logs)
+    for e in _JN._queue_log:
+        if e.get("state") == "queued" and e["kind"] == "news_inc":
+            e["state"] = "done"
+            break
     from server import jobs
     r = c.post("/admin/api/macro/news/fetch", json={"mode": "backfill"})
     assert r.status_code == 200

@@ -172,7 +172,7 @@ $('btnVerifyAll').onclick = () => enqueueVerify('');
 /* ── D1-11 C4: 恢复弹窗 ── */
 const RESTORE_INFO = {
   sentiment: {online: true, note: '恢复整库: 源表+评分一起回到备份时点。'},
-  raw_daily: {online: true, note: '个股原始库(约2.5GB), 恢复需 2~5 分钟, 期间请勿关闭页面。'},
+  raw_daily: {online: true, note: '个股原始库(约2.5GB), 入队后台恢复约2~5分钟, 关闭页面无碍。'},
   secret: {online: true, warn: '恢复登录密钥后所有会话失效(含当前登录), 需重新登录。'},
   token: {online: true, note: '恢复 tushare 令牌, 即时生效。'},
   cfg_core: {online: true, note: '恢复 core/config.yaml, 即时生效。'},
@@ -198,9 +198,9 @@ function _fallbackCopy(t, done) {
   ta.remove();
 }
 
-function restoreDone(n) {                   // 成功不立即关弹窗: 明确反馈+完成按钮
+function restoreDone(n) {                   // 入队反馈: 队列串行执行, 关页无碍
   $('modalProg').style.display = '';
-  $('modalProg').textContent = `✓ 已恢复 ${n} 项, 清单已刷新`;
+  $('modalProg').textContent = `✓ 恢复任务已入队 ${n} 项(校验+快照+恢复, 队列串行执行), 进度与结果见任务运行中心`;
   $('modalFoot').innerHTML = '<button class="btn primary" id="mDone">完成</button>';
   $('mDone').onclick = closeModal;
 }
@@ -263,7 +263,7 @@ function restoreOne(run, m) {
   $('mCancel').onclick = closeModal;
   $('mGo').onclick = async () => {
     const go = $('mGo');
-    go.disabled = true; go.textContent = '⏳ 恢复中…';
+    go.disabled = true; go.textContent = '⏳ 入队中…';
     try { await doRestore([m], $('modalProg')); restoreDone(1); }
     catch (e) {
       go.disabled = false; go.textContent = '确认恢复';
@@ -295,7 +295,7 @@ function restoreGroup(run) {
     if (!files.length) { $('modalProg').style.display = ''; $('modalProg').textContent = '未勾选任何资产'; return; }
     const list = run.members.filter(m => files.includes(m.file));
     const go = $('mGo');
-    go.disabled = true; go.textContent = '⏳ 恢复中…';
+    go.disabled = true; go.textContent = '⏳ 入队中…';
     try { await doRestore(list, $('modalProg')); restoreDone(list.length); }
     catch (e) {
       go.disabled = false; go.textContent = '恢复所选';
@@ -305,12 +305,14 @@ function restoreGroup(run) {
 }
 
 async function doRestore(list, progEl) {
+  // D1-31: 恢复入队(曾同步等待2~5分钟/项, 忙时直接拒) — 现逐项入队,
+  // 队列串行执行与更新链互斥, 重复项由去重拦
   for (let i = 0; i < list.length; i++) {
     const m = list[i];
-    if (progEl) { progEl.style.display = ''; progEl.textContent = `恢复 ${i + 1}/${list.length}: ${m.asset} …`; }
+    if (progEl) { progEl.style.display = ''; progEl.textContent = `入队 ${i + 1}/${list.length}: ${m.asset} …`; }
     await api('/admin/api/backup/restore', {method: 'POST', body: JSON.stringify({file: m.file})});
   }
-  if (progEl) { progEl.textContent = ''; }   // 成功态由 restoreDone 呈现
+  if (progEl) { progEl.textContent = ''; }   // 完成态由 restoreDone 呈现
   loadManifest(); loadHistory();
 }
 
