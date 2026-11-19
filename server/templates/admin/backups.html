@@ -206,7 +206,7 @@ function restoreDone(n) {                   // 入队反馈: 队列串行执行,
 }
 function restoreFail(e) {
   $('modalProg').textContent = '';
-  $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)} (已中断, 前面已恢复的资产不受影响)</p>`);
+  $('modalBody').insertAdjacentHTML('beforeend', `<p class="bad">✗ ${esc(e.message)} (已中断, 前面已入队的恢复任务不受影响, 队列照常执行)</p>`);
 }
 
 function showModal(title, bodyHtml, footHtml) {
