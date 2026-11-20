@@ -177,3 +177,36 @@ def test_bb_series_direction():
     assert BH._bb_series(up)[-1][1] > 50
     assert BH._bb_series(dn)[-1][1] < -50
     assert BH._bb_series(up)[0][1] is None
+
+
+def test_create_app_auto_creates_new_model_table(tmp_path, monkeypatch):
+    """D1-31r回归: create_app启动幂等create_all — 生产app.db历史初始化且
+    全仓无create_all调用点, behavior_strategies曾永不创建致策略列表500
+    (测试fixture手动create_all掩盖了该路径)"""
+    import os
+    data = tmp_path / "data"; data.mkdir()
+    cfg = tmp_path / "config"; cfg.mkdir()
+    (cfg / "server.yaml").write_text(
+        f"server: {{host: 127.0.0.1, port: 8599}}\n"
+        f"app: {{theme_default: light}}\n"
+        f"data: {{app_db: '{(data / 'app.db').as_posix()}', "
+        f"secret_key_file: '{(data / 'secret.key').as_posix()}'}}\n"
+        f"scheduler: {{enabled: false}}\n", encoding="utf-8")
+    import server as SV
+    monkeypatch.setattr(SV, "SERVER_CFG", cfg / "server.yaml")
+    monkeypatch.setenv("SA_NO_JOBS", "1")
+    app = SV.create_app()                     # 不手动create_all(生产等价)
+    app.config["TESTING"] = True
+    app.config["WTF_CSRF_ENABLED"] = False
+    with app.app_context():                   # 建管理员(users表也来自启动建表)
+        from server.models import User
+        u = User(username="bt_admin_t", level=9)
+        u.set_password("x")
+        SV.db.session.add(u)
+        SV.db.session.commit()
+        uid = u.id
+    c = app.test_client()
+    with c.session_transaction() as s:
+        s["_user_id"] = str(uid)
+    r = c.get("/admin/api/backtest/strategies")   # 曾500(no such table)
+    assert r.status_code == 200 and r.get_json()["strategies"] == []

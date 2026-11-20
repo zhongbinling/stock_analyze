@@ -79,6 +79,13 @@ def create_app() -> Flask:
     login_manager.anonymous_user = AnonymousUser
 
     from server.models import User  # noqa: F401  (确保模型在迁移前已注册)
+    import server.models as _models  # noqa: F401  (全部模型注册进metadata)
+
+    # D1-31r: 启动幂等建表(create_all只建缺失表, 不动已有) — 新增模型
+    # 不再依赖手工迁移(behavior_strategies曾致策略列表500: 生产app.db
+    # 历史初始化, 无任何create_all调用点, 新表永不创建)
+    with app.app_context():
+        db.create_all()
 
     @login_manager.user_loader
     def load_user(user_id):
