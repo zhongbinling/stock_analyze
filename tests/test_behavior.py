@@ -212,3 +212,26 @@ def test_create_app_auto_creates_new_model_table(tmp_path, monkeypatch):
         s["_user_id"] = str(uid)
     r = c.get("/admin/api/backtest/strategies")   # 曾500(no such table)
     assert r.status_code == 200 and r.get_json()["strategies"] == []
+
+
+def test_nt_axis_extension_t1(tmp_path, monkeypatch):
+    """D1-32: 份额源T+1 — nt轴延伸至最新交易日, 无数据日柱None/累计走平"""
+    import behavior as BH
+    monkeypatch.setattr(BH, "fetch_factors", lambda path=None: {
+        "sentiment": [("2026-11-19", 10.0), ("2026-11-20", 11.0)]})
+    monkeypatch.setattr(BH, "_index_close", lambda path=None: (
+        [("2026-11-19", 3000.0), ("2026-11-20", 3050.0)], []))
+    # nt_flow止于11-19 → 轴延伸到11-20
+    monkeypatch.setattr(BH, "_fetch_factors_impl", lambda path=None: {})
+    BH._fact_cache.update(at=0.0, data=None)     # 清缓存走stub
+    orig_fetch = BH.fetch_factors
+    def fetch_stub(path=None):
+        d = orig_fetch(path)
+        d["nt_flow"] = [("2026-11-19", 50.0)]
+        d["bb_raw"] = []
+        return d
+    monkeypatch.setattr(BH, "fetch_factors", fetch_stub)
+    r = BH.payload({"sentiment": 10}, path="whatever")
+    assert r["nt"]["dates"] == ["2026-11-19", "2026-11-20"]   # 轴到最新交易日
+    assert r["nt"]["ma5"] == [50.0, None]                      # T+1日无柱
+    assert r["nt"]["cum"] == [50.0, 50.0]                      # 累计走平=持仓不变

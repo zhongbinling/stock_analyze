@@ -291,7 +291,9 @@ def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
     bt = backtest(dates, comp, bench, entry, exit_)
     reg = regime([d for d, _ in idx], [c for _, c in idx])
     bb = _bb_series(idx)
-    # 国家队动向: 日净申购(亿) + 累计(持仓proxy) — 全史
+    # 国家队动向: 日净申购(亿) + 累计(持仓proxy) — 全史。
+    # D1-32: 份额源T+1 — 轴延伸至最新交易日(与状态/组合图对齐):
+    # 无数据日柱缺省(无净申购记录), 累计线维持走平(持仓不变语义)
     nt_raw = fetch_factors(path).get("nt_flow") or []
     nt_dates, nt_ma5, cum = [], [], 0.0
     nt_cum = []
@@ -300,6 +302,13 @@ def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
         nt_ma5.append(v)
         cum += v
         nt_cum.append(round(cum, 1))
+    last_nt = nt_dates[-1] if nt_dates else None
+    if last_nt:
+        for d, _c in idx:
+            if d > last_nt:
+                nt_dates.append(d)
+                nt_ma5.append(None)
+                nt_cum.append(nt_cum[-1] if nt_cum else None)
     # 上证叠加归一化(与组合共轴期间, 首日=100)
     dset = set(dates)
     overlay = []

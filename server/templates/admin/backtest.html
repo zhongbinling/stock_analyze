@@ -19,7 +19,7 @@
     <span class="hint" id="ntNow"></span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovNt" checked> 叠加上证(归一)</label></h2>
   <div id="chartNt" style="height:260px"></div>
-  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓变化proxy) · 大额申购常现于市场低迷期(护盘)</p>
+  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓proxy, 份额源T+1无新数据日走平=持仓不变) · 大额申购常现于市场低迷期(护盘)</p>
 </section>
 <section class="card">
   <h2>市场行为指数 (-100 ~ +100)
@@ -165,7 +165,9 @@ function renderAll(r) {
     dataZoom: DZ, series: regSeries}, true);
   // 国家队动向卡: 净申购柱 + 累计持仓线 + 上证归一叠加
   const nt = r.nt || {dates: [], ma5: [], cum: []};
-  const lastNt = nt.ma5.length ? nt.ma5[nt.ma5.length - 1] : null;
+  let lastNt = null;                              // 末段为T+1延伸(null)
+  for (let i = nt.ma5.length - 1; i >= 0; i--)
+    if (nt.ma5[i] != null) { lastNt = nt.ma5[i]; break; }
   $('ntNow').innerHTML = lastNt == null ? '' :
     `最新5日均净申购 <b style="color:${lastNt >= 0 ? '#e34448' : '#1baf7a'}">${lastNt > 0 ? '+' : ''}${lastNt}亿</b>`
     + ` · 累计 <b>${nt.cum[nt.cum.length - 1] ?? '--'}亿</b>`;
