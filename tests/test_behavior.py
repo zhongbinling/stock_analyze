@@ -141,7 +141,8 @@ def test_bt_page_gates():
     for mk in ("chartRegime", "chartComp", "chartBt", "chartNt", "facTable",
                "btnCompute", "btnSave", "stList", "data-load",
                "api/backtest/compute", "api/backtest/strategies", "叠加上证",
-               "牛熊比", "国家队ETF动向", "累计净申购", "r.regime.bb", "r.nt"):
+               "牛熊比", "国家队ETF动向", "累计净申购", "r.regime.bb", "r.nt",
+               "overlay_index.dates.map((d, i) => [d, r.overlay_index.norm[i]]"):
         assert mk in html, f"缺: {mk}"
     import shutil, subprocess, tempfile, os, re
     blocks = re.findall(r"<script>([\s\S]*?)</script>", html)

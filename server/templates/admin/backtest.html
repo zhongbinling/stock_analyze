@@ -148,8 +148,11 @@ function renderAll(r) {
                      data: nt.cum, lineStyle: {width: 1.6, color: '#e67e22'},
                      itemStyle: {color: '#e67e22'}}];
   if ($('ovNt').checked)
+    // 叠加线按[日期,值]配对 — 类别轴按索引对齐会把2005起的归一序列
+    // 错位压到2006起的nt日期轴上(review: 两轴长度5254≠5002)
     ntSeries.push({name: '上证(归一)', type: 'line', yAxisIndex: 2, showSymbol: false,
-                   data: r.overlay_index.norm, lineStyle: {width: 1.2, color: '#2f5cd6'},
+                   data: r.overlay_index.dates.map((d, i) => [d, r.overlay_index.norm[i]]),
+                   lineStyle: {width: 1.2, color: '#2f5cd6'},
                    itemStyle: {color: '#2f5cd6'}});
   chN.setOption({
     animation: false, backgroundColor: 'transparent',
