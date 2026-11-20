@@ -3,6 +3,11 @@
 {% block content %}
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
 <section class="card">
+  <h2>历史回测
+    <span class="hint" id="dataThrough">数据截至 --</span>
+    <button class="btn small" id="btnRefresh" style="float:right">↻ 刷新数据</button></h2>
+</section>
+<section class="card">
   <h2>市场状态 · 牛/熊/震荡概率 + 牛熊比
     <span class="hint" id="regNow">加载中…</span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovReg" checked> 叠加上证</label></h2>
@@ -93,6 +98,7 @@ function collectWeights() {
   return w;
 }
 
+let lastComputeAt = 0;
 async function compute() {
   $('btMsg').textContent = '⏳ 计算中(首算~5s, 缓存0.1s)…';
   try {
@@ -100,10 +106,31 @@ async function compute() {
       body: JSON.stringify({factors: collectWeights(),
                             entry: +$('btEntry').value, exit: +$('btExit').value})});
     cur = r;
+    lastComputeAt = Date.now();
     renderAll(r);
     $('btMsg').textContent = `共${r.dates.length}日 (${r.dates[0]} ~ ${r.dates[r.dates.length-1]})`;
+    dataThrough();
   } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
 }
+// D1-32: 数据截至badge — 页面是一次性计算快照(曾整页停在旧数据日,
+// 用户以为更新链异常); 回到页签超5分钟或每30分钟自动重算
+function dataThrough() {
+  if (!cur) return;
+  const lag = [];
+  Object.entries(cur.factors_now || {}).forEach(([k, f]) => {
+    if (f.latest && f.latest.slice(0, 10) < cur.dates[cur.dates.length - 1])
+      lag.push(`${f.name}截至${f.latest.slice(5, 10)}`);
+  });
+  $('dataThrough').innerHTML = `数据截至 <b>${cur.dates[cur.dates.length - 1]}</b>`
+    + (lag.length ? ` <span class="hint" title="${lag.join('；')}">(${lag.length}因子滞后)</span>` : '')
+    + ` · 计算于 ${new Date(lastComputeAt).toTimeString().slice(0, 5)}`;
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && lastComputeAt && Date.now() - lastComputeAt > 5 * 60000)
+    compute();
+});
+setInterval(() => { if (lastComputeAt && Date.now() - lastComputeAt > 30 * 60000) compute(); },
+            60 * 1000);
 
 function renderAll(r) {
   // 状态卡: 堆叠面积 + 上证叠放
@@ -217,6 +244,7 @@ function renderAll(r) {
 }
 
 $('btnCompute').onclick = compute;
+$('btnRefresh').onclick = () => { lastComputeAt = 0; compute(); };
 $('ovReg').onchange = () => cur && renderAll(cur);
 $('ovComp').onchange = () => cur && renderAll(cur);
 $('ovNt').onchange = () => cur && renderAll(cur);

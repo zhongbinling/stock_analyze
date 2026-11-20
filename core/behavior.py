@@ -317,7 +317,8 @@ def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
             series = [(d, v) for d, v in bb if v is not None]
         pct_series = _expanding_pct(series)
         factors_now[key] = {"name": name, "weight": weights.get(key, 0),
-                            "pct": pct_series[-1][1] if pct_series else None}  # as-of最新
+                            "pct": pct_series[-1][1] if pct_series else None,  # as-of最新
+                            "latest": series[-1][0] if series else None}  # 数据截至
     return {"dates": dates, "composite": comp,
             "regime": {"dates": [d for d, _ in idx],
                        "closes": [c for _, c in idx],
