@@ -39,6 +39,7 @@
         <label class="hint">卖出≤</label>
         <input class="input narrow" id="btExit" type="number" value="-30" step="5"></div>
       <button class="btn primary" id="btnCompute">计算回测</button>
+      <p class="hint" id="facShare" style="margin-top:6px">--</p>
       <p class="hint" style="margin-top:10px">保存为策略</p>
       <div class="row-flex"><input class="input" id="stName" placeholder="策略名(1~32字)" maxlength="32">
         <button class="btn" id="btnSave">保存</button></div>
@@ -77,25 +78,58 @@ async function api(url, opts = {}) {
   return j;
 }
 
+function pctWord(v) {                       // 分位状态词(区间语义)
+  if (v == null) return '';
+  if (v >= 80) return '<span style="color:#e34448">极高</span>';
+  if (v >= 40) return '偏高';
+  if (v > -40) return '中性';
+  if (v > -80) return '偏低';
+  return '<span style="color:#2f5cd6">极低</span>';
+}
 function renderFacPanel(factors, weights) {
-  $('facTable').innerHTML = '<tr><th></th><th>因子</th><th>当前分位</th><th>权重</th><th>说明</th></tr>'
-    + factors.map(f => `<tr>
-      <td><input type="checkbox" data-fk="${esc(f.key)}" ${weights[f.key] ? 'checked' : ''}></td>
-      <td>${esc(f.name)}</td><td class="hint" id="fp_${esc(f.key)}">--</td>
+  // D1-32b: 方向与权重拆分 — w=方向×权重(原单值-100~100含义混杂:
+  // '重要性'与'相关性方向'两概念). 方向: 顺势=高读数推高行为指数(买),
+  // 反向=高读数压低(如估值/情绪极热=风险). 权重: 组合内占比(归一化).
+  $('facTable').innerHTML = '<tr><th></th><th>因子</th>'
+    + '<th title="该因子当前读数的历史expanding分位: +100=历史最高, 0=中位, -100=历史最低(无前视)">当前分位</th>'
+    + '<th title="顺势=因子读数高→推高行为指数(买); 反向=读数高→压低(高估值/高情绪=风险)">方向</th>'
+    + '<th title="组合内重要性占比, 按权重绝对值归一">权重</th><th>说明</th></tr>'
+    + factors.map(f => {
+      const w = weights[f.key] ?? f.default_w, dir = w >= 0 ? 1 : -1, mag = Math.abs(w);
+      return `<tr>
+      <td><input type="checkbox" data-fk="${esc(f.key)}" ${w ? 'checked' : ''}></td>
+      <td>${esc(f.name)}</td>
+      <td class="hint" id="fp_${esc(f.key)}" title="+100=历史最高 · 0=中位 · -100=历史最低">--</td>
+      <td><select class="input narrow" data-fdir="${esc(f.key)}" style="width:88px">
+        <option value="1" ${dir > 0 ? 'selected' : ''}>顺势 +</option>
+        <option value="-1" ${dir < 0 ? 'selected' : ''}>反向 −</option></select></td>
       <td><input class="input narrow" type="number" data-fw="${esc(f.key)}"
-        value="${weights[f.key] ?? f.default_w}" step="5" min="-100" max="100" style="width:70px"></td>
-      <td class="hint" style="text-align:left">${esc(f.desc)}</td></tr>`).join('');
+        value="${mag}" step="5" min="0" max="100" style="width:64px"></td>
+      <td class="hint" style="text-align:left">${esc(f.desc)}</td></tr>`;}).join('');
 }
 
-function collectWeights() {
+function collectWeights() {              // w = 方向 × 权重(服务端口径不变)
   const w = {};
   document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
     if (cb.checked) {
-      const inp = document.querySelector(`#facTable [data-fw="${cb.dataset.fk}"]`);
-      w[cb.dataset.fk] = +inp.value || 0;
+      const k = cb.dataset.fk;
+      const dir = +document.querySelector(`#facTable [data-fdir="${k}"]`).value || 1;
+      const mag = +document.querySelector(`#facTable [data-fw="${k}"]`).value || 0;
+      w[k] = dir * mag;
     }
   });
+  updateShare(w);
   return w;
+}
+function updateShare(w) {                 // 归一占比条(因子面板下方)
+  const entries = Object.entries(w).filter(([, v]) => v);
+  const tot = entries.reduce((a, [, v]) => a + Math.abs(v), 0) || 1;
+  const nm = k => (FACERS.find(f => f.key === k) || {}).name || k;
+  $('facShare').innerHTML = entries.length
+    ? '组合占比: ' + entries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+        .map(([k, v]) => `${nm(k)} ${Math.round(Math.abs(v) / tot * 100)}%${v < 0 ? '(反向)' : ''}`)
+        .join(' · ')
+    : '--';
 }
 
 let lastComputeAt = 0;
@@ -219,7 +253,8 @@ function renderAll(r) {
   // 因子当前分位
   document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
     const el = $('fp_' + cb.dataset.fk), fn = (r.factors_now || {})[cb.dataset.fk];
-    el.textContent = fn && fn.pct != null ? fn.pct : '--';
+    el.innerHTML = fn && fn.pct != null
+      ? `<b>${fn.pct > 0 ? '+' : ''}${fn.pct}</b> ${pctWord(fn.pct)}` : '--';
   });
   // 回测卡
   const m = r.backtest.metrics;
@@ -277,12 +312,7 @@ async function loadStrategies() {
       const s = d.strategies.find(x => x.id === +b.dataset.load);
       if (!s) return;
       const w = s.config.factors || {}, e = s.config.entry ?? 30, x = s.config.exit ?? -30;
-      renderFacPanel(FACERS, {...w});
-      document.querySelectorAll('#facTable [data-fk]').forEach(cb => {
-        cb.checked = w[cb.dataset.fk] != null && w[cb.dataset.fk] !== 0;
-        document.querySelector(`#facTable [data-fw="${cb.dataset.fk}"]`).value
-          = w[cb.dataset.fk] ?? 0;
-      });
+      renderFacPanel(FACERS, {...w});   // 面板自带符号拆分(方向+权重)
       $('btEntry').value = e; $('btExit').value = x;
       $('stName').value = s.name;
       compute();
