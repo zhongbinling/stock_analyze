@@ -86,6 +86,15 @@ function pctWord(v) {                       // 分位状态词(区间语义)
   if (v > -80) return '偏低';
   return '<span style="color:#2f5cd6">极低</span>';
 }
+// D1-32r: 纯函数(可node回归) — 配置缺省的因子=未勾选。
+// 曾用 weights[key] ?? default_w 兜底, 加载只含部分因子的策略时,
+// 未保存因子被渲染成勾选+默认权重, 组合被悄悄掺料(实测复现)
+function splitW(f, weights) {
+  const raw = weights[f.key];
+  const w = (raw === undefined || raw === null) ? 0 : raw;
+  const disp = w || f.default_w;              // 未勾选行输入框显示因子默认值
+  return {checked: !!w, dir: disp >= 0 ? 1 : -1, mag: Math.abs(disp)};
+}
 function renderFacPanel(factors, weights) {
   // D1-32b: 方向与权重拆分 — w=方向×权重(原单值-100~100含义混杂:
   // '重要性'与'相关性方向'两概念). 方向: 顺势=高读数推高行为指数(买),
@@ -95,9 +104,9 @@ function renderFacPanel(factors, weights) {
     + '<th title="顺势=因子读数高→推高行为指数(买); 反向=读数高→压低(高估值/高情绪=风险)">方向</th>'
     + '<th title="组合内重要性占比, 按权重绝对值归一">权重</th><th>说明</th></tr>'
     + factors.map(f => {
-      const w = weights[f.key] ?? f.default_w, dir = w >= 0 ? 1 : -1, mag = Math.abs(w);
+      const {checked, dir, mag} = splitW(f, weights);
       return `<tr>
-      <td><input type="checkbox" data-fk="${esc(f.key)}" ${w ? 'checked' : ''}></td>
+      <td><input type="checkbox" data-fk="${esc(f.key)}" ${checked ? 'checked' : ''}></td>
       <td>${esc(f.name)}</td>
       <td class="hint" id="fp_${esc(f.key)}" title="+100=历史最高 · 0=中位 · -100=历史最低">--</td>
       <td><select class="input narrow" data-fdir="${esc(f.key)}" style="width:88px">
@@ -106,6 +115,8 @@ function renderFacPanel(factors, weights) {
       <td><input class="input narrow" type="number" data-fw="${esc(f.key)}"
         value="${mag}" step="5" min="0" max="100" style="width:64px"></td>
       <td class="hint" style="text-align:left">${esc(f.desc)}</td></tr>`;}).join('');
+  bindFacInputs();
+  updateShare(collectWeights());
 }
 
 function collectWeights() {              // w = 方向 × 权重(服务端口径不变)
@@ -120,6 +131,10 @@ function collectWeights() {              // w = 方向 × 权重(服务端口径
   });
   updateShare(w);
   return w;
+}
+function bindFacInputs() {                // D1-32r: 输入即刷新组合占比条
+  document.querySelectorAll('#facTable input, #facTable select').forEach(el =>
+    el.oninput = el.onchange = () => updateShare(collectWeights()));
 }
 function updateShare(w) {                 // 归一占比条(因子面板下方)
   const entries = Object.entries(w).filter(([, v]) => v);

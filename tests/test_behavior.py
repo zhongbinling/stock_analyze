@@ -144,7 +144,7 @@ def test_bt_page_gates():
                "牛熊比", "国家队ETF动向", "累计净申购", "r.regime.bb", "r.nt",
                "overlay_index.dates.map((d, i) => [d, r.overlay_index.norm[i]]",
                "dataThrough", "btnRefresh", "visibilitychange", "data-fdir", "facShare",
-               "pctWord", "顺势 +", "反向 −"):
+               "pctWord", "顺势 +", "反向 −", "splitW", "bindFacInputs"):
         assert mk in html, f"缺: {mk}"
     import shutil, subprocess, tempfile, os, re
     blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
@@ -236,3 +236,36 @@ def test_nt_axis_extension_t1(tmp_path, monkeypatch):
     assert r["nt"]["dates"] == ["2026-11-19", "2026-11-20"]   # 轴到最新交易日
     assert r["nt"]["ma5"] == [50.0, None]                      # T+1日无柱
     assert r["nt"]["cum"] == [50.0, 50.0]                      # 累计走平=持仓不变
+
+
+def test_split_w_absent_factor_unchecked():
+    """D1-32r回归: 加载只含部分因子的策略 — 未保存因子必须未勾选。
+    曾 weights[key] ?? default_w 兜底, 未保存因子被渲染成勾选+默认权重
+    (node实测复现: 策略仅含a, b却勾选权重25)"""
+    import os
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+    html = (REPO / "server" / "templates" / "admin" / "backtest.html").read_text(encoding="utf-8")
+    m = re.search(r"function splitW\(f, weights\) \{[\s\S]*?\n\}", html)
+    assert m, "splitW函数缺失"
+    if not shutil.which("node"):
+        pytest.skip("node不可用")
+    js = m.group(0) + (
+        "\nconst out = ["
+        "splitW({key:'a', default_w:-30}, {a:-40}),"
+        "splitW({key:'b', default_w:25}, {a:-40}),"
+        "splitW({key:'c', default_w:25}, {c:0}),"
+        "splitW({key:'d', default_w:-10}, {d:15})];"
+        "console.log(JSON.stringify(out.map(x => [x.checked, x.dir, x.mag])));")
+    fd, p = tempfile.mkstemp(suffix=".js")
+    os.close(fd)
+    open(p, "w", encoding="utf-8").write(js)
+    r = subprocess.run([shutil.which("node"), p], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=60)
+    os.unlink(p)
+    assert r.returncode == 0, r.stderr[:200]
+    # a: 反向40勾选 / b: 缺省未勾选(显示默认) / c: 显式0未勾选 / d: 正值覆盖默认
+    assert json.loads(r.stdout) == [[True, -1, 40], [False, 1, 25],
+                                    [False, 1, 25], [True, 1, 15]]
