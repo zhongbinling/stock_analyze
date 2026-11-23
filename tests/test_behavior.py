@@ -236,6 +236,7 @@ def test_nt_axis_extension_t1(tmp_path, monkeypatch):
     assert r["nt"]["dates"] == ["2026-11-19", "2026-11-20"]   # 轴到最新交易日
     assert r["nt"]["ma5"] == [50.0, None]                      # T+1日无柱
     assert r["nt"]["cum"] == [50.0, 50.0]                      # 累计走平=持仓不变
+    assert r["nt"]["data_date"] == "2026-11-19"                # 有真实数据的最后一天
 
 
 def test_split_w_absent_factor_unchecked():
@@ -269,3 +270,113 @@ def test_split_w_absent_factor_unchecked():
     # a: 反向40勾选 / b: 缺省未勾选(显示默认) / c: 显式0未勾选 / d: 正值覆盖默认
     assert json.loads(r.stdout) == [[True, -1, 40], [False, 1, 25],
                                     [False, 1, 25], [True, 1, 15]]
+
+
+# ── D1-34: 份额按需拉取(回测页末端空柱: 份额源D+1上午发布, 库只在16:35刷新) ──
+
+def _pull_db(path):
+    import sqlite3
+    con = sqlite3.connect(str(path))
+    con.execute("CREATE TABLE etf_share(code TEXT, trade_date TEXT, fd_share REAL)")
+    con.execute("CREATE TABLE index_daily(code TEXT, date TEXT, close REAL)")
+    con.execute("INSERT INTO index_daily VALUES('1.000001','2026-11-23',3000)")
+    con.execute("INSERT INTO etf_share VALUES('510050.SH','20261120',1)")
+    con.commit()
+    con.close()
+
+
+def test_pull_latest_only_when_stale(tmp_path, monkeypatch):
+    """份额落后于最新交易日 → 向源端拉一次并让因子缓存失效; 进程内节流
+    (源端未发布时不会每开一次页面就打一轮接口); 追平后不再拉"""
+    import sqlite3
+    import fetch_etf_flow as EF
+    db = tmp_path / "s.db"
+    _pull_db(db)
+    calls = []
+    monkeypatch.setattr(EF, "refresh",
+                        lambda path=None, lookback=30: calls.append(path) or 0)
+    monkeypatch.setattr(BH, "_pull_state", {"at": 0.0})
+    monkeypatch.setattr(BH, "_fact_cache", {"at": 123.0, "data": {"x": 1}})
+    r = BH.pull_latest(db)
+    assert calls == [db]                              # 源端尚未发布: 拉了但仍落后
+    assert r == {"pulled": True, "stale": True, "rows": 0,
+                 "advanced": False, "latest": "20261120"}
+    assert BH._fact_cache["data"] is None             # 因子缓存失效
+    assert BH.pull_latest(db)["pulled"] is False and len(calls) == 1     # 节流
+    con = sqlite3.connect(str(db))                    # 源端发布后入库 → 追平
+    con.execute("INSERT INTO etf_share VALUES('510050.SH','20261123',1)")
+    con.commit()
+    con.close()
+    assert BH.pull_latest(db) == {"pulled": False, "stale": False, "rows": 0,
+                                  "advanced": False, "latest": "20261123"}
+    assert len(calls) == 1
+
+
+def test_pull_latest_tolerates_failures(tmp_path, monkeypatch):
+    """接口抛错/无token(-1)/库表缺失 → 沿用库内数据, 不向上抛"""
+    import fetch_etf_flow as EF
+    db = tmp_path / "s.db"
+    _pull_db(db)
+    monkeypatch.setattr(BH, "_pull_state", {"at": 0.0})
+    monkeypatch.setattr(EF, "refresh", lambda path=None, lookback=30: -1)
+    assert BH.pull_latest(db)["rows"] == 0
+    monkeypatch.setattr(BH, "_pull_state", {"at": 0.0})
+
+    def boom(path=None, lookback=30):
+        raise RuntimeError("网络不通")
+    monkeypatch.setattr(EF, "refresh", boom)
+    assert BH.pull_latest(db) == {"pulled": True, "stale": True, "rows": 0,
+                                  "advanced": False, "latest": "20261120"}
+    assert BH.pull_latest(tmp_path / "none.db") == {          # 无库/无表
+        "pulled": False, "stale": False, "rows": 0,
+        "advanced": False, "latest": None}
+
+
+def test_pull_latest_reports_advance(tmp_path, monkeypatch):
+    """源端已发布 → 拉取后份额推进到新的一天(advanced)且不再滞后"""
+    import sqlite3
+    import fetch_etf_flow as EF
+    db = tmp_path / "s.db"
+    _pull_db(db)
+
+    def refresh(path=None, lookback=30):
+        con = sqlite3.connect(str(path))
+        con.execute("INSERT INTO etf_share VALUES('510050.SH','20261123',2)")
+        con.commit()
+        con.close()
+        return 160                                     # 整窗upsert的行数
+    monkeypatch.setattr(EF, "refresh", refresh)
+    monkeypatch.setattr(BH, "_pull_state", {"at": 0.0})
+    assert BH.pull_latest(db) == {"pulled": True, "stale": False, "rows": 160,
+                                  "advanced": True, "latest": "20261123"}
+
+
+def test_bt_compute_pull_flag(server_app, monkeypatch):
+    """pull=true: 先按需拉份额(结果随响应返回); 不带pull只读库(调权重/算回测)"""
+    calls = []
+    monkeypatch.setattr(BH, "pull_latest", lambda: calls.append(1) or {
+        "pulled": True, "stale": True, "rows": 0, "latest": "20261120"})
+    monkeypatch.setattr(BH, "payload", lambda w=None, e=30, x=-30, path=None: {
+        "dates": ["2026-11-20"], "composite": [1.0],
+        "nt": {"data_date": "2026-11-20"}})
+    c = server_app["client"]
+    r = c.post("/admin/api/backtest/compute",
+               json={"factors": {"sentiment": -30}, "pull": True}).get_json()
+    assert calls == [1] and r["nt_pull"]["latest"] == "20261120"
+    assert r["nt"]["data_date"] == "2026-11-20"
+    r2 = c.post("/admin/api/backtest/compute",
+                json={"factors": {"sentiment": -30}}).get_json()
+    assert calls == [1] and "nt_pull" not in r2
+
+
+def test_bt_page_unpublished_is_labeled():
+    """页面: 末端空柱显示"源端未发布"而非"-"; 标题注明数值属于哪天、哪些天
+    在等; 首载/自动刷新/刷新数据带pull; [计算回测]不得直接绑compute
+    (点击事件对象会被当成pull=true → 每次算回测都打一轮接口)"""
+    html = (REPO / "server" / "templates" / "admin" / "backtest.html").read_text(encoding="utf-8")
+    for mk in ("源端未发布", "待源端发布", "截至${ntDD}", "nt.data_date",
+               "pull: !!pull", "formatter: NT_TIP", "await compute(true);",
+               "r.nt_pull.advanced"):
+        assert mk in html, f"缺: {mk}"
+    assert "$('btnCompute').onclick = () => compute(false);" in html
+    assert "$('btnCompute').onclick = compute;" not in html

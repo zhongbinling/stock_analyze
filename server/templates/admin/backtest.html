@@ -19,7 +19,7 @@
     <span class="hint" id="ntNow"></span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovNt" checked> 叠加上证(归一)</label></h2>
   <div id="chartNt" style="height:260px"></div>
-  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓proxy, 份额源T+1无新数据日走平=持仓不变) · 大额申购常现于市场低迷期(护盘)</p>
+  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓proxy, 份额源T+1无新数据日走平=持仓不变) · 大额申购常现于市场低迷期(护盘)<br>末端空柱=当日份额源端(tushare fund_share)尚未发布 — 次日上午出数, 打开本页或点[刷新数据]时自动拉取</p>
 </section>
 <section class="card">
   <h2>市场行为指数 (-100 ~ +100)
@@ -148,16 +148,23 @@ function updateShare(w) {                 // 归一占比条(因子面板下方)
 }
 
 let lastComputeAt = 0;
-async function compute() {
-  $('btMsg').textContent = '⏳ 计算中(首算~5s, 缓存0.1s)…';
+// pull=true: 先向源端拉一次最新份额再计算(页面加载/自动刷新/点[刷新数据]);
+// 调权重、算回测只读库。服务端有节流, 不会每次都打接口。
+async function compute(pull) {
+  $('btMsg').textContent = pull ? '⏳ 拉取最新份额并计算中…' : '⏳ 计算中(首算~5s, 缓存0.1s)…';
   try {
     const r = await api('/admin/api/backtest/compute', {method: 'POST',
       body: JSON.stringify({factors: collectWeights(),
-                            entry: +$('btEntry').value, exit: +$('btExit').value})});
+                            entry: +$('btEntry').value, exit: +$('btExit').value,
+                            pull: !!pull})});
     cur = r;
     lastComputeAt = Date.now();
     renderAll(r);
-    $('btMsg').textContent = `共${r.dates.length}日 (${r.dates[0]} ~ ${r.dates[r.dates.length-1]})`;
+    // D1-34: 明示"这是哪天的数" — 末端交易日无份额时不说"最新", 避免被读成当日值
+    // (只在实际推进到新的一天时提示; 接口每次整窗写回, 行数不代表有新数据)
+    $('btMsg').textContent = (r.nt_pull && r.nt_pull.advanced
+        ? `份额已更新到 ${r.nt_pull.latest.slice(0, 4)}-${r.nt_pull.latest.slice(4, 6)}-${r.nt_pull.latest.slice(6, 8)} · ` : '')
+      + `共${r.dates.length}日 (${r.dates[0]} ~ ${r.dates[r.dates.length-1]})`;
     dataThrough();
   } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
 }
@@ -176,10 +183,19 @@ function dataThrough() {
 }
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && lastComputeAt && Date.now() - lastComputeAt > 5 * 60000)
-    compute();
+    compute(true);
 });
-setInterval(() => { if (lastComputeAt && Date.now() - lastComputeAt > 30 * 60000) compute(); },
+setInterval(() => { if (lastComputeAt && Date.now() - lastComputeAt > 30 * 60000) compute(true); },
             60 * 1000);
+
+// 国家队卡悬浮提示: 末端无份额数据的交易日显示"源端未发布"而不是"-"
+// (实测 11-24 04:00 用户对着 11-23 的"-"以为数据丢了 — 份额源 D+1 上午才出)
+const NT_TIP = ps => [ps[0].axisValueLabel].concat(ps.map(p => {
+  const raw = Array.isArray(p.value) ? p.value[p.value.length - 1] : p.value;
+  const blank = raw == null || raw === '-' || (typeof raw === 'number' && isNaN(raw));
+  return p.marker + p.seriesName + ': '
+    + (blank ? '<span style="color:#898781">源端未发布</span>' : '<b>' + (+raw).toFixed(1) + '</b>');
+})).join('<br>');
 
 function renderAll(r) {
   // 状态卡: 堆叠面积 + 上证叠放
@@ -214,12 +230,15 @@ function renderAll(r) {
     dataZoom: DZ, series: regSeries}, true);
   // 国家队动向卡: 净申购柱 + 累计持仓线 + 上证归一叠加
   const nt = r.nt || {dates: [], ma5: [], cum: []};
-  let lastNt = null;                              // 末段为T+1延伸(null)
+  let lastNt = null, lastIdx = -1;                // 末段为T+1延伸(null)
   for (let i = nt.ma5.length - 1; i >= 0; i--)
-    if (nt.ma5[i] != null) { lastNt = nt.ma5[i]; break; }
+    if (nt.ma5[i] != null) { lastNt = nt.ma5[i]; lastIdx = i; break; }
+  const tailN = nt.dates.length - 1 - lastIdx;    // 末端等待源端发布的交易日数
+  const ntDD = (nt.data_date || nt.dates[lastIdx] || '').slice(5);
   $('ntNow').innerHTML = lastNt == null ? '' :
-    `最新5日均净申购 <b style="color:${lastNt >= 0 ? '#e34448' : '#1baf7a'}">${lastNt > 0 ? '+' : ''}${lastNt}亿</b>`
-    + ` · 累计 <b>${nt.cum[nt.cum.length - 1] ?? '--'}亿</b>`;
+    `截至${ntDD} 5日均净申购 <b style="color:${lastNt >= 0 ? '#e34448' : '#1baf7a'}">${lastNt > 0 ? '+' : ''}${lastNt}亿</b>`
+    + ` · 累计 <b>${nt.cum[nt.cum.length - 1] ?? '--'}亿</b>`
+    + (tailN > 0 ? ` · <span class="hint" title="份额源(fund_share)次日上午才发布; 打开页面或点[刷新数据]会自动向源端拉取, 发布后即补上">${tailN}个交易日的份额待源端发布</span>` : '');
   const ntSeries = [{name: '净申购5日均(亿)', type: 'bar', data: nt.ma5,
                      barMaxWidth: 4, itemStyle: {color: p => p.value >= 0 ? '#e34448' : '#1baf7a'}},
                     {name: '累计净申购(亿)', type: 'line', yAxisIndex: 1, showSymbol: false,
@@ -235,7 +254,7 @@ function renderAll(r) {
   chN.setOption({
     animation: false, backgroundColor: 'transparent',
     legend: {data: ntSeries.map(s => s.name), textStyle: {fontSize: 10}, top: 0},
-    tooltip: {trigger: 'axis'},
+    tooltip: {trigger: 'axis', formatter: NT_TIP},
     grid: {left: 52, right: 96, top: 26, bottom: 44},
     xAxis: {type: 'category', data: nt.dates, ...AX},
     yAxis: [{type: 'value', scale: true, name: '亿', ...AX},
@@ -295,8 +314,9 @@ function renderAll(r) {
               itemStyle: {color: '#8ba0b6'}}]}, true);
 }
 
-$('btnCompute').onclick = compute;
-$('btnRefresh').onclick = () => { lastComputeAt = 0; compute(); };
+// 注意: 计算回测不拉数据(pull=false) — 直接绑compute会把点击事件对象当成pull
+$('btnCompute').onclick = () => compute(false);
+$('btnRefresh').onclick = () => { lastComputeAt = 0; compute(true); };
 $('ovReg').onchange = () => cur && renderAll(cur);
 $('ovComp').onchange = () => cur && renderAll(cur);
 $('ovNt').onchange = () => cur && renderAll(cur);
@@ -350,7 +370,7 @@ async function loadStrategies() {
     renderFacPanel(d.factors, w);
     $('btEntry').value = d.defaults.entry; $('btExit').value = d.defaults.exit;
   } catch (e) { $('btMsg').textContent = '✗ ' + e.message; return; }
-  await compute();
+  await compute(true);                     // 首载: 份额若落后于最新交易日先向源端拉一次
   loadStrategies();
 })();
 </script>

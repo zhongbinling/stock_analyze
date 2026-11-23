@@ -262,8 +262,13 @@ def api_bt_compute():
         exit_ = max(-100, min(100, int(d.get("exit", BH.DEFAULT_EXIT))))
     except (TypeError, ValueError):
         return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
+    # D1-34: 页面加载/点[刷新数据]时带pull — 份额源D+1上午发布而库只在16:35
+    # 更新链刷新, 回测页末端整天空柱; 落后则主动拉一次(服务端节流)
+    nt_pull = BH.pull_latest() if d.get("pull") else None
     r = BH.payload(weights, entry, exit_)
     r["ok"] = True
+    if nt_pull is not None:
+        r["nt_pull"] = nt_pull
     return jsonify(r)
 
 

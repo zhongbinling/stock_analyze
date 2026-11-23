@@ -24,6 +24,7 @@ BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE))
 
 SENT_DB = BASE / "data" / "sentiment.db"
+_PRIMARY = "1.000001"          # 上证指数在 index_daily 中的代码
 
 # (key, 名称, 默认权重, 说明)
 FACTOR_DEFS = [
@@ -278,6 +279,58 @@ def _bb_series(idx):
     return out
 
 
+_pull_state = {"at": 0.0}
+
+
+def pull_latest(path=None, min_gap_s: float = 600.0) -> dict:
+    """按需拉取份额最新数据(回测页加载/点[刷新数据]时调用)。
+
+    份额源 fund_share: D日数据 D+1 上午才发布(实测 D+1 04:05 未出、08:52 已有),
+    而库只在 16:35 更新链时刷新 → 中间大半天回测页末端是空柱(11-24 04:00
+    用户实测 11-23 为"-" — 源端当时确实还没出, 但发布后页面也要等到晚上)。
+    份额落后于最新交易日时主动拉一次(8次接口调用), 进程内节流 min_gap_s;
+    接口失败/未发布时沿用库内数据。
+    返回 {pulled, stale, rows, advanced, latest}: rows=接口写回的行数(30日窗口
+    每次都是整窗upsert, 无新交易日也非零); advanced=份额是否推进到新的一天。"""
+    import time as _t
+    p = Path(path or SENT_DB)
+
+    def _last():
+        con = None
+        try:
+            con = sqlite3.connect(f"file:{p.as_posix()}?mode=ro", uri=True, timeout=30)
+            a = con.execute("SELECT MAX(trade_date) FROM etf_share").fetchone()[0]
+            b = con.execute("SELECT MAX(date) FROM index_daily WHERE code=?",
+                            (_PRIMARY,)).fetchone()[0]
+            return a or "", (b or "").replace("-", "")
+        except sqlite3.Error:                  # 库/表不存在 → 无从判断落后
+            return "", ""
+        finally:
+            if con is not None:
+                con.close()
+
+    last, last_idx = _last()
+    if not last_idx or last >= last_idx:
+        return {"pulled": False, "stale": False, "rows": 0,
+                "advanced": False, "latest": last or None}
+    now = _t.time()
+    if now - _pull_state["at"] < min_gap_s:
+        return {"pulled": False, "stale": True, "rows": 0,
+                "advanced": False, "latest": last or None}
+    _pull_state["at"] = now
+    rows = 0
+    try:
+        import fetch_etf_flow as EF
+        rows = EF.refresh(path=p)
+    except Exception as e:  # noqa: BLE001
+        print(f"[behavior] 份额按需拉取失败(沿用库内数据): {e}")
+    _fact_cache.update(at=0.0, data=None)          # 因子缓存失效, 下次计算重载
+    last2, _ = _last()
+    return {"pulled": True, "stale": last2 < last_idx,
+            "rows": rows if isinstance(rows, int) and rows > 0 else 0,
+            "advanced": last2 > last, "latest": last2 or None}
+
+
 def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
     """API载荷: 因子组合+状态概率+回测(对照510300, 上证兜底)+上证叠加
     D1-31b: 牛熊比因子+regime线、国家队ETF动向(日净申购+累计持仓proxy)"""
@@ -332,7 +385,8 @@ def payload(weights=None, entry=DEFAULT_ENTRY, exit_=DEFAULT_EXIT, path=None):
             "regime": {"dates": [d for d, _ in idx],
                        "closes": [c for _, c in idx],
                        "bb": [v for _, v in bb], **reg},
-            "nt": {"dates": nt_dates, "ma5": nt_ma5, "cum": nt_cum},
+            "nt": {"dates": nt_dates, "ma5": nt_ma5, "cum": nt_cum,
+                   "data_date": last_nt},       # 有真实份额数据的最后一天(末端为T+1延伸)
             "overlay_index": {"dates": [d for d, _ in overlay],
                               "norm": [v for _, v in overlay]},
             "backtest": {**bt, "bench_name": bench_name},
