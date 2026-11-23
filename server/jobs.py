@@ -945,6 +945,52 @@ def _waiting_in_queue(kinds, target=None, target_not=None) -> bool:
 _caught_up = {}                     # jid → 已补跑过的触发时刻(进程内; 重启后由任务表重判)
 
 
+def _intraday(now: datetime) -> bool:
+    """now 是否落在交易日的交易时段(09:15~15:05)。此刻跑抓取链会把当日盘中
+    快照写成"已有数据"(THS池步骤对已有日跳过), 盘后不再重抓。
+    日历无该日记录时按工作日保守处理。"""
+    if now.weekday() >= 5:
+        return False
+    try:
+        from server import market
+        con = market._conn()
+        if con is not None:
+            try:
+                row = con.execute("SELECT is_open FROM calendar WHERE cal_date=?",
+                                  (now.strftime("%Y%m%d"),)).fetchone()
+            finally:
+                con.close()
+            if row is not None and not row[0]:
+                return False                       # 日历标注休市
+    except Exception:  # noqa: BLE001
+        pass
+    hm = now.hour * 60 + now.minute
+    return 9 * 60 + 15 <= hm < 15 * 60 + 5
+
+
+def _catch_up(jid, spec, fn, kinds, target, target_not, max_late_h,
+              skip_if_next_today, no_intraday, now):
+    """错过补跑判定; 满足则补跑一次并记入 _caught_up(同一触发时刻只补一次)。"""
+    T = _last_trigger(spec, now)
+    if (T is None or _caught_up.get(jid) == T
+            or _handled_since(kinds, T, target, target_not)
+            or _waiting_in_queue(kinds, target, target_not)):
+        return
+    if max_late_h is not None and (now - T).total_seconds() > max_late_h * 3600:
+        return                        # 过期太久(如晨报): 放弃, 等下一触发
+    nxt = _next_trigger(spec, now)
+    # 当天稍后的定时运行会重新抓取并覆盖全部近端数据 → 不必现在补
+    if skip_if_next_today and nxt is not None and nxt.date() == now.date():
+        return
+    # 交易日盘中不跑抓取链(不受上一条限制 — 如定时时刻被改到已过去的时间):
+    # 盘中快照一旦写入就被当成当日终值; 15:05后的下一次同步再补
+    if no_intraday and _intraday(now):
+        return
+    print(f"[scheduler] {jid}: 触发时刻 {T:%m-%d %H:%M} 被错过(休眠/停机), 补跑一次")
+    _caught_up[jid] = T
+    fn()
+
+
 def _sync_cron_jobs(app, now: datetime = None):
     """同步定时任务(启动/策略变更/每5分钟): 重挂全部cron + 错过补跑判定。"""
     from apscheduler.triggers.cron import CronTrigger
@@ -958,38 +1004,28 @@ def _sync_cron_jobs(app, now: datetime = None):
     wd, wh, wm = _parse_weekly(get_setting("backup_weekly_cron"))
     WF = "mon-fri"
     BRIEF = "数据简报"
+    pending = []
 
     def reg(jid, on, spec, fn, kinds, target=None, target_not=None,
-            max_late_h=None, skip_if_next_today=False):
+            max_late_h=None, skip_if_next_today=False, no_intraday=False):
+        """第一段只做登记(移除+重挂)。补跑判定留到第二段逐项容错:
+        某一项判定出错(如DB锁)不能让排在后面的任务停在"已移除未重挂"。"""
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
-        if not on:
-            return
-        _scheduler.add_job(fn, CronTrigger(**spec), id=jid)
-        T = _last_trigger(spec, now)
-        if (T is None or _caught_up.get(jid) == T
-                or _handled_since(kinds, T, target, target_not)
-                or _waiting_in_queue(kinds, target, target_not)):
-            return
-        if max_late_h is not None and (now - T).total_seconds() > max_late_h * 3600:
-            return                        # 过期太久(如晨报): 放弃, 等下一触发
-        nxt = _next_trigger(spec, now)
-        # 当天稍后的定时运行会重新抓取并覆盖全部近端数据 → 不必现在补
-        # (更新链盘中补跑还会把当日盘中快照写成"已有日", 挡住盘后的正式抓取)
-        if skip_if_next_today and nxt is not None and nxt.date() == now.date():
-            return
-        print(f"[scheduler] {jid}: 触发时刻 {T:%m-%d %H:%M} 被错过(休眠/停机), 补跑一次")
-        _caught_up[jid] = T                     # 同一触发时刻只补一次
-        fn()
+        if on:
+            _scheduler.add_job(fn, CronTrigger(**spec), id=jid)
+            pending.append((jid, spec, fn, kinds, target, target_not, max_late_h,
+                            skip_if_next_today, no_intraday))
 
     # 登记顺序 = 多项同时错过时的入队顺序: 先更新数据 → 再生成 → 最后备份
     reg("daily_update", au, dict(hour=uh, minute=um, day_of_week=WF),
         # D1-10 A2: 定时走缺口修复链(近1周扫描, 幂等单趟, 无缺口秒完成);
         # 手动[增量更新]按钮仍走 task_update(当天快速链)
         lambda: enqueue("update", task_repair(7, "schedule"), trigger="schedule"),
-        kinds=("update", "repair"), skip_if_next_today=True)
+        kinds=("update", "repair"), skip_if_next_today=True, no_intraday=True)
     reg("stock_daily", True, dict(hour=19, minute=30),
-        # 避雷针A5: 自选池夜间链(独立调度, 不挂repair长链 — 失败不拖累主链)
+        # 避雷针A5: 自选池夜间链(独立调度, 不挂repair长链 — 失败不拖累主链);
+        # 回看窗口幂等覆盖, 无盘中快照锁定问题 → 不设盘中保护
         lambda: enqueue("stock_daily", task_stock_daily(False),
                         target="个股数据·日频", trigger="schedule"),
         kinds=("stock_daily",), target="个股数据·日频", skip_if_next_today=True)
@@ -1023,6 +1059,13 @@ def _sync_cron_jobs(app, now: datetime = None):
         lambda: enqueue("backup", task_backup("weekly", "schedule"),
                         target="weekly", trigger="schedule"),
         kinds=("backup",), target="weekly")
+
+    # 第二段: 补跑判定(全部登记完成后再逐项做, 单项失败不影响其余)
+    for args in pending:
+        try:
+            _catch_up(*args, now)
+        except Exception as e:  # noqa: BLE001
+            print(f"[scheduler] {args[0]}: 补跑判定失败(任务已登记, 下次同步再判): {e}")
 
 
 _WEEKDAYS = {"mon": "mon", "tue": "tue", "wed": "wed", "thu": "thu", "fri": "fri",

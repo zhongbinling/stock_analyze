@@ -76,7 +76,7 @@ def cron(server_app, monkeypatch):
     with server_app["app"].app_context():
         for k, v in (("auto_update", "1"), ("auto_generate", "1"), ("backup_enabled", "1")):
             J.set_setting(k, v)
-    return {"J": J, "app": server_app["app"]}
+    return {"J": J, "app": server_app["app"], "tmp": server_app["tmp"]}
 
 
 def _sync(env, now):
@@ -454,4 +454,137 @@ def test_enqueue_force_bypasses_dedup():
     assert J._q.qsize() == 2
     while not J._q.empty():
         J._q.get_nowait()
+    J._queue_log.clear()
+
+
+# ════════════════ review(1913742)复现用例 ════════════════
+
+def test_catchup_update_never_intraday(cron, monkeypatch):
+    """review: 交易日盘中不补更新链。原规则只在"当天稍后还会定时运行"时跳过
+    — 把定时时刻改到已过去的更早时间(或非默认时刻)就会盘中补跑; 盘中跑链
+    THS池返回的是盘中快照, 写入后当日即成"已有日", 盘后不再重抓。"""
+    import server.market as M
+    J = cron["J"]
+    with cron["app"].app_context():
+        J.set_setting("update_cron", "09:00")            # 当天09:00已过, 不再定时运行
+    db = cron["tmp"] / "cal.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE calendar(cal_date TEXT PRIMARY KEY, is_open INTEGER)")
+    con.execute("INSERT INTO calendar VALUES('20261124', 1)")        # 周二开市
+    con.commit()
+    con.close()
+    monkeypatch.setattr(M, "_conn", lambda: sqlite3.connect(str(db)))
+    _sync(cron, datetime(2026, 11, 24, 10, 0))           # 盘中
+    q = _drain(cron)
+    J._queue_log.clear()
+    assert ("update", "") not in q
+    _sync(cron, datetime(2026, 11, 24, 15, 6))           # 收盘后下一次同步即补
+    assert ("update", "") in _drain(cron)
+    J._queue_log.clear()
+
+
+def test_catchup_update_allowed_on_closed_weekday(cron, monkeypatch):
+    """日历标注休市的工作日盘中不属"交易时段" → 照常补"""
+    import server.market as M
+    J = cron["J"]
+    with cron["app"].app_context():
+        J.set_setting("update_cron", "09:00")
+    db = cron["tmp"] / "cal.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE calendar(cal_date TEXT PRIMARY KEY, is_open INTEGER)")
+    con.execute("INSERT INTO calendar VALUES('20261124', 0)")        # 节假日休市
+    con.commit()
+    con.close()
+    monkeypatch.setattr(M, "_conn", lambda: sqlite3.connect(str(db)))
+    _sync(cron, datetime(2026, 11, 24, 10, 0))
+    assert ("update", "") in _drain(cron)
+    J._queue_log.clear()
+
+
+def test_catchup_check_error_keeps_other_jobs_registered(cron, monkeypatch):
+    """review: 补跑判定某一项出错, 不能让排在后面的任务留在"已移除未重挂"
+    状态(原实现逐项"移除→重挂→判定", 判定抛错即中断)。登记与补跑分两段。"""
+    J = cron["J"]
+    real = J._handled_since
+
+    def flaky(kinds, since, *a, **kw):
+        if "stock_daily" in kinds:
+            raise RuntimeError("database is locked")
+        return real(kinds, since, *a, **kw)
+    monkeypatch.setattr(J, "_handled_since", flaky)
+    _sync(cron, datetime(2026, 11, 28, 10, 0))
+    assert set(J._scheduler.jobs) == ALL_IDS            # 全部照常重挂
+    q = _drain(cron)
+    J._queue_log.clear()
+    assert ("update", "") in q and ("backup", "daily") in q   # 其余补跑不受影响
+
+
+def test_ts_mood_skips_today_during_trading(ts_env, monkeypatch):
+    """review: 交易时段内不写"今天" — tushare盘中返回的是未定型名单, 写入后
+    当日即有板块聚合, 之后不再重拉(旧版同样会写入, 但晚间运行会覆盖修正;
+    改为不覆盖THS列后就再也没有修正机会)。"""
+    FD, T = ts_env["FD"], ts_env["T"]
+    monkeypatch.setattr(FD, "_today_iso", lambda: "2026-11-23")
+    monkeypatch.setattr(FD, "_now_hm", lambda: "10:30")
+    monkeypatch.setattr(T, "limit_list_d", lambda d: _ld_df())
+    FD.fetch_tushare_mood_today()
+    assert ("2026-11-23", "X") not in _q(ts_env["db"], "SELECT date, code FROM sector_pool_stat")
+    assert _q(ts_env["db"], "SELECT zb_count FROM mood_raw WHERE date='2026-11-23'") == []
+    monkeypatch.setattr(FD, "_now_hm", lambda: "21:30")         # 盘后名单定型
+    FD.fetch_tushare_mood_today()
+    assert ("2026-11-23", "X") in _q(ts_env["db"], "SELECT date, code FROM sector_pool_stat")
+
+
+def test_fetch_pools_skips_today_intraday(tmp_path, monkeypatch):
+    """同源隐患: THS池步骤对已有日跳过(get_mood_dates按zt_count非空判定) —
+    盘中跑链写入的是盘中快照, 盘后定时链不再重抓, 当日涨停结构被锁死在盘中值。
+    交易时段内不抓"今天", 留待盘后。"""
+    import fetch_daily as FD
+    import em_api
+    db = tmp_path / "s.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE mood_raw(date TEXT PRIMARY KEY, zt_count INTEGER, dt_count INTEGER,"
+                " zb_rate REAL, lb_max INTEGER, jl_rate REAL, lb2_count INTEGER, yzt_count INTEGER)")
+    con.commit()
+    con.close()
+    calls = []
+
+    def fake_ths(d):
+        calls.append(d)
+        return {"zt_count": 12, "dt_count": 2, "zb_rate": 30.0, "lb_max": 3,
+                "jl_rate": 20.0, "lb2_count": 4, "yzt_count": 10}
+    monkeypatch.setattr(em_api, "ths_pool_stats", fake_ths)
+    monkeypatch.setattr(FD, "connect", lambda: sqlite3.connect(str(db)))
+    monkeypatch.setattr(FD, "_today_iso", lambda: "2026-11-24")
+    cfg = {"fetch": {"sleep": 0}}
+    monkeypatch.setattr(FD, "_now_hm", lambda: "14:20")         # 盘中
+    FD.fetch_pools(cfg, ["2026-11-23", "2026-11-24"])
+    assert calls == ["20261123"]                                # 当日不抓
+    monkeypatch.setattr(FD, "_now_hm", lambda: "16:35")         # 盘后
+    FD.fetch_pools(cfg, ["2026-11-23", "2026-11-24"])
+    assert "20261124" in calls
+
+
+def test_analyze_all_continuation_queue_full(server_app, monkeypatch):
+    """review: 让道续排遇队列满 — 续片入队失败不能静默丢掉剩余额度,
+    要如实写进日志并给出收尾行"""
+    import analyze_news as AN
+    from server import jobs as J
+    J._queue_log.clear()
+    while not J._q.empty():
+        J._q.get_nowait()
+    monkeypatch.setattr(AN, "analyze_batch", lambda n: {"analyzed": n, "pending": 100})
+    monkeypatch.setattr(AN, "analyze_cloud_batch", lambda n: {"analyzed": 0, "pending": 0})
+    with server_app["app"].app_context():
+        J.set_setting("ai_local_enabled", "1")
+    assert server_app["client"].post("/admin/api/ai/analyze-all",
+                                     json={"limit": 60}).status_code == 200
+    item = J._q.get_nowait()
+    for i in range(J.QUEUE_CAP):                               # 队列被占满
+        J._q.put({"kind": "noop", "fn": lambda a: 0, "target": f"x{i}", "trigger": "manual"})
+    logs = []
+    assert item["fn"](logs.append) == 0
+    text = "\n".join(logs)
+    assert "续排失败" in text and "剩余" in text      # 不是无声终止
+    assert "分析结束: 本次本地20" in text
     J._queue_log.clear()

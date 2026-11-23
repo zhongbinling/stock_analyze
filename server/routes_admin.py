@@ -701,12 +701,17 @@ def api_ai_analyze_all():
             if n == 0:                        # 无待分析/已暂停/连续失败
                 break
             rest = budget - done
-            if rest > 0 and J.queue_size() > 0:
-                J.enqueue("analyze_all", lambda a, _rest=rest: run_slice(a, _rest),
-                          target=target, trigger="manual", _force=True)
-                append(f"  ⇢ 让道: 队列有 {J.queue_size()} 项等待, 剩余≤{rest}条"
-                       f"已排到队尾(先执行等待中的任务)")
-                return 0
+            waiting = J.queue_size()
+            if rest > 0 and waiting > 0:
+                ok, why = J.enqueue("analyze_all", lambda a, _rest=rest: run_slice(a, _rest),
+                                    target=target, trigger="manual", _force=True)
+                if ok:
+                    append(f"  ⇢ 让道: 队列有 {waiting} 项等待, 剩余≤{rest}条"
+                           f"已排到队尾(先执行等待中的任务)")
+                    return 0
+                # 续排失败(队列满): 不能静默丢掉剩余额度 — 写明后正常收尾
+                append(f"  ✗ 续排失败({why}): 剩余≤{rest}条未分析, 请稍后重新发起")
+                break
         if state["local"] >= limit:
             append(f"  ⚠ 达本次上限{limit}条, 剩余待下轮再点")
         r2 = AN.analyze_cloud_batch(20)

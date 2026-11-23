@@ -92,74 +92,106 @@ def test_refresh_stores(env, monkeypatch):
 
 # ── 历史回补(fund_share全史可回补, 2018实测247行/年) ──
 
-def _mk_fake(calls, fail_chunks=()):
+def _mk_fake(calls, fail_chunks=(), rows_for=None):
+    """fund_share替身: 每块返回 rows_for(start_date) 行(默认1行, trade_date=块起始日)"""
     import pandas as pd
 
     def fake(api, fields="", **kw):
         calls.append((kw.get("ts_code"), kw.get("start_date"), kw.get("end_date")))
         if (kw.get("ts_code"), kw.get("start_date")) in fail_chunks:
             raise RuntimeError("每分钟最多访问该接口20次")
-        return pd.DataFrame({"ts_code": [kw["ts_code"]],
-                             "trade_date": [kw["start_date"]],
-                             "fd_share": [100.0]})
+        n = rows_for(kw["start_date"]) if rows_for else 1
+        dates = ([kw["start_date"]] if n == 1 else
+                 [f"{kw['start_date'][:4]}{i:04d}" for i in range(1, n + 1)])
+        return pd.DataFrame({"ts_code": [kw["ts_code"]] * n,
+                             "trade_date": dates, "fd_share": [100.0] * n})
     return fake
 
 
-def test_backfill_chunks_pace_idempotent(env, monkeypatch):
-    """按年分块×8ETF逐块拉取; 块间控频sleep; upsert幂等(二跑不重复)"""
+def _year_chunks():
     import datetime as dt
-    import fetch_etf_flow as EF
-    calls, sleeps = [], []
-    monkeypatch.setattr(EF.T, "has_token", lambda: True)
-    monkeypatch.setattr(EF.T, "call", _mk_fake(calls))
-    monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
-    n = EF.backfill("20240101", env, pace_s=6)
     today = dt.date.today()                     # 期望年块动态构造(与实现同构)
     chunks, lo = [], dt.date(2024, 1, 1)
     while lo <= today:
         hi = min(dt.date(lo.year, 12, 31), today)
         chunks.append((lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")))
         lo = dt.date(lo.year + 1, 1, 1)
+    return today, chunks
+
+
+def test_backfill_chunks_pace_idempotent(env, monkeypatch):
+    """按年分块×8ETF逐块拉取; 块间控频sleep; upsert幂等(二跑不重复)"""
+    import fetch_etf_flow as EF
+    calls, sleeps = [], []
+    monkeypatch.setattr(EF.T, "has_token", lambda: True)
+    monkeypatch.setattr(EF.T, "call", _mk_fake(calls))
+    monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
+    n = EF.backfill("20240101", env, pace_s=6)
+    today, chunks = _year_chunks()
     assert n == 8 * len(chunks)
     assert calls == [(c, s, e) for c in EF.ETF_CODES for s, e in chunks]
     assert sleeps == [6] * (8 * len(chunks))          # 每块后控频
     con = sqlite3.connect(str(env))
     assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
     con.close()
-    n2 = EF.backfill("20240101", env, pace_s=6)       # 重跑: 历史年块已完整 → 跳过
+    n2 = EF.backfill("20240101", env, pace_s=6)
     con = sqlite3.connect(str(env))
     assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
     con.close()
-    # D1-33: 已完整的历史年块不再调用 — 2024/2025各年7只行数与参照一致 → 跳过;
-    # 参照ETF自身历史年行数不足200(夹具各年仅1行)照常重拉; 当年块全部重拉
-    cur_year = [c for c in chunks if c[0][:4] == str(today.year)]
-    past = [c for c in chunks if c[0][:4] < str(today.year)]
-    assert len(cur_year) == 1 and n2 == 3 + 7          # 参照3块 + 其余7只各1块
-    assert calls[len(calls) - 10:] == (
-        [(EF._REF_CODE, *c) for c in chunks]
-        + [(c, *cur_year[0]) for c in EF.ETF_CODES if c != EF._REF_CODE])
-    assert not any(c != EF._REF_CODE and c0 in past for c, c0, _e in calls[len(calls) - 10:])
+    # 夹具各年块仅1行: 参照年不足完整年份下限 → 无可信基准 → 全部照常重拉
+    # (完整年份的跳过行为见 test_backfill_skips_complete_years)
+    assert n2 == n
 
 
-def test_backfill_incomplete_year_not_skipped(env, monkeypatch):
-    """D1-33: 行数与参照不一致的年份(上市晚/源端缺日)不算完整, 重跑照常重拉"""
+def test_backfill_skips_complete_years(env, monkeypatch):
+    """D1-33: 重跑时已完整的历史年块不再调用接口 — 参照ETF各历史年243行(≥下限),
+    其余7只行数与之相等; 当年块每次都重拉(取新数据)"""
+    import fetch_etf_flow as EF
+    today, chunks = _year_chunks()
+    this_year = str(today.year)
+    n_past = len([c for c in chunks if c[0][:4] < this_year])
+    calls, sleeps = [], []
+    monkeypatch.setattr(EF.T, "has_token", lambda: True)
+    monkeypatch.setattr(EF.T, "call", _mk_fake(
+        calls, rows_for=lambda s: 243 if s[:4] < this_year else 1))
+    monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
+    EF.backfill("20240101", env, pace_s=6)
+    assert len(calls) == 8 * len(chunks)             # 首跑: 全部年块
+    calls.clear()
+    sleeps.clear()
+    n2 = EF.backfill("20240101", env, pace_s=6)
+    assert n2 == 8 and len(calls) == 8 and len(sleeps) == 8     # 仅当年块(8只×1块)
+    assert {c for c, _s, _e in calls} == set(EF.ETF_CODES)
+    assert all(s[:4] == this_year for _c, s, _e in calls)
+    con = sqlite3.connect(str(env))
+    assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == 8 * (n_past * 243 + 1)
+    con.close()
+
+
+def test_backfill_incomplete_year_not_skipped(env):
+    """D1-33: 行数与参照不一致的年份(上市晚/源端缺日)不算完整, 重跑照常重拉;
+    参照自身不足完整年份下限的年份不作为基准; 当年及以后不判"""
     import fetch_etf_flow as EF
     con = EF.ensure_db(env)
-    for code in EF.ETF_CODES:
+
+    def yr(code, year, n):
         con.executemany("INSERT INTO etf_share VALUES(?,?,1)",
-                        [(code, f"2024{m:02d}15", ) for m in range(1, 13)])
-    con.execute("INSERT INTO etf_share VALUES('159915.SZ','20240716',1)")   # 多1行
-    con.executemany("INSERT INTO etf_share VALUES('510050.SH', ?, 1)",      # 参照: 整年243行
-                    [(f"2023{m:02d}{d:02d}",) for m in range(1, 13) for d in range(1, 21)] + [
-                        (f"202312{d:02d}",) for d in range(21, 25)])
-    con.commit(); con.close()
-    done = EF._complete_years(sqlite3.connect(str(env)), "2099")
-    assert ("510300.SH", "2024") in done                # 12行 = 参照12行
-    assert ("159915.SZ", "2024") not in done            # 13行 ≠ 参照
-    assert ("510050.SH", "2024") not in done          # 参照: 12行<200 → 不算完整
-    assert ("510050.SH", "2023") in done              # 参照: 243行 → 完整
-    assert ("510300.SH", "2023") not in done          # 2023年该ETF无行
-    assert EF._complete_years(sqlite3.connect(str(env)), "2023") == set()  # 当年及以后不判
+                        [(code, f"{year}{i:04d}") for i in range(1, n + 1)])
+    yr(EF._REF_CODE, "2024", 243)
+    yr("510300.SH", "2024", 243)                    # 与参照相等
+    yr("159915.SZ", "2024", 244)                    # 多1行 ≠ 参照
+    yr("510500.SH", "2024", 208)                    # 源端缺日
+    yr(EF._REF_CODE, "2023", 12)                    # 参照该年只有12行
+    yr("510300.SH", "2023", 12)                     # 与参照相等, 但基准不可信
+    con.commit()
+    con.close()
+    c = sqlite3.connect(str(env))
+    done = EF._complete_years(c, "2099")
+    assert (EF._REF_CODE, "2024") in done and ("510300.SH", "2024") in done
+    assert ("159915.SZ", "2024") not in done and ("510500.SH", "2024") not in done
+    assert ("510300.SH", "2023") not in done and (EF._REF_CODE, "2023") not in done
+    assert EF._complete_years(c, "2024") == set()   # 当年及以后不判
+    c.close()
 
 
 def test_backfill_rate_limit_tolerant(env, monkeypatch):
@@ -186,3 +218,26 @@ def test_backfill_registered_and_window():
     assert '"date": x["date"], "net_yi": x["net_yi"]' in vsrc  # payload剥离flows瘦身
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "ds: 'etf_flow'" in html                       # 修复页可见
+
+
+def test_backfill_partial_reference_year_not_complete(env):
+    """review(1913742): 参照ETF某年自身只有部分数据(如先跑过半年的回补)时,
+    其他ETF同年行数"与参照相等"不代表完整 — 否则之后再跑全年回补会把该年
+    整块跳过, 上半年永远缺失。参照年行数达到完整年份下限才可作比较基准。"""
+    import fetch_etf_flow as EF
+    con = EF.ensure_db(env)
+    for code in EF.ETF_CODES:
+        # 2025: 每只都只有下半年约百日(半年回补后的状态)
+        con.executemany("INSERT INTO etf_share VALUES(?,?,1)",
+                        [(code, f"2025{m:02d}{d:02d}") for m in range(7, 11) for d in range(1, 29)])
+        # 2024: 参照与510300整年243行; 159915缺3行
+        n = 243 if code in (EF._REF_CODE, "510300.SH") else 240
+        con.executemany("INSERT INTO etf_share VALUES(?,?,1)",
+                        [(code, f"2024{m:02d}{d:02d}") for m in range(1, 13) for d in range(1, 29)
+                         if d <= 24][:n])
+    con.commit()
+    con.close()
+    done = EF._complete_years(sqlite3.connect(str(env)), "2026")
+    assert not any(y == "2025" for _c, y in done)                 # 参照2025仅112行 → 该年无可信基准
+    assert (EF._REF_CODE, "2024") in done and ("510300.SH", "2024") in done
+    assert ("159915.SZ", "2024") not in done

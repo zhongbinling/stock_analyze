@@ -36,8 +36,12 @@ def test_recent_days_from_calendar(env):
     assert rt.recent_days(5) == ["2026-10-30", "2026-10-29"]   # 非交易日剔除
 
 
-def test_stats_backup_and_recent(env):
+def test_stats_backup_and_recent(env, monkeypatch, tmp_path):
     rt = env["rt"]
+    # D1-33r: stats() 读 rt.ROOT/backups/manifest.json — ROOT必须一并隔离。
+    # 原版只隔离了CORE, 把两条夹具条目写进了**真实**备份清单: 自10-30起
+    # 每跑一次测试套件就清空一次真实清单(备份中心反复"只剩几份"的根因)
+    monkeypatch.setattr(rt, "ROOT", tmp_path)
     db = env["core"] / "data" / "sentiment.db"
     c = sqlite3.connect(str(db))
     c.execute("CREATE TABLE calendar(cal_date TEXT PRIMARY KEY, is_open INTEGER)")
@@ -47,6 +51,7 @@ def test_stats_backup_and_recent(env):
     con = sqlite3.connect(str(rt.RT_DB))
     con.execute("INSERT INTO rt_day VALUES('2026-10-30','x',100,'{}')")
     con.commit(); con.close()
+    assert rt.ROOT == tmp_path                      # 不再指向真实仓库根目录
     mf = rt.ROOT / "backups" / "manifest.json"
     mf.parent.mkdir(parents=True, exist_ok=True)
     mf.write_text(json.dumps({"entries": [

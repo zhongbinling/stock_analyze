@@ -40,6 +40,26 @@ def ymd(d) -> str:
     return norm_date(d).replace("-", "")
 
 
+def _today_iso() -> str:
+    """墙上时钟今天(ISO); 独立函数便于测试注入"""
+    return time.strftime("%Y-%m-%d")
+
+
+def _now_hm() -> str:
+    """墙上时钟 HH:MM; 独立函数便于测试注入"""
+    return time.strftime("%H:%M")
+
+
+_CLOSE_HM = "15:05"      # 收盘后5分钟: 此前"今天"的数据都是未定型的盘中快照
+
+
+def _today_unsettled(d: str) -> bool:
+    """d 是墙上时钟的今天且尚未收盘 — 该日盘中数据不落库:
+    THS池/涨停名单盘中返回的是快照, 写入后当日即成"已有日"(get_mood_dates
+    按zt_count非空判定), 盘后定时链跳过不再重抓, 当日涨停结构被锁死在盘中值。"""
+    return d == _today_iso() and _now_hm() < _CLOSE_HM
+
+
 def fetch_index(cfg, index_start):
     conn = connect()
     for key in ("primary", "secondary"):
@@ -63,6 +83,12 @@ def fetch_pools(cfg, dates, force=False):
     conn = connect()
     done = set() if force else get_mood_dates(conn)
     todo = [d for d in dates if d not in done]
+    # D1-33r: 交易时段内不抓"今天" — 盘中快照写入后当日即成"已有日",
+    # 盘后定时链不再重抓(见_today_unsettled); 手动盘中点[更新]同样适用
+    unsettled = [d for d in todo if _today_unsettled(d)]
+    if unsettled:
+        print(f"[pools] {unsettled[0]}: 交易时段内不抓当日池(盘中快照未定型), 留待盘后")
+        todo = [d for d in todo if d not in unsettled]
     if not todo:
         print("[pools] 无缺失日期, 跳过")
         return
@@ -340,6 +366,9 @@ def fetch_tushare_mood_today():
         import sectors as _sec
         empty = 0
         for iso in todo:                            # 新→旧
+            if _today_unsettled(iso):
+                print(f"[ts-mood] {iso}: 交易时段内名单未定型, 不写入(留待盘后更新链)")
+                continue
             df = tushare_api.limit_list_d(ymd(iso))
             if df is None or df.empty:
                 empty += 1

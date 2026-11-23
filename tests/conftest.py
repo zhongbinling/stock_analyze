@@ -152,3 +152,60 @@ def server_app(tmp_path, monkeypatch):
     with client.session_transaction() as s:
         s["_user_id"] = str(uid)
     return {"app": app, "client": client, "tmp": tmp_path}
+
+
+# ── D1-33r: 测试与真实备份彻底隔离 ──
+# 事故复盘(11-06 / 11-18 / 11-24 三次"备份清单只剩几份、磁盘上一堆文件却不可见"):
+#   ① tests/test_d27 把夹具条目写进真实 backups/manifest.json — 自10-30起
+#      每跑一次测试套件就清空一次真实清单;
+#   ② 有测试在进程内调 fetch_daily.run_backfill, 顺带对真实 sentiment.db
+#      (1.4GB) 做了一次真实的 pre-backfill 快照(03:22:39 实测)。
+# 此前两次都误判为"并发覆盖/旧进程", 真正的写入方是测试套件自己。
+_REAL_BACKUPS = REPO / "backups"
+
+
+def _manifest_files() -> set:
+    """真实清单里在册的备份文件键集合(读不到/非法JSON → 空集)"""
+    try:
+        m = json.loads((_REAL_BACKUPS / "manifest.json").read_text(encoding="utf-8"))
+        return {e["file"] for e in m.get("entries", [])
+                if isinstance(e, dict) and e.get("file")}
+    except (OSError, ValueError, AttributeError):
+        return set()
+
+
+def _backup_file_exists(f: str) -> bool:
+    if "/" not in f:
+        return (_REAL_BACKUPS / f).exists()
+    root, name = f.split("/", 1)
+    return (_REAL_BACKUPS / root).exists() or (_REAL_BACKUPS / root / name).exists()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_backups(tmp_path, monkeypatch):
+    """每个测试默认把 core/backup.py 指向临时目录, 资产源指向不存在的路径
+    (未隔离的 snapshot() 直接"不存在跳过", 零I/O)。
+    需要真实备份行为的测试用自己的夹具覆盖 — autouse先执行, 后设置的生效。"""
+    import backup as BK
+    root = tmp_path / "backups"
+    empty = tmp_path / "no_such_assets"
+    monkeypatch.setattr(BK, "BACKUP_DIR", root)
+    monkeypatch.setattr(BK, "MANIFEST", root / "manifest.json")
+    monkeypatch.setattr(BK, "LOG_FILE", root / "backup.log")
+    monkeypatch.setattr(BK, "ASSETS", {
+        k: (kind, empty / f"{k}.dat") for k, (kind, _p) in BK.ASSETS.items()})
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_manifest_canary():
+    """守卫: 测试期间真实备份清单不得丢失"在册且磁盘文件仍在"的条目
+    (服务端正常操作删除条目时连同文件一起删; 只有被整档覆盖才会出现
+    文件在而条目丢)。套件结束时任选失败 — 防止再有测试绕过 backup 模块
+    直接写 backups/ 下的文件。"""
+    before = _manifest_files()
+    yield
+    lost = sorted(f for f in before
+                  if _backup_file_exists(f) and f not in _manifest_files())
+    assert not lost, (
+        f"真实备份清单在测试期间被改写: {len(lost)}/{len(before)} 条在册条目丢失"
+        f"(如 {lost[:3]}) — 有测试未隔离, 直接写了 backups/ 下的文件")

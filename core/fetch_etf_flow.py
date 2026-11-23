@@ -63,9 +63,11 @@ _FULL_YEAR_ROWS = 200             # 完整历史年份的行数下限(一年约2
 
 def _complete_years(con, this_year: str) -> set:
     """已完整的(代码, 年份)集合。当年不判(每次都要重拉取新数据)。
-    - 非参照ETF: 该年行数与参照ETF同年行数一致(上市当年/源端缺日的年份
-      行数不等 → 不算完整, 每次照常重拉)
-    - 参照ETF自身: 该年行数≥_FULL_YEAR_ROWS(无更早的参照可比)
+    以参照ETF(510050, 最早上市)各年行数为"应有行数", 且该年参照自身达到
+    完整年份下限(_FULL_YEAR_ROWS)时才可信 — 参照只有部分数据时(如先跑过
+    半年回补), 其他ETF同年"行数相等"只是同样残缺:
+      - 参照ETF自身: 该年行数≥下限
+      - 非参照ETF: 行数与参照相等(上市当年/源端缺日的年份不等 → 每次照常重拉)
     D1-33: 回补重跑原样重拉全部年块(2006起 = 8只×21年×6s控频≈18分钟
     队列占用), 而历史年份数据不会变化。"""
     cnt = {(c, y): n for c, y, n in con.execute(
@@ -74,7 +76,8 @@ def _complete_years(con, this_year: str) -> set:
     for (c, y), n in cnt.items():
         if y >= this_year:
             continue
-        if n >= _FULL_YEAR_ROWS if c == _REF_CODE else cnt.get((_REF_CODE, y)) == n:
+        ref_n = cnt.get((_REF_CODE, y), 0)
+        if ref_n >= _FULL_YEAR_ROWS and (c == _REF_CODE or ref_n == n):
             out.add((c, y))
     return out
 
