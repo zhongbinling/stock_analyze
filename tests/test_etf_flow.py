@@ -126,11 +126,40 @@ def test_backfill_chunks_pace_idempotent(env, monkeypatch):
     con = sqlite3.connect(str(env))
     assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
     con.close()
-    n2 = EF.backfill("20240101", env, pace_s=6)       # 幂等: upsert不重复
+    n2 = EF.backfill("20240101", env, pace_s=6)       # 重跑: 历史年块已完整 → 跳过
     con = sqlite3.connect(str(env))
     assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
     con.close()
-    assert n2 == n
+    # D1-33: 已完整的历史年块不再调用 — 2024/2025各年7只行数与参照一致 → 跳过;
+    # 参照ETF自身历史年行数不足200(夹具各年仅1行)照常重拉; 当年块全部重拉
+    cur_year = [c for c in chunks if c[0][:4] == str(today.year)]
+    past = [c for c in chunks if c[0][:4] < str(today.year)]
+    assert len(cur_year) == 1 and n2 == 3 + 7          # 参照3块 + 其余7只各1块
+    assert calls[len(calls) - 10:] == (
+        [(EF._REF_CODE, *c) for c in chunks]
+        + [(c, *cur_year[0]) for c in EF.ETF_CODES if c != EF._REF_CODE])
+    assert not any(c != EF._REF_CODE and c0 in past for c, c0, _e in calls[len(calls) - 10:])
+
+
+def test_backfill_incomplete_year_not_skipped(env, monkeypatch):
+    """D1-33: 行数与参照不一致的年份(上市晚/源端缺日)不算完整, 重跑照常重拉"""
+    import fetch_etf_flow as EF
+    con = EF.ensure_db(env)
+    for code in EF.ETF_CODES:
+        con.executemany("INSERT INTO etf_share VALUES(?,?,1)",
+                        [(code, f"2024{m:02d}15", ) for m in range(1, 13)])
+    con.execute("INSERT INTO etf_share VALUES('159915.SZ','20240716',1)")   # 多1行
+    con.executemany("INSERT INTO etf_share VALUES('510050.SH', ?, 1)",      # 参照: 整年243行
+                    [(f"2023{m:02d}{d:02d}",) for m in range(1, 13) for d in range(1, 21)] + [
+                        (f"202312{d:02d}",) for d in range(21, 25)])
+    con.commit(); con.close()
+    done = EF._complete_years(sqlite3.connect(str(env)), "2099")
+    assert ("510300.SH", "2024") in done                # 12行 = 参照12行
+    assert ("159915.SZ", "2024") not in done            # 13行 ≠ 参照
+    assert ("510050.SH", "2024") not in done          # 参照: 12行<200 → 不算完整
+    assert ("510050.SH", "2023") in done              # 参照: 243行 → 完整
+    assert ("510300.SH", "2023") not in done          # 2023年该ETF无行
+    assert EF._complete_years(sqlite3.connect(str(env)), "2023") == set()  # 当年及以后不判
 
 
 def test_backfill_rate_limit_tolerant(env, monkeypatch):

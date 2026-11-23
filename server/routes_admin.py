@@ -682,25 +682,43 @@ def api_ai_analyze_all():
     except (TypeError, ValueError):
         limit = 1000
 
-    def fn(append):
+    state = {"local": 0}                # 跨片累计(让道续排后仍保持"本次上限"口径)
+    target = f"AI分析(≤{limit}条)"
+
+    def run_slice(append, budget):
+        """D1-33: 分片执行, 队列有等待任务时让道。实测单条本地分析约19s,
+        1000条连续占住串行队列5.3小时(11-18: 07:00晨报排到11:10才生成)。
+        每批(≤20条, 约6分钟)后检查: 队列里有别的任务在等 → 把剩余额度
+        重新排到队尾, 让数据更新/生成/备份先走。"""
         import analyze_news as AN
-        append(f"分析开始(最新优先, 本次≤{limit}条; 本地→云端)")
-        total_local = 0
-        while total_local < limit:
-            r = AN.analyze_batch(min(20, limit - total_local))
+        done = 0
+        while done < budget:
+            r = AN.analyze_batch(min(20, budget - done))
             n = r.get("analyzed", 0)
-            total_local += n
-            append(f"  本地: +{n} (累计{total_local}, 待{r.get('pending', 0)})")
+            done += n
+            state["local"] += n
+            append(f"  本地: +{n} (累计{state['local']}, 待{r.get('pending', 0)})")
             if n == 0:                        # 无待分析/已暂停/连续失败
                 break
-        if total_local >= limit:
+            rest = budget - done
+            if rest > 0 and J.queue_size() > 0:
+                J.enqueue("analyze_all", lambda a, _rest=rest: run_slice(a, _rest),
+                          target=target, trigger="manual", _force=True)
+                append(f"  ⇢ 让道: 队列有 {J.queue_size()} 项等待, 剩余≤{rest}条"
+                       f"已排到队尾(先执行等待中的任务)")
+                return 0
+        if state["local"] >= limit:
             append(f"  ⚠ 达本次上限{limit}条, 剩余待下轮再点")
         r2 = AN.analyze_cloud_batch(20)
         total_cloud = r2.get("analyzed", 0)
         append(f"  云端批次: +{total_cloud}")
-        append(f"分析结束: 本次本地{total_local} 云端{total_cloud}")
+        append(f"分析结束: 本次本地{state['local']} 云端{total_cloud}")
         return 0
-    ok, msg = J.enqueue("analyze_all", fn, target=f"AI分析(≤{limit}条)", trigger="manual")
+
+    def fn(append):
+        append(f"分析开始(最新优先, 本次≤{limit}条; 本地→云端)")
+        return run_slice(append, limit)
+    ok, msg = J.enqueue("analyze_all", fn, target=target, trigger="manual")
     return jsonify({"ok": ok, "msg": msg + f" — 已入队(最新优先≤{limit}条)"})
 
 

@@ -62,8 +62,8 @@ def test_chain_wires_bars():
 
 def test_source_lag_config():
     from server import market
-    assert market._SOURCE_LAG == {"margin": 1}
     assert market._DELAY_LAG is market._SOURCE_LAG        # 兼容别名同源
+    assert market._SOURCE_LAG == {"margin": 1, "etf_flow": 1, "sector_pool": 1}
 
 
 # ── 24d: 资产表落后提示 ──
@@ -129,5 +129,7 @@ def test_repair_diagnoses_remaining(server_app, monkeypatch):
     with server_app["app"].app_context():
         assert jobs.task_repair(7)(lines.append) == 0
     tail = "\n".join(lines)
-    assert "定向回补零写入" in tail and "SW官方" in tail
+    # D1-33: 措辞改准 — 本任务只跑更新链, 不再对未回补过的缺口断言"定向回补零写入"
+    assert "点[补全]做定向回补" in tail and "SW官方" in tail
+    assert "定向回补零写入" not in tail
     assert "无定向通道" in tail

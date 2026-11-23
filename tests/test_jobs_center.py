@@ -147,9 +147,12 @@ def test_ui_wiring():
 
 
 def test_sched_registration_includes_new_ids():
-    """清理列表含stock_*且新增sync_crons不受影响"""
+    """stock_*定时任务参与重挂清理(原为集中清理列表, D1-33起由reg()逐个
+    先移除再登记)且新增sync_crons不受影响; 登记与不重复的行为断言见
+    tests/test_d33_data_mgmt.py"""
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
-    assert '"stock_daily", "stock_weekly"' in src
+    assert 'reg("stock_daily"' in src and 'reg("stock_weekly"' in src
+    assert "_scheduler.remove_job(jid)" in src
     assert "def queue_snapshot" in src and "def heartbeat" in src
     assert "def scheduled_jobs_view" in src and "def set_paused" in src
 

@@ -94,9 +94,9 @@ def test_jobs_scheduled_and_task(server_app, monkeypatch):
     from server import jobs as J
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
     assert "task_stock_daily" in src and "task_stock_full" in src
-    assert 'CronTrigger(hour=19, minute=30)' in src                # 日频
+    assert 'reg("stock_daily", True, dict(hour=19, minute=30)' in src    # 日频
     assert 'hour=19, minute=35, day_of_week="fri"' in src          # 周五季频
-    assert '"stock_daily", "stock_weekly"' in src                  # 清理列表
+    assert 'reg("stock_weekly"' in src      # 与日频各自登记; reg()重挂前移除同名任务
     # 任务函数可执行(run_nightly打桩 — 原版对真库池发起真实tushare调用)
     import fetch_stock as FS
     stubbed = []

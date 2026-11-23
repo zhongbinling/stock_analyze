@@ -181,6 +181,31 @@ def test_backfill_fflow_dc_per_code(dc_env, monkeypatch):
     c.close()
 
 
+def test_backfill_fflow_dc_recent_start_uses_by_date(dc_env, monkeypatch):
+    """D1-33: 起点在近45天内走按日通道 — 每交易日1次调用拿全板块。
+    按代码通道与窗口无关(逐板块拉全史): 体检"修复全部缺口"对近端1天缺口
+    也耗496次调用≈510s(实测占整批定向补全耗时74%)"""
+    FD = dc_env["FD"]
+    c = sqlite3.connect(str(dc_env["path"]))
+    for i in range(3):                                 # 10-16 健康(3/3)
+        c.execute("INSERT INTO sector_fundflow VALUES(?, '2026-10-16', 1.0)",
+                  (f"BK{i:04d}",))
+    c.commit()
+    c.close()
+    calls = []
+    _fix_today(monkeypatch)                            # today=2026-10-26
+    monkeypatch.setattr(FD.T, "has_token", lambda: True)
+    monkeypatch.setattr(FD.T, "call", lambda api, fields="", **kw:
+                        calls.append(dict(kw)) or _mf_df())
+    assert FD.backfill_fflow_dc("20261016") is True     # 10天前 → 按日通道
+    assert calls and all("trade_date" in k and "ts_code" not in k for k in calls)
+    assert [k["trade_date"] for k in calls] == ["20261019", "20261020"]   # 只补thin日
+    c = sqlite3.connect(str(dc_env["path"]))
+    assert c.execute("SELECT main_net FROM sector_fundflow "
+                     "WHERE code='BK0001' AND date='2026-10-20'").fetchone() == (-2.5e8,)
+    c.close()
+
+
 def test_refresh_fundflow_routes_dc(dc_env, monkeypatch):
     """G2: refresh_fundflow 走 dc 主源不触东财; dc失败回退; dc每日轻检查
     (thin即新鲜度), 5天跳过仅剩东财分支"""

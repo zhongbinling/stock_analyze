@@ -57,9 +57,32 @@ def refresh(path=None, lookback: int = 30) -> int:
     return total
 
 
+_REF_CODE = ETF_CODES[0]          # 510050.SH: 最早上市, 作各年"应有行数"的参照
+_FULL_YEAR_ROWS = 200             # 完整历史年份的行数下限(一年约243个交易日)
+
+
+def _complete_years(con, this_year: str) -> set:
+    """已完整的(代码, 年份)集合。当年不判(每次都要重拉取新数据)。
+    - 非参照ETF: 该年行数与参照ETF同年行数一致(上市当年/源端缺日的年份
+      行数不等 → 不算完整, 每次照常重拉)
+    - 参照ETF自身: 该年行数≥_FULL_YEAR_ROWS(无更早的参照可比)
+    D1-33: 回补重跑原样重拉全部年块(2006起 = 8只×21年×6s控频≈18分钟
+    队列占用), 而历史年份数据不会变化。"""
+    cnt = {(c, y): n for c, y, n in con.execute(
+        "SELECT code, substr(trade_date,1,4), COUNT(*) FROM etf_share GROUP BY 1, 2")}
+    out = set()
+    for (c, y), n in cnt.items():
+        if y >= this_year:
+            continue
+        if n >= _FULL_YEAR_ROWS if c == _REF_CODE else cnt.get((_REF_CODE, y)) == n:
+            out.add((c, y))
+    return out
+
+
 def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
     """历史回补: fund_share按年分块×8只ETF(接口支持全史, 实测2018整年247行)。
-    逐年窗口+间隔控频(限频20/min层内); upsert幂等 — 中断/限频失败重跑只补缺块。
+    逐年窗口+间隔控频(限频20/min层内); upsert幂等 — 中断/限频失败重跑只补缺块;
+    已完整的历史年块跳过不调用(_complete_years)。
     价格侧etf_daily已有2006起全史, 份额补齐即得净流入长史。"""
     import datetime as dt
     if not T.has_token():
@@ -73,9 +96,13 @@ def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
         chunks.append((lo.strftime("%Y%m%d"), hi.strftime("%Y%m%d")))
         lo = dt.date(lo.year + 1, 1, 1)
     con = ensure_db(path)
-    total, fails = 0, 0
+    done = _complete_years(con, str(today.year))
+    total, fails, skipped = 0, 0, 0
     for code in ETF_CODES:
         for s, e in chunks:
+            if (code, s[:4]) in done:
+                skipped += 1
+                continue
             try:
                 df = T.call("fund_share", "ts_code,trade_date,fd_share",
                             ts_code=code, start_date=s, end_date=e)
@@ -93,7 +120,8 @@ def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
                 print(f"  ✗ {code} {s}~{e}: {str(ex)[:60]}")
             time.sleep(pace_s)
     con.close()
-    print(f"[etf_flow] 回补: +{total}行({fails}块失败, 重跑可续)")
+    print(f"[etf_flow] 回补: +{total}行({fails}块失败, 重跑可续"
+          + (f"; 跳过{skipped}个已完整年块" if skipped else "") + ")")
     return total
 
 

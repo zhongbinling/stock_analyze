@@ -296,64 +296,111 @@ def fetch_calendar():
         return False
 
 
+def _recent_open_days(conn, n: int = 5) -> list:
+    """截至最新指数日的最近N个交易日(ISO, 新→旧); 无日历时退化为仅最新指数日"""
+    last = conn.execute("SELECT MAX(date) FROM index_daily").fetchone()[0]
+    cap = ymd(last) if last else time.strftime("%Y%m%d")
+    try:
+        rows = conn.execute(
+            "SELECT cal_date FROM calendar WHERE is_open=1 AND cal_date<=? "
+            "ORDER BY cal_date DESC LIMIT ?", (cap, int(n))).fetchall()
+        return [norm_date(r[0]) for r in rows]
+    except sqlite3.Error:
+        return [last] if last else []
+
+
 def fetch_tushare_mood_today():
-    """tushare 当日涨停结构 upsert(主链内): 统一 mood_raw/板块聚合口径为 tushare,
-    与 THS 互为校验; 失败不影响 THS 主源"""
+    """tushare 涨停结构(主链内): 回看最近交易日, 补上尚无板块聚合的日子。
+
+    D1-33: 原按墙上时钟"今天"查询 — tushare 当日名单盘后晚间才发布(16:35
+    定时链恒查空), 且午夜后/周末运行查的是未开盘日 → 定时路径从未写入,
+    sector_pool_stat 每个交易日都成缺口, 只能靠手动回补。现回看最近5个
+    交易日(新→旧), 源端未出数的日子留待下次链路。
+    口径与 backfill_tushare 一致(不覆盖已有THS段): THS 已提供涨停结构的
+    日子只补 tushare 专有列(炸板家数)与板块聚合。原"统一为tushare"仅当
+    链路恰在晚间运行才发生(近16个交易日仅3天被覆盖) — 同一序列的处理
+    方式随运行时刻而变且历史分被回改(实测两口径同日差异很小: 116/118)。
+    失败不影响 THS 主源。"""
+    conn = None
     try:
         import tushare_api
         if not tushare_api.has_token():
             return
         import pandas as pd
-        d = time.strftime("%Y%m%d")
-        df = tushare_api.limit_list_d(d)
-        if df.empty:
-            return                       # 盘前/非交易日
         conn = connect()
-        iso = time.strftime("%Y-%m-%d")
-        prev = conn.execute(
-            "SELECT zt_count FROM mood_raw WHERE date<? AND zt_count IS NOT NULL "
-            "ORDER BY date DESC LIMIT 1", (iso,)).fetchone()
-        u = df[df["limit"] == "U"]
-        dn = df[df["limit"] == "D"]
-        z = df[df["limit"] == "Z"]
-        lb = pd.to_numeric(u.get("limit_times"), errors="coerce")
-        lb2 = int((lb >= 2).sum()) if len(lb) else 0
-        zb = len(z)
-        zt = len(u)
-        upsert_mood(conn, iso, zt_count=zt, dt_count=len(dn), zb_count=zb,
-                    zb_rate=round(zb / (zt + zb) * 100, 1) if (zt + zb) else 0.0,
-                    lb_max=int(lb.max()) if lb.notna().any() else 0, lb2_count=lb2,
-                    jl_rate=round(lb2 / prev[0] * 100, 1) if prev and prev[0] else None,
-                    yzt_count=prev[0] if prev else None)
-        # 板块聚合(tushare industry)
-        ind = {}
-        def b(n):
-            return ind.setdefault(n, {"zt": 0, "dt": 0, "zb": 0, "lb_max": 0, "lb2": 0})
-        for _, r in u.iterrows():
-            n = r.get("industry")
-            if isinstance(n, str) and n:
-                lv = r.get("limit_times")
-                lv = float(lv) if lv == lv else 0
-                bb = b(n)
-                bb["zt"] += 1
-                bb["lb_max"] = max(bb["lb_max"], int(lv))
-                if lv >= 2:
-                    bb["lb2"] += 1
-        for _, r in dn.iterrows():
-            n = r.get("industry")
-            if isinstance(n, str) and n:
-                b(n)["dt"] += 1
-        for _, r in z.iterrows():
-            n = r.get("industry")
-            if isinstance(n, str) and n:
-                b(n)["zb"] += 1
+        days = _recent_open_days(conn, 5)
+        if not days:
+            return
+        have_pool = {r[0] for r in conn.execute(
+            "SELECT DISTINCT date FROM sector_pool_stat WHERE date>=?",
+            (days[-1],)).fetchall()}
+        todo = [d for d in days if d not in have_pool]
+        if not todo:
+            return
         import sectors as _sec
-        _sec._write_pool_agg(conn, iso, ind)
+        empty = 0
+        for iso in todo:                            # 新→旧
+            df = tushare_api.limit_list_d(ymd(iso))
+            if df is None or df.empty:
+                empty += 1
+                print(f"[ts-mood] {iso}: tushare名单未出数(盘后晚间发布, 留待下次更新链)")
+                if empty >= 2:
+                    break
+                continue
+            empty = 0
+            u = df[df["limit"] == "U"]
+            dn = df[df["limit"] == "D"]
+            z = df[df["limit"] == "Z"]
+            lb = pd.to_numeric(u.get("limit_times"), errors="coerce")
+            lb2 = int((lb >= 2).sum()) if len(lb) else 0
+            zt, zb = len(u), len(z)
+            ths = conn.execute("SELECT zt_count FROM mood_raw WHERE date=?",
+                               (iso,)).fetchone()
+            if ths and ths[0] is not None:
+                upsert_mood(conn, iso, zb_count=zb)      # THS已有 → 只补专有列
+            else:
+                prev = conn.execute(
+                    "SELECT zt_count FROM mood_raw WHERE date<? AND zt_count IS NOT NULL "
+                    "ORDER BY date DESC LIMIT 1", (iso,)).fetchone()
+                upsert_mood(conn, iso, zt_count=zt, dt_count=len(dn), zb_count=zb,
+                            zb_rate=round(zb / (zt + zb) * 100, 1) if (zt + zb) else 0.0,
+                            lb_max=int(lb.max()) if lb.notna().any() else 0,
+                            lb2_count=lb2,
+                            jl_rate=round(lb2 / prev[0] * 100, 1) if prev and prev[0] else None,
+                            yzt_count=prev[0] if prev else None)
+            # 板块聚合(tushare industry)
+            ind = {}
+
+            def b(n):
+                return ind.setdefault(n, {"zt": 0, "dt": 0, "zb": 0, "lb_max": 0, "lb2": 0})
+            for _, r in u.iterrows():
+                n = r.get("industry")
+                if isinstance(n, str) and n:
+                    lv = r.get("limit_times")
+                    lv = float(lv) if lv == lv else 0
+                    bb = b(n)
+                    bb["zt"] += 1
+                    bb["lb_max"] = max(bb["lb_max"], int(lv))
+                    if lv >= 2:
+                        bb["lb2"] += 1
+            for _, r in dn.iterrows():
+                n = r.get("industry")
+                if isinstance(n, str) and n:
+                    b(n)["dt"] += 1
+            for _, r in z.iterrows():
+                n = r.get("industry")
+                if isinstance(n, str) and n:
+                    b(n)["zb"] += 1
+            _sec._write_pool_agg(conn, iso, ind)
+            conn.commit()
+            print(f"[ts-mood] {iso} tushare口径: zt={zt} dt={len(dn)} zb={zb} 行业{len(ind)}")
         conn.commit()
         _sec.remap_pending(conn)
-        print(f"[ts-mood] tushare当日口径: zt={zt} dt={len(dn)} zb={zb} 行业{len(ind)}")
     except Exception as e:  # noqa: BLE001
         print(f"[ts-mood] 失败(不影响主流程): {type(e).__name__}: {e}")
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _shift_ymd(iso: str, days: int) -> str:

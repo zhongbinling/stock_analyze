@@ -278,11 +278,17 @@ def refresh_fflow_dc(conn=None, win_days: int = 10) -> bool:
     return fails == 0
 
 
+FFLOW_BY_DATE_WINDOW = 45      # 起点在近N个自然日内 → 回补走按日通道
+
+
 def backfill_fflow_dc(start="20230901") -> bool:
     """G2 历史回补: 按代码查全历史(2023-09起, 源最早), 每代码一批守卫写入(upsert幂等)。
 
     按代码一次调用拿全史(日更见refresh_fflow_dc), EM缺的2023-09~2026-04段
-    与残缺日(28/508期)一并补齐。"""
+    与残缺日(28/508期)一并补齐。
+    D1-33: 起点在近45天内改走按日通道(每交易日1次调用拿全板块, 同日更口径)
+    — 按代码通道与窗口无关, 逐板块拉全史: 体检"修复全部缺口"对近端1天
+    缺口也耗496次调用≈510s(实测占整批定向补全耗时74%)。"""
     if not T.has_token():
         print("[fflow-dc] 无 tushare token, 跳过")
         return True
@@ -290,6 +296,18 @@ def backfill_fflow_dc(start="20230901") -> bool:
     conn = connect()
     codes = _enabled_codes(conn)
     iso = norm_date(start)
+    from datetime import date as _d
+    try:
+        days_back = (_d.today() - _d.fromisoformat(iso)).days
+    except ValueError:
+        days_back = 10 ** 6
+    if days_back <= FFLOW_BY_DATE_WINDOW:
+        print(f"[fflow-dc] 起点在近{days_back}天内: 走按日通道, 自 {iso} 起")
+        ok = refresh_fflow_dc(conn, win_days=max(days_back, 0))
+        conn.close()
+        print(f"[fflow-dc] 结束 {time.time()-t0:.0f}s"
+              + ("" if ok else ", 有失败(重跑自愈)"))
+        return ok
     print(f"[fflow-dc] 按代码回补 {len(codes)} 板块, 目标自 {iso} 起")
     if not codes:
         conn.close()

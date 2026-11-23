@@ -263,7 +263,13 @@ def _today() -> str:
 # D1-19 P1 / D1-24c: 源端发布滞后配置(单位=交易日lag, 从窗口末端数)。
 # 体检分类与修复跳过共用; 新数据集源滞后只改这里。
 # 实测: margin D日数据 D+2 早间链才可得(仅豁免末端lag, 更早仍算真缺)。
-_SOURCE_LAG = {"margin": 1}
+# D1-33: etf_flow/sector_pool 同属末端滞后 — 此前按真缺口处理:
+# 体检常年红标, 修复链跑完仍剩缺口并误诊"定向回补零写入—疑源端接口变化"
+# (11-24 00:43 定时修复日志实测)。
+#   etf_flow: fund_share 份额 D+1 才发布(实测 D+1 00:42 仍未出数)
+#   sector_pool: tushare 涨停名单盘后晚间才发布, 16:35 定时链恒查空,
+#                由次日的更新链回看补上(见 fetch_tushare_mood_today)
+_SOURCE_LAG = {"margin": 1, "etf_flow": 1, "sector_pool": 1}
 # D1-24b/c: 资产code→定向补全数据集(镜像data.html BF_ROWS的asset映射;
 # 24e已立项: SCAN_DS应迁移服务端单点维护, 此为过渡)
 _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",

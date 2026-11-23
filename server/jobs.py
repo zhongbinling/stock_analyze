@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 
 import yaml
@@ -191,16 +191,19 @@ HEARTBEAT_FILE = ROOT / "data" / "task_heartbeat.json"
 _HEARTBEAT_TTL = 900                           # 心跳有效期(秒): 超时视为进程已死
 
 
-def enqueue(kind, fn, target="", trigger="manual"):
+def enqueue(kind, fn, target="", trigger="manual", _force=False):
     """入队; 返回 (ok, msg) — 登记簿同步记录(kind/target/序号/时间)
     D1-30: 同(kind,target)去重 — queued/running态的重复入队直接拒。
     曾致冲突: 手动补全与定时链叠加时同任务连跑两遍(全史回补类白烧
-    一轮限频调用); 完成态(done)不拦 — 失败重跑/定时重入不受影响。"""
-    for e in _queue_log:
-        if (e.get("kind") == kind and e.get("target") == target
-                and e.get("state") in ("queued", "running")):
-            st = "运行" if e.get("state") == "running" else "排队"
-            return False, f"同任务正在{st}中, 已忽略重复入队"
+    一轮限频调用); 完成态(done)不拦 — 失败重跑/定时重入不受影响。
+    _force: 跳过去重 — 仅供任务自身的"让道续排"(运行中给自己排后续片,
+    此时自己的登记簿条目必为running, 见 /api/ai/analyze-all)。"""
+    if not _force:
+        for e in _queue_log:
+            if (e.get("kind") == kind and e.get("target") == target
+                    and e.get("state") in ("queued", "running")):
+                st = "运行" if e.get("state") == "running" else "排队"
+                return False, f"同任务正在{st}中, 已忽略重复入队"
     if _q.qsize() >= QUEUE_CAP:
         return False, "任务队列已满(20), 请稍后再试"
     seq = next(_q_seq)
@@ -489,8 +492,12 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
             for a in after["assets"]:
                 if not a["missing"]:
                     continue
-                reason = ("源端滞后自愈(末端lag白名单)" if a.get("delay")
-                          else "定向回补零写入 — 疑源端口径/接口变化, 请查该数据集最近补全任务日志"
+                # D1-33: 只对"真缺口"归因(原先有延迟项就一律说"源端滞后",
+                # 掩盖更早的真缺); 本任务只跑更新链不做定向回补 — 原措辞
+                # "定向回补零写入—疑源端接口变化"对未回补过的缺口是误诊
+                # (11-24 00:43 日志: 实为 T+1 源未发布)
+                reason = ("更新链未补上 — 可在数据管理页对该数据集点[补全]做定向回补; "
+                          "已回补仍缺再查源端接口与补全任务日志"
                           if a.get("has_path")
                           else "无定向通道(更新链已覆盖, 属链路内自愈范畴)")
                 append(f"[repair] ⚠ {a['name']}: 剩{len(a['missing'])}日"
@@ -856,64 +863,166 @@ def _safe_sync(app):
         print(f"[scheduler] 同步失败: {e}")
 
 
-def _sync_cron_jobs(app):
+# -------------------------------------------- D1-33: 定时任务错过补跑
+# 实测(data/service.log 10-18~11-24): 系统休眠把进程挂起数小时, APScheduler
+# 对超时触发(misfire_grace_time默认1s)直接跳过且不补 — 16:35定时更新错过
+# 10次 / 18:00生成9次 / 22:35日备4次 / 19:30个股链3次, 数据链路连续多日
+# 静默停摆。重启同样丢失(队列在内存, cron重挂后只看下一次触发)。
+# 机制: 启动与每5分钟同步时, 对每个定时任务比对"最近一次应触发时刻"与
+# 任务表 — 自该时刻起该类任务没有有效执行(被服务重启打断的不算)即为错过,
+# 立即补跑一次。以任务表为唯一依据, 无额外状态: 排队中丢失/执行中被打断
+# 的任务在下次同步/启动时自然重新补上; 准点触发与补跑重复入队由队列去重兜底。
+_DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+
+
+def _dow_set(day_of_week) -> set:
+    """CronTrigger 的 day_of_week 字面量('mon-fri'/'fri'/None=每天) → weekday集合(周一=0)"""
+    if not day_of_week:
+        return set(range(7))
+    out = set()
+    for part in str(day_of_week).split(","):
+        lo, _, hi = (x.strip() for x in part.partition("-"))
+        a, b = _DOW[lo], _DOW[hi or lo]
+        out.update(range(a, b + 1) if a <= b else [*range(a, 7), *range(0, b + 1)])
+    return out
+
+
+def _trigger_at(spec: dict, day) -> datetime:
+    return datetime.combine(day, dtime(spec["hour"], spec["minute"]))
+
+
+def _last_trigger(spec: dict, now: datetime):
+    """spec({hour,minute[,day_of_week]}) 在 now 之前(含)的最近一次触发时刻"""
+    allowed = _dow_set(spec.get("day_of_week"))
+    for back in range(8):
+        day = (now - timedelta(days=back)).date()
+        if day.weekday() in allowed:
+            t = _trigger_at(spec, day)
+            if t <= now:
+                return t
+    return None
+
+
+def _next_trigger(spec: dict, now: datetime):
+    """严格晚于 now 的下一次触发时刻"""
+    allowed = _dow_set(spec.get("day_of_week"))
+    for fwd in range(8):
+        day = (now + timedelta(days=fwd)).date()
+        if day.weekday() in allowed:
+            t = _trigger_at(spec, day)
+            if t > now:
+                return t
+    return None
+
+
+def _handled_since(kinds, since, target=None, target_not=None) -> bool:
+    """自 since 起该类任务是否已有有效执行记录(运行中/已结束)。
+    被服务重启打断的(fail + 中断标记)不算 — 未跑完, 需重新补跑。
+    target/target_not: 同kind下按target区分(如 generate 含视图与简报两类)。"""
+    from sqlalchemy import or_
+    from server.models import Job
+    q = Job.query.filter(Job.kind.in_(kinds), Job.started_at >= since)
+    if target:
+        q = q.filter(Job.target == target)
+    if target_not:
+        q = q.filter(or_(Job.target.is_(None), Job.target != target_not))
+    rows = q.with_entities(Job.status, Job.log).all()
+    return any(st == "running" or not (st == "fail" and log and "服务重启, 任务中断" in log)
+               for st, log in rows)
+
+
+def _waiting_in_queue(kinds, target=None, target_not=None) -> bool:
+    """该类任务是否已排队/运行中(内存登记簿) — 准点触发后尚未起跑时任务表
+    还没有记录, 不算错过(否则每5分钟误报一次"补跑")。"""
+    for e in _queue_log:
+        if (e.get("state") in ("queued", "running") and e.get("kind") in kinds
+                and (target is None or e.get("target") == target)
+                and (target_not is None or e.get("target") != target_not)):
+            return True
+    return False
+
+
+_caught_up = {}                     # jid → 已补跑过的触发时刻(进程内; 重启后由任务表重判)
+
+
+def _sync_cron_jobs(app, now: datetime = None):
+    """同步定时任务(启动/策略变更/每5分钟): 重挂全部cron + 错过补跑判定。"""
     from apscheduler.triggers.cron import CronTrigger
+    now = now or datetime.now()
     au = get_setting("auto_update") == "1"
     ag = get_setting("auto_generate") == "1"
+    bk = get_setting("backup_enabled") == "1"
     uh, um = _parse_hhmm(get_setting("update_cron"), 16, 35)
     gh, gm = _parse_hhmm(get_setting("generate_cron"), 18, 0)
+    bh, bm = _parse_hhmm(get_setting("backup_daily_cron"), 18, 35)
+    wd, wh, wm = _parse_weekly(get_setting("backup_weekly_cron"))
+    WF = "mon-fri"
+    BRIEF = "数据简报"
 
-    for jid in ("daily_update", "daily_generate", "daily_backup", "weekly_backup",
-                "briefing_evening", "briefing_morning",
-                "stock_daily", "stock_weekly"):
+    def reg(jid, on, spec, fn, kinds, target=None, target_not=None,
+            max_late_h=None, skip_if_next_today=False):
         if _scheduler.get_job(jid):
             _scheduler.remove_job(jid)
-    if au:
+        if not on:
+            return
+        _scheduler.add_job(fn, CronTrigger(**spec), id=jid)
+        T = _last_trigger(spec, now)
+        if (T is None or _caught_up.get(jid) == T
+                or _handled_since(kinds, T, target, target_not)
+                or _waiting_in_queue(kinds, target, target_not)):
+            return
+        if max_late_h is not None and (now - T).total_seconds() > max_late_h * 3600:
+            return                        # 过期太久(如晨报): 放弃, 等下一触发
+        nxt = _next_trigger(spec, now)
+        # 当天稍后的定时运行会重新抓取并覆盖全部近端数据 → 不必现在补
+        # (更新链盘中补跑还会把当日盘中快照写成"已有日", 挡住盘后的正式抓取)
+        if skip_if_next_today and nxt is not None and nxt.date() == now.date():
+            return
+        print(f"[scheduler] {jid}: 触发时刻 {T:%m-%d %H:%M} 被错过(休眠/停机), 补跑一次")
+        _caught_up[jid] = T                     # 同一触发时刻只补一次
+        fn()
+
+    # 登记顺序 = 多项同时错过时的入队顺序: 先更新数据 → 再生成 → 最后备份
+    reg("daily_update", au, dict(hour=uh, minute=um, day_of_week=WF),
         # D1-10 A2: 定时走缺口修复链(近1周扫描, 幂等单趟, 无缺口秒完成);
         # 手动[增量更新]按钮仍走 task_update(当天快速链)
-        _scheduler.add_job(lambda: enqueue("update", task_repair(7, "schedule"),
-                                           trigger="schedule"),
-                           CronTrigger(hour=uh, minute=um, day_of_week="mon-fri"),
-                           id="daily_update")
-    if ag:
-        _scheduler.add_job(_make_sched_generate(app),
-                           CronTrigger(hour=gh, minute=gm, day_of_week="mon-fri"),
-                           id="daily_generate")
-
+        lambda: enqueue("update", task_repair(7, "schedule"), trigger="schedule"),
+        kinds=("update", "repair"), skip_if_next_today=True)
+    reg("stock_daily", True, dict(hour=19, minute=30),
+        # 避雷针A5: 自选池夜间链(独立调度, 不挂repair长链 — 失败不拖累主链)
+        lambda: enqueue("stock_daily", task_stock_daily(False),
+                        target="个股数据·日频", trigger="schedule"),
+        kinds=("stock_daily",), target="个股数据·日频", skip_if_next_today=True)
+    reg("stock_weekly", True, dict(hour=19, minute=35, day_of_week="fri"),
+        lambda: enqueue("stock_daily", task_stock_daily(True),
+                        target="个股数据·日频+季频", trigger="schedule"),
+        kinds=("stock_daily",), target="个股数据·日频+季频")
+    # 生成只读库、无盘中污染风险: 错过即补(数据已更新而视图未刷新时, 不必
+    # 等到下一个18:00 — 11-24 00:43 数据已补而产线视图仍停在11-20实测)
+    reg("daily_generate", ag, dict(hour=gh, minute=gm, day_of_week=WF),
+        _make_sched_generate(app),
+        kinds=("generate",), target_not=BRIEF)
     # D1-29: 简报双时刻(晚间 + 次日07:00) — 受auto_generate开关
     # D1-31: 晚间19:00→22:40 — 实测当晚AI事件分析~21:30完成(最新事件
     # created_at 21:32), 19:00版永远缺当天事件(用户观感'只展示到前日')
-    if ag:
-        _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
-                                           target="数据简报", trigger="schedule"),
-                           CronTrigger(hour=22, minute=40, day_of_week="mon-fri"),
-                           id="briefing_evening")
-        _scheduler.add_job(lambda: enqueue("generate", task_briefing("schedule"),
-                                           target="数据简报", trigger="schedule"),
-                           CronTrigger(hour=7, minute=0),
-                           id="briefing_morning")
-
-    # 避雷针A5: 自选池夜间链(独立调度, 不挂repair长链 — 失败不拖累主链)
-    _scheduler.add_job(lambda: enqueue("stock_daily", task_stock_daily(False),
-                                       target="个股数据·日频", trigger="schedule"),
-                       CronTrigger(hour=19, minute=30),
-                       id="stock_daily")
-    _scheduler.add_job(lambda: enqueue("stock_daily", task_stock_daily(True),
-                                       target="个股数据·日频+季频", trigger="schedule"),
-                       CronTrigger(hour=19, minute=35, day_of_week="fri"),
-                       id="stock_weekly")
-
-    # B1: 日备/周备(策略热更新同机制)
-    if get_setting("backup_enabled") == "1":
-        bh, bm = _parse_hhmm(get_setting("backup_daily_cron"), 18, 35)
-        _scheduler.add_job(lambda: enqueue("backup", task_backup("daily", "schedule"),
-                                           target="daily", trigger="schedule"),
-                           CronTrigger(hour=bh, minute=bm), id="daily_backup")
-        dow, wh, wm = _parse_weekly(get_setting("backup_weekly_cron"))
-        _scheduler.add_job(lambda: enqueue("backup", task_backup("weekly", "schedule"),
-                                           target="weekly", trigger="schedule"),
-                           CronTrigger(day_of_week=dow, hour=wh, minute=wm),
-                           id="weekly_backup")
+    # 补跑上限3小时: 过期的晨报/晚报没有阅读价值, 等下一触发即可
+    reg("briefing_evening", ag, dict(hour=22, minute=40, day_of_week=WF),
+        lambda: enqueue("generate", task_briefing("schedule"),
+                        target=BRIEF, trigger="schedule"),
+        kinds=("generate",), target=BRIEF, max_late_h=3)
+    reg("briefing_morning", ag, dict(hour=7, minute=0),
+        lambda: enqueue("generate", task_briefing("schedule"),
+                        target=BRIEF, trigger="schedule"),
+        kinds=("generate",), target=BRIEF, max_late_h=3)
+    # B1: 日备/周备(策略热更新同机制) — 错过即补, 不等下一个定时点
+    reg("daily_backup", bk, dict(hour=bh, minute=bm),
+        lambda: enqueue("backup", task_backup("daily", "schedule"),
+                        target="daily", trigger="schedule"),
+        kinds=("backup",), target="daily")
+    reg("weekly_backup", bk, dict(day_of_week=wd, hour=wh, minute=wm),
+        lambda: enqueue("backup", task_backup("weekly", "schedule"),
+                        target="weekly", trigger="schedule"),
+        kinds=("backup",), target="weekly")
 
 
 _WEEKDAYS = {"mon": "mon", "tue": "tue", "wed": "wed", "thu": "thu", "fri": "fri",

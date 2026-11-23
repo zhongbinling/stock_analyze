@@ -31,8 +31,9 @@ def test_briefing_type_registered():
     src = (REPO / "server" / "jobs.py").read_text(encoding="utf-8")
     assert "task_briefing" in src
     assert "briefing_evening" in src and "briefing_morning" in src
-    assert 'CronTrigger(hour=22, minute=40' in src   # D1-31: 晚间简报晚于当晚AI分析(~21:30)
-    assert 'CronTrigger(hour=7, minute=0' in src
+    # D1-33: 定时任务经 reg() 登记并带错过补跑; 时刻语义不变
+    assert 'reg("briefing_evening", ag, dict(hour=22, minute=40' in src   # D1-31: 晚间简报晚于当晚AI分析(~21:30)
+    assert 'reg("briefing_morning", ag, dict(hour=7, minute=0)' in src
 
 
 def test_manual_trigger_api(server_app):
