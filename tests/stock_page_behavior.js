@@ -360,7 +360,40 @@ test('自选池超过12只: 可展开全部', async () => {
   await drainPending();
 });
 
-// ═══ 6. "刚更新免确认"按股票记 ═══
+// ═══ 6. 扫雷的AI定性没跑成 ═══
+test('扫雷的AI定性未成功: 规则评级照常显示, 状态行提示可重试', async () => {
+  await loadStock('D');
+  const p = take('/api/stock/finance_ai?code=D');
+  reply(p, {ok: true, cached: true, degraded: true, grade: 'C', score: -10,
+            msg: '上次AI定性分析未成功(规则评级有效) — 点[一键扫雷]重试',
+            rules: [{level: '高', rule: '扣非净利同比转负(5.00%→-30.00%)', score: -10}],
+            ai: {summary: 'AI定性分析失败(仅规则引擎结果): ollama down', points: [], advice: ''}});
+  await settle();
+  const st = $id('aiFinState').textContent;
+  assert.ok(st.includes('规则评级有效') && st.includes('AI定性未成功') && st.includes('一键扫雷'),
+            '状态行: ' + st);
+  assert.ok($id('aiFinBody').innerHTML.includes('>C<'), '规则评级应照常显示');
+  await drainPending();
+});
+
+// ═══ 7. 解禁图的数量文案 ═══
+test('解禁图: 小额解禁显示"10.64万股", 不再是"0.0亿股"', () => {
+  G(`renderFloat({n: 2, soon: {n: 1, total_yi: 0.01, total_txt: '10.64万股', max_ratio: 0.0038},
+    data: [{date: '2027-04-26', share_yi: 0.01064, share_txt: '10.64万股', ratio: 0.0038,
+            holder: '张绍卓', future: true, big: false},
+           {date: '2028-06-28', share_yi: 1.01, share_txt: '1.01亿股', ratio: 5.49,
+            holder: '袁永刚', future: true, big: true}]})`);
+  assert.ok($id('flState').textContent.includes('共10.64万股'), $id('flState').textContent);
+  const tip = charts.chartFloat.opt.tooltip.formatter([{dataIndex: 0}]);
+  assert.ok(tip.includes('解禁10.64万股') && !tip.includes('0.0亿股'), tip);
+  assert.ok(charts.chartFloat.opt.tooltip.formatter([{dataIndex: 1}]).includes('解禁1.01亿股'));
+  // 兼容没有 share_txt 的旧接口: 退回亿股数值
+  G(`renderFloat({n: 1, soon: {n: 0}, data: [{date: '2027-04-26', share_yi: 1.5, ratio: 1,
+    holder: 'x', future: true, big: false}]})`);
+  assert.ok(charts.chartFloat.opt.tooltip.formatter([{dataIndex: 0}]).includes('解禁1.5亿股'));
+});
+
+// ═══ 8. "刚更新免确认"按股票记 ═══
 test('数据更新免确认只对更新过的那只股票生效', async () => {
   await loadStock('A');
   click('btnSkUpd');                             // 触发后才发起update_all

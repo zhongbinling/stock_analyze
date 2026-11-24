@@ -3,7 +3,7 @@
 
 ① 日线全史被接口单次6000行上限截断(池内5只老股日线始于2001年前后, 复权
    因子同步被截 → 早期adj_factor为空, 前复权价成原始价)
-② 池日增upsert不更新开高低(盘中快照永不纠正)
+② 池日增upsert不更新开高低(源端修订无法纠正; "盘中快照永不纠正"的说法经核实不成立)
 ③ 增减持方向: change_vol恒为正, 方向在in_de — 全库668条增减持事件全是"增持"
 ④ 事件只增不删(19组同日同股东新旧两行并存); 增持被当风险事件
 ⑤ 股东表户数沿用值被当真实值 → "+0.0% 筹码分散⚠"假预警
@@ -102,17 +102,22 @@ def test_add_stock_full_history_pagination(env, monkeypatch):
     assert nulls == 0                          # 旧版: 两边各截6000行, 末端几百行因子为空
 
 
-def test_add_stock_short_history_single_call(env, monkeypatch):
+def test_add_stock_short_history_confirms_end_with_one_more_page(env, monkeypatch):
+    """首页不足一页: 多请求下一页确认"到头了"(D1-36 — 服务端单次上限可能低于请求值,
+    首页不足6000行不代表没有下一页, 见 test_stock_d36 的低上限用例)"""
     calls = _fake_paged(monkeypatch, 50)
     assert FS.add_stock("600519", env)["ok"]
-    assert calls == [("daily", 6000, 0), ("adj_factor", 6000, 0)]   # 不足一页不翻页
+    assert calls == [("daily", 6000, 0), ("daily", 6000, 50),        # 第二页为空 → 结束
+                     ("adj_factor", 6000, 0), ("adj_factor", 6000, 50)]
 
 
-# ════════════ ② 池日增纠正盘中快照 ════════════
+# ════════════ ② 池日增重拉时纠正开高低 ════════════
 
-def test_refresh_daily_corrects_intraday_snapshot(env, monkeypatch):
-    """盘中点[池日增]写入的当日快照(高价/量是盘中的) → 之后的日增把开高低一并纠正。
-    旧版upsert只更新close/vol/amount/复权因子, 当天高低价永久停在盘中值"""
+def test_refresh_daily_upsert_updates_all_ohlc(env, monkeypatch):
+    """已入库的K线被源端修订(开高低变了) → 日增重拉时全列纠正。旧版upsert只更新
+    close/vol/amount/复权因子, 开高低停在旧值。
+    (注: tushare日线收盘后15~16点才入库, 不存在"盘中快照行" — D1-36核实: 库内
+    144根K线与接口逐根比对无一差异; 本用例最初按那个不成立的前提命名)"""
     _seed_pool(env)
     con = FS._conn(env)
     con.execute("INSERT INTO stock_daily VALUES('600519.SH','2026-11-20',10,10.3,9.9,10.2,120,1300,1.0)")
@@ -369,7 +374,8 @@ def _inp(ratio, hnum, events=None):
     dates = ["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-30"]
     full = {"dates": dates,
             "profit": {"revenue": [300.0] * 4, "n_income": [150.0] * 4, "dedt": [150.0] * 4,
-                       "net_yoy": [8.0, 9.0, -1.5, -0.2], "gpm": [91.0] * 4,
+                       "net_yoy": [8.0, 9.0, -1.5, -0.2], "or_yoy": [5.0, 6.0, 7.0, 8.0],
+                       "gpm": [91.0] * 4,
                        "npm": [50.0] * 4, "roe": [10.0, 20.0, 28.0, 35.0], "dv_ttm": 3.6},
             "cashflow": {"ocf": [120.0] * 4},
             "balance": {"gw_eq": [None] * 4, "dta": [20.0] * 4},
@@ -399,10 +405,12 @@ def test_scan_ai_chip_uses_latest_period_with_trend(monkeypatch):
     assert "股东户数27.8万(近4期 3.2→20.1→24.3→27.8)" in p
     assert "机构持仓合计4.66%" not in p and "股东户数3.2万" not in p
     assert "不要引入其他来源的数字" in p
-    # 财务表(10列, 与表头一致): 空值写'--'(无商誉公司原样写成"None"); 表头只出现一次(原小节标题重复一遍)
+    # 财务表: 空值写'--'(无商誉公司原样写成"None"); 列名只出现一次(原小节标题重复一遍)。
+    # D1-36起表为横排(每行一个指标), 行格式见 tests/test_stock_d36.py
     assert "None" not in p and "nan" not in p
-    assert "  2026-09-30 | 300.0 | 150.0 | -0.2 | 91.0 | 50.0 | 35.0 | 20.0 | 120.0 | --" in p
-    assert p.count("报告期|营收|净利|净利同比") == 1
+    assert "  商誉占净资产(%) | -- | -- | -- | --" in p
+    assert "  净利同比(%) | 8.0 | 9.0 | -1.5 | -0.2" in p
+    assert p.count("报告期 |") == 1
 
 
 def test_build_scan_input_takes_most_recent_events(env):
@@ -501,11 +509,15 @@ def test_scan_cache_versioned_and_failure_retried(env, monkeypatch):
     con.close()
     r3 = SR.scan_stock("600519", env, cached_only=True)
     assert r3["ok"] is False and r3["nocache"] is True  # 旧口径 → 需重新扫雷
-    # AI失败: 降级结果入库但不带版本标记 → 下次不算有效缓存(可重试)
+    # AI失败: 降级结果入库但不带版本标记 → 不算有效缓存(扫雷时重跑AI)
     _stub_ai(monkeypatch, RuntimeError("ollama down"))
     r4 = SR.scan_stock("600519", env, force=True)
-    assert r4["ok"] and "失败" in r4["ai"]["summary"]
-    assert SR.scan_stock("600519", env, cached_only=True)["nocache"] is True
+    assert r4["ok"] and r4["degraded"] is True and "失败" in r4["ai"]["summary"]
+    # 页面只读接口仍返回它(规则评级有效)并标 degraded — D1-36: 原按缓存无效返回nocache,
+    # 刷新后规则评级也不见了
+    r5 = SR.scan_stock("600519", env, cached_only=True)
+    assert r5["ok"] and r5["cached"] and r5["degraded"] and "一键扫雷" in r5["msg"]
+    assert r5["grade"] == r4["grade"] and "_degraded" not in r5["ai"]
     # 规则-only(AI未启用)的缓存有效
     monkeypatch.setattr(AN, "get_ai_config",
                         lambda: {"enabled": False, "model": "", "api_key": "", "base_url": ""})
@@ -578,7 +590,8 @@ def test_full_module_autofetch_when_income_missing(server_app, monkeypatch, tmp_
 # ════════════ ⑩ 风险分级与prompt事件行(重扫实测暴露) ════════════
 
 def test_holdertrade_risk_by_share_ratio(env, monkeypatch):
-    """减持按占总股本比例分级: ≥1%高 / ≥0.1%中 / 更低不算风险事件; 占比未知沿用中。
+    """减持按占流通股本比例分级(占比的基数是流通股本, D1-36核实): ≥1%高 / ≥0.1%中 /
+    更低不算风险事件; 占比未知沿用中。
     生产库占比<0.1%的减持98%是龙虎榜席位成交 — 修正前新口径重扫把紫金矿业占比
     0.01%~0.04%的席位卖出写成"[高]机构11月集中大额减持加速" """
     assert FS._holdertrade_risk(False, 5.0) == "low"             # 增持不属风险
@@ -656,7 +669,7 @@ def test_scan_prompt_event_lines_carry_detail(monkeypatch):
     assert "  - [high]2028-06-28 袁永刚解禁1.01亿股(5.49%)\n" in p     # 解禁占比已在标题里
     assert "  - [mid]2026-01-01 停牌\n" in p                            # 无明细: 原样
     assert "解禁股东" not in p
-    assert "减持看占总股本比例" in p
+    assert "减持看占流通股本比例" in p
 
 
 # ════════════ ⑪ 页面行为 ════════════
@@ -688,7 +701,8 @@ def test_stock_db_isolated_by_default():
     一条INSERT往生产自选池塞了14只假股票): 不带real_stock_db标记的用例, 个股库
     一律指向临时库; 只有显式标记的用例才连生产库(下面那条只比对路径, 不读写)"""
     prod = (FS.BASE / "data" / "stock.db").resolve()
-    assert prod.exists(), "生产个股库路径变了 — 守卫的比较基准需同步"
+    if not prod.exists():
+        pytest.skip("无生产个股库(全新检出)")                   # 守卫的比较基准不存在时无从比对
     assert FS.STOCK_DB.resolve() != prod
     con = FS._conn()                               # 不带path的连接也落不到生产库
     try:
@@ -718,4 +732,8 @@ def test_stock_page_behavior():
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, "页面行为测试失败:\n" + out[-2500:]
-    assert "passed 16" in out, out[-600:]
+    # 用例数取自脚本本身(每条以 test( 开头) — 原写死16, 加用例时容易忘了同步
+    import re
+    js = (REPO / "tests" / "stock_page_behavior.js").read_text(encoding="utf-8")
+    n_cases = len(re.findall(r"^test\(", js, flags=re.M))
+    assert n_cases >= 16 and f"passed {n_cases}" in out, out[-600:]

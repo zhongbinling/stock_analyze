@@ -38,10 +38,20 @@ def _e2e_ready() -> bool:
         import requests
         r = requests.get("http://localhost:11434/api/tags", timeout=3)
         models = [m.get("name") for m in r.json().get("models", [])]
-        con = FS._conn()
-        n = con.execute("SELECT COUNT(*) FROM stock_pool").fetchone()[0]
-        fin = con.execute("SELECT COUNT(*) FROM stock_finance WHERE profit_dedt IS NOT NULL").fetchone()[0]
-        con.close()
+        # 收集阶段执行(早于任何夹具): 直接只读打开生产库 — 不走 FS._conn()
+        # (它会建表并提交, 等于在夹具之外对生产库做写操作)
+        db = FS.STOCK_DB
+        if not db.exists():
+            return False
+        con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=30)
+        try:
+            n = con.execute("SELECT COUNT(*) FROM stock_pool").fetchone()[0]
+            fin = con.execute(
+                "SELECT COUNT(*) FROM stock_finance WHERE profit_dedt IS NOT NULL").fetchone()[0]
+        except sqlite3.Error:
+            return False
+        finally:
+            con.close()
         return n > 0 and fin >= 2 and any(models)
     except Exception:                                         # noqa: BLE001
         return False

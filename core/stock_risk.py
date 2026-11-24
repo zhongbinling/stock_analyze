@@ -57,6 +57,19 @@ def finance_metrics(code: str, n_qua: int = 8, path=None) -> dict:
             "n": len(rows), "rows": rows}
 
 
+# 扣非净利同比两条规则的分级门槛(百分点)。
+# D1-36: 原"连续为负/由增转负"一律按高危扣10分 — 茅台扣非净利同比-1.95%、-0.25%
+# (持平级别)因此被判C级。改为按降幅分级, 规则名称与扣分制不变:
+#   连续为负: 两期中任一降幅 ≥ _YOY_DROP_HIGH 判高, 否则判中(关注)。
+#     取"任一期"而非两期平均: (-2%,-12%)正在恶化, 平均只有7%会被低估
+#   由增转负: 回落幅度(上期-本期) ≥ _YOY_DROP_HIGH 判高, ≥ _YOY_DROP_MID 判中,
+#     更小视为持平、不命中(原+0.3%→-0.2%也按高危)
+# 生产库回测(自选池9只×历史各报告期共360个组合): 仅3个由C变B, 均为微降;
+# 大降幅的高危判定全部不变
+_YOY_DROP_HIGH = 10.0
+_YOY_DROP_MID = 5.0
+
+
 def run_rules(metrics: dict) -> dict:
     """规则引擎(可解释硬规则扣分 → 评级锚定): 每条命中-10(高危)-5(关注)"""
     rows = metrics["rows"]
@@ -72,14 +85,18 @@ def run_rules(metrics: dict) -> dict:
     if dedt is not None and dedt < 0:
         hits.append({"rule": "最新报告期扣非净利润为负", "level": "高", "score": -10})
     n_yoy = _seq("netprofit_yoy")
-    if len(n_yoy) >= 3 and n_yoy[-1] is not None and n_yoy[-2] is not None \
-            and n_yoy[-3] is not None and n_yoy[-1] < 0 and n_yoy[-2] < 0:
-        hits.append({"rule": f"扣非净利同比连续为负({n_yoy[-2]:.2f}%,{n_yoy[-1]:.2f}%)",
-                     "level": "高", "score": -10})
-    elif len(n_yoy) >= 2 and n_yoy[-1] is not None and n_yoy[-2] is not None \
-            and n_yoy[-2] > 0 and n_yoy[-1] < 0:
-        hits.append({"rule": f"扣非净利同比转负({n_yoy[-2]:.2f}%→{n_yoy[-1]:.2f}%)",
-                     "level": "高", "score": -10})
+    if len(n_yoy) >= 2 and None not in (n_yoy[-1], n_yoy[-2]):   # 两期即可判, 不要求有第三期
+        cur, prev = n_yoy[-1], n_yoy[-2]
+        if cur < 0 and prev < 0:
+            high = max(abs(cur), abs(prev)) >= _YOY_DROP_HIGH
+            hits.append({"rule": f"扣非净利同比连续为负({prev:.2f}%,{cur:.2f}%)",
+                         "level": "高" if high else "中", "score": -10 if high else -5})
+        elif prev > 0 and cur < 0:
+            drop = prev - cur
+            if drop >= _YOY_DROP_MID:                 # 回落幅度太小 = 持平, 不命中
+                high = drop >= _YOY_DROP_HIGH
+                hits.append({"rule": f"扣非净利同比转负({prev:.2f}%→{cur:.2f}%)",
+                             "level": "高" if high else "中", "score": -10 if high else -5})
     dta = _last("debt_to_assets")
     if dta is not None and dta > 70:
         hits.append({"rule": f"资产负债率{dta:.1f}%>70%", "level": "中", "score": -5})
@@ -136,7 +153,74 @@ def _grounded(ev: str, prompt_nums: list) -> bool:
                for e in _key_nums(ev))
 
 
-def _validate_ai_points(ai: dict, metrics: dict, prompt: str = "") -> dict:
+_CLAUSE_SPLIT = re.compile(r"[；;，,。]")
+# 依据里对指标的常见说法 → _metric_series 的键(金额与增速是两个序列: "营收"是金额,
+# "营收同比"是增速; 被更长的说法包含的短说法自动作废)
+_METRIC_ALIASES = (
+    ("扣非净利同比", "净利同比"), ("净利同比", "净利同比"), ("净利增速", "净利同比"),
+    ("净利增长", "净利同比"), ("利润增速", "净利同比"), ("利润同比", "净利同比"),
+    ("盈利增速", "净利同比"),
+    ("营收同比", "营收同比"), ("营收增速", "营收同比"), ("营收增长", "营收同比"),
+    ("收入增速", "营收同比"), ("收入同比", "营收同比"),
+    ("毛利率", "毛利率"), ("净利率", "净利率"), ("ROE", "ROE"),
+    ("资产负债率", "资产负债率"), ("负债率", "资产负债率"),
+    ("经营现金流", "经营现金流"), ("经营性现金流", "经营现金流"), ("OCF", "经营现金流"),
+    ("商誉占净资产", "商誉占净资产"), ("商誉占比", "商誉占净资产"),
+    ("营业收入", "营收"), ("营收", "营收"), ("净利润", "净利"), ("净利", "净利"),
+    ("机构持仓", "机构持仓"), ("股东户数", "股东户数"), ("户数", "股东户数"),
+    ("PE", "PE"), ("PB", "PB"), ("股息率", "股息率"),
+)
+
+
+def _near(x: float, xs: list) -> bool:
+    """x(绝对值)是否等于序列中某个值的绝对值; 容差同_grounded(AI常四舍五入到两位)"""
+    return any(v is not None and abs(x - abs(v)) <= max(0.001 * max(x, abs(v)), 0.0055)
+               for v in xs or [])
+
+
+def _misattributed(ev: str, series: dict) -> bool:
+    """依据里是否有子句"说的是A指标, 数字却全是B指标的"。
+
+    D1-36: 这些数值都能在prompt里找到(所以_grounded放行), 只是安错了指标 — 实测
+    模型把财务表的"净利同比"一列当成"营收同比", 写出"茅台营收同比连续三期负增长"
+    (其营收同比为正)。判定: 子句点名的指标没有一个数字对得上, 而同一子句里
+    有≥2个数字对得上某个没点名的指标。只有1个数字的子句不判(推导值太常见)"""
+    for clause in _CLAUSE_SPLIT.split(ev or ""):
+        nums = _key_nums(clause)
+        if len(nums) < 2:
+            continue
+        found = [a for a, _k in _METRIC_ALIASES if a in clause]
+        named = {k for a, k in _METRIC_ALIASES
+                 if a in found and not any(a != b and a in b for b in found)}
+        if not named:
+            continue
+        if any(_near(abs(n), series[k]) for n in nums for k in named if series.get(k)):
+            continue
+        if any(k not in named and xs and sum(_near(abs(n), xs) for n in nums) >= 2
+               for k, xs in series.items()):
+            return True
+    return False
+
+
+# 依据里的日期/年份(取整数时不计): 2026-11-18、2025年12月31日、2026Q3、2026H1、2025年报
+_DATE_RE = re.compile(
+    r"(?<![\d.])\d{4}[-./年]\d{1,2}(?:[-./月]\d{1,2}日?)?(?![\d.])"
+    r"|(?<![\d.])\d{4}[QH][1-4]?(?![\d.])"
+    r"|(?<![\d.])\d{4}(?![\d.])")
+
+
+def _int_nums(text: str) -> list:
+    """依据里写成整数的量("减持127万股""营收300亿"): 两位以上的整数, 日期与年份不计"""
+    return [float(t) for t in _NUM_RE.findall(_DATE_RE.sub(" ", text or ""))
+            if "." not in t and len(t) >= 2]
+
+
+def _ints_grounded(ints: list, prompt_nums: list) -> bool:
+    """每个整数都是prompt里某个数值的取整(±0.5, 三位数以上放宽到1%)"""
+    return all(any(abs(k - p) <= max(0.5, 0.01 * k) for p in prompt_nums) for k in ints)
+
+
+def _validate_ai_points(ai: dict, metrics: dict, prompt: str = "", series: dict = None) -> dict:
     """N2幻觉校验: 风险点的evidence须有据可依。
 
     传prompt时(扫雷主流程): AI拿到的全部数据都在prompt里, 依据中的关键数值
@@ -144,6 +228,9 @@ def _validate_ai_points(ai: dict, metrics: dict, prompt: str = "") -> dict:
     指标名判断。D1-35: 原只认财务指标名/财务行数值 — 筹码/估值/事件三个
     维度的依据本就不含这些, 实测65条风险点里40条被标"依据存疑"(筹码/估值/
     事件几乎全中), 标记失去意义。
+    D1-36: 写成整数的量("减持127万股", prompt里是"127.0万股")原被当成"定性依据",
+    不含财务指标名就标存疑 — 与上面同类的误标; 现按取整后能否对上来判。
+    再传series(各指标的取值, 见_metric_series)时加查"数值安错指标"(_misattributed)。
     不传prompt: 保持原口径(财务指标名或财务行的精确数值)。"""
     rows = metrics["rows"]
     pnums = _key_nums(prompt) if prompt else None
@@ -154,9 +241,11 @@ def _validate_ai_points(ai: dict, metrics: dict, prompt: str = "") -> dict:
             p["suspect"] = not has_term and \
                 not any(str(v) in ev for r in rows for v in r.values() if v is not None)
         elif _key_nums(ev):
-            p["suspect"] = not _grounded(ev, pnums)
+            p["suspect"] = not _grounded(ev, pnums) or \
+                (bool(series) and _misattributed(ev, series))
         else:
-            p["suspect"] = not has_term
+            ints = _int_nums(ev)
+            p["suspect"] = not (_ints_grounded(ints, pnums) if ints else has_term)
     return ai
 
 
@@ -220,19 +309,19 @@ SCAN_PROMPT = """你是资深A股风控分析师, 对以下个股执行全面扫
 
 股票: {name}({code}) 最新报告期: {last_period}
 
-一、财务全景(近8季, 金额单位亿/比率单位%):
+一、财务全景(近8季; 每行一个指标, 各列为报告期; 金额单位亿/比率单位%):
 {fin_table}
 
 二、筹码: 机构持仓合计{inst_ratio}%(近4期 {inst_trend}) · 质押率{pledge}% · 股东户数{holder_num}万(近4期 {hn_trend})
 三、估值: PE_TTM {pe} · PB {pb} · 股息率{dv}% · 近一年股价{chg_1y}%
-四、近一年风险事件(高/中风险, 最近{n_events}条; 括号内为明细 — 减持看占总股本比例, 规模很小的不要当作大额):
+四、近一年风险事件(高/中风险, 最近{n_events}条; 括号内为明细 — 减持看占流通股本比例, 规模很小的不要当作大额):
 {events}
 
 已命中硬规则(规则引擎):
 {rules}
 
 严格按JSON输出(不要其他文字):
-{{"summary": "整体风险判断(80字内)", "points": [{{"title": "风险点(15字内)", "evidence": "数据依据(直引上表数值)", "severity": "高|中|低", "dimension": "财务|筹码|估值|事件"}}], "advice": "操作建议(50字内)"}}
+{{"summary": "整体风险判断(80字内)", "points": [{{"title": "风险点(15字内)", "evidence": "数据依据(写明是哪个指标哪个报告期, 直引上表数值)", "severity": "高|中|低", "dimension": "财务|筹码|估值|事件"}}], "advice": "操作建议(50字内)"}}
 
 最多8条风险点按severity降序; 健康维度可不出点; evidence必须直引上面给出的数据(不要引入其他来源的数字)。"""
 
@@ -265,22 +354,53 @@ def _tail(vals, n: int = 4, fmt=str) -> str:
     return "→".join(xs) if xs else "--"
 
 
+def _dash(v) -> str:
+    """None→'--': 空值不进prompt(无商誉的公司商誉列原样写成"None", 让模型猜含义);
+    也防"股价None%"这类字样"""
+    return "--" if v is None else str(v)
+
+
+def _fin_table(full: dict) -> list:
+    """扫雷prompt的财务表: 每行一个指标, 各列为报告期(金额单位亿, 比率单位%)。
+
+    D1-36: 原为每行一个报告期的10列表格 — 模型读趋势要竖着看一列, 实测看串列:
+    把"净利同比"一列当成"营收同比", 写出"茅台营收同比连续三期负增长"(其营收
+    同比为正)。营收同比(规则引擎在用)原表里没有, 一并补上"""
+    P, C, B = full["profit"], full["cashflow"], full["balance"]
+    ds = full["dates"]
+    rows = [("报告期", ds), ("营收(亿)", P["revenue"]), ("营收同比(%)", P.get("or_yoy")),
+            ("净利(亿)", P["n_income"]), ("净利同比(%)", P["net_yoy"]),
+            ("毛利率(%)", P["gpm"]), ("净利率(%)", P["npm"]), ("ROE(%)", P["roe"]),
+            ("资产负债率(%)", B["dta"]), ("经营现金流(亿)", C["ocf"]),
+            ("商誉占净资产(%)", B["gw_eq"])]
+    out = []
+    for name, seq in rows:
+        seq = seq or []
+        cells = [_dash(seq[i] if i < len(seq) else None) for i in range(len(ds))]
+        out.append("  " + " | ".join([name] + cells))
+    return out
+
+
+def _metric_series(full: dict, val: dict) -> dict:
+    """依据核对用(_misattributed): 各指标喂给AI的取值序列, 键见_METRIC_ALIASES"""
+    P, C, B, inst = full["profit"], full["cashflow"], full["balance"], full["inst"]
+    li = len(val["dates"]) - 1 if val.get("dates") else -1
+    last = lambda seq: seq[li] if 0 <= li < len(seq) else None   # noqa: E731
+    return {"营收同比": P.get("or_yoy") or [], "净利同比": P["net_yoy"],
+            "毛利率": P["gpm"], "净利率": P["npm"], "ROE": P["roe"],
+            "资产负债率": B["dta"], "经营现金流": C["ocf"],
+            "商誉占净资产": B["gw_eq"], "营收": P["revenue"], "净利": P["n_income"],
+            "机构持仓": inst["ratio"],
+            "股东户数": [v / 1e4 if v is not None else None for v in inst["holder_num"]],
+            "PE": [last(val["pe"])], "PB": [last(val["pb"])], "股息率": [P.get("dv_ttm")]}
+
+
 def _scan_ai(ts_code, m, inp, rules, cfg) -> dict:
     """B2: 全维度AI分析(SCAN_PROMPT固定输出)"""
     import ai_client
     full = inp["full"]
     P = full["profit"]
-    # None→'--': 空值不进prompt(无商誉的公司商誉列原样写成"None", 让模型猜含义);
-    # 也防"股价None%"这类字样
-    _dash = lambda v: "--" if v is None else str(v)   # noqa: E731
-    lines = ["  报告期|营收|净利|净利同比|毛利率|净利率|ROE|负债率|OCF|商誉占净资产"]
-    for i, d in enumerate(full["dates"]):
-        ocf = full["cashflow"]["ocf"][i] if i < len(full["cashflow"]["ocf"]) else None
-        gw = full["balance"]["gw_eq"][i] if i < len(full["balance"]["gw_eq"]) else None
-        dta = full["balance"]["dta"][i] if i < len(full["balance"]["dta"]) else None
-        cells = [P["revenue"][i], P["n_income"][i], P["net_yoy"][i], P["gpm"][i],
-                 P["npm"][i], P["roe"][i], dta, ocf, gw]
-        lines.append("  " + " | ".join([d] + [_dash(v) for v in cells]))
+    lines = _fin_table(full)
     # D1-35: 筹码取**最新一期**(序列旧→新)。原取[0]=最早一期: 茅台实测把
     # 2003-12-31的"机构4.66%/户数3.2万"当现值喂给AI(实为5.76%/27.8万), AI据此
     # 写出"机构覆盖度不足、筹码分散"; 9只池内股票的筹码维度分析全部基于上市初期数据
@@ -331,31 +451,46 @@ def _scan_ai(ts_code, m, inp, rules, cfg) -> dict:
         i = text.find("{")
         if i > 0:
             text = text[i:]
-    return _validate_ai_points(json.loads(text), m, prompt)
+    return _validate_ai_points(json.loads(text), m, prompt,
+                               _metric_series(full, val))
 
 
-# 扫雷结果口径版本: prompt/输入组装方式变更时+1 → 旧缓存视为过期(需重新扫雷)。
+# 扫雷结果口径版本: prompt/输入组装方式/规则分级变更时+1 → 旧缓存视为过期(需重新扫雷)。
 # v2(D1-35): 筹码栏取最新一期+近4期走势、事件取最近12条、财务表限8季
-SCAN_VERSION = 2
+# v3(D1-36): 扣非净利同比规则按降幅分级(规则级别进了prompt, 且缓存里存着评级与规则分);
+#            财务表改为每行一个指标并补营收同比; 依据核对加查"数值安错指标"
+SCAN_VERSION = 3
 
 
-def _ai_cache_valid(ai_json) -> bool:
-    """缓存里的AI结果是否为当前口径: 非字典(无AI/规则-only)视为有效;
-    字典须带当前版本标记(AI失败降级的summary字典无标记 → 下次自动重试)"""
+def _ai_cache_state(ai_json) -> str:
+    """缓存里AI结果的状态:
+    valid    — 当前口径的完整结果(或未启用AI的规则-only结果)
+    degraded — AI没跑成的降级结果(模型不可用/返回无法解析): 规则评级有效, AI定性缺失
+    stale    — 旧口径的完整结果, 需重新扫雷
+    D1-36: 原只有"有效/无效"两态, 降级结果按无效处理 → 页面只读接口返回404, 刷新后
+    显示"尚无扫雷结果", 把有效的规则评级也藏了起来(改动前刷新还能看到评级)"""
     try:
         ai = json.loads(ai_json or "null")
     except ValueError:
-        return False
-    return not isinstance(ai, dict) or ai.get("_v") == SCAN_VERSION
+        return "stale"
+    if not isinstance(ai, dict):
+        return "valid"
+    if ai.get("_v") == SCAN_VERSION:
+        return "valid"
+    if ai.get("_degraded") or (not ai.get("points")
+                               and str(ai.get("summary") or "").startswith("AI定性分析失败")):
+        return "degraded"                 # 后半句: 兼容未带标记的存量降级结果
+    return "stale"
 
 
 def scan_stock(code: str, path=None, force: bool = False,
                cached_only: bool = False) -> dict:
     """B2一键扫雷(合并AI分析): 数据→规则→全维度AI→报告入库可回看。
     force=True跳过缓存重扫; 财务不足返回incomplete让前端确认。
-    cached_only=True: 只读缓存, 无有效缓存返回 {ok:False, nocache:True}
-    — 供页面加载时的GET接口使用(D1-35: 原GET在无缓存/缓存过期时会直接
-    跑一遍AI扫雷, 仅仅打开一只没扫过的股票就静默占用本地模型1~3分钟)。"""
+    cached_only=True: 只读缓存, 无当前口径的结果返回 {ok:False, nocache:True};
+    AI没跑成的降级结果照常返回并带 degraded=True(规则评级有效) — 供页面加载时的
+    GET接口使用(D1-35: 原GET在无缓存/缓存过期时会直接跑一遍AI扫雷, 仅仅打开一只
+    没扫过的股票就静默占用本地模型1~3分钟)。"""
     import fetch_stock as FS
     from analyze_news import get_ai_config
     ts_code = FS._norm_code(code)
@@ -372,15 +507,22 @@ def scan_stock(code: str, path=None, force: bool = False,
         "FROM stock_ai WHERE ts_code=?", (ts_code,)).fetchone()
     end_max = m["rows"][-1]["end_date"]
     con.close()
-    if (cached and not force and cached[0] == end_max and cached[1] == last_ann
-            and _ai_cache_valid(cached[5])):
+    same = bool(cached and not force and cached[0] == end_max and cached[1] == last_ann)
+    state = _ai_cache_state(cached[5]) if same else "stale"
+    # 只读接口(cached_only)连降级结果也返回: 规则评级有效, 只缺AI定性 — 由页面提示
+    # 用户点[一键扫雷]重试。旧口径(stale)仍然不返回
+    if same and (state == "valid" or (cached_only and state == "degraded")):
         ai_c = json.loads(cached[5] or "null")
-        return {"ok": True, "cached": True, "code": ts_code, "name": m["name"],
-                "grade": cached[2], "score": cached[3],
-                "rules": json.loads(cached[4] or "[]"),
-                "ai": {k: v for k, v in ai_c.items() if k != "_v"}
-                if isinstance(ai_c, dict) else ai_c,
-                "end_date": end_max}
+        out = {"ok": True, "cached": True, "code": ts_code, "name": m["name"],
+               "grade": cached[2], "score": cached[3],
+               "rules": json.loads(cached[4] or "[]"),
+               "ai": {k: v for k, v in ai_c.items() if k not in ("_v", "_degraded")}
+               if isinstance(ai_c, dict) else ai_c,
+               "end_date": end_max}
+        if state == "degraded":
+            out["degraded"] = True
+            out["msg"] = "上次AI定性分析未成功(规则评级有效) — 点[一键扫雷]重试"
+        return out
     if cached_only:
         return {"ok": False, "nocache": True, "code": ts_code,
                 "msg": "尚无当前口径的扫雷结果 — 点[一键扫雷]生成"}
@@ -396,8 +538,15 @@ def scan_stock(code: str, path=None, force: bool = False,
             ai = {"summary": f"AI定性分析失败(仅规则引擎结果): {str(e)[:40]}",
                   "points": [], "advice": ""}
     now = time.strftime("%Y-%m-%d %H:%M:%S")
-    # 只有AI真正跑完的结果才打版本标记; 失败降级的字典不打 → 不算有效缓存
-    stored = ({"_v": SCAN_VERSION, **ai} if ai_ok and isinstance(ai, dict) else ai)
+    # 标记: 跑完的结果带口径版本; AI失败的降级结果带_degraded(不算有效缓存, 下次扫雷
+    # 重跑AI); AI未启用时为None(规则-only, 视为有效)
+    degraded = False
+    if ai_ok and isinstance(ai, dict):
+        stored = {"_v": SCAN_VERSION, **ai}
+    elif ai is None:
+        stored = None
+    else:
+        stored, degraded = {"_degraded": True, **ai}, True
     con = _conn(path)
     con.execute(
         "INSERT INTO stock_ai(ts_code,end_date,ann_date,rule_grade,rule_score,"
@@ -412,9 +561,12 @@ def scan_stock(code: str, path=None, force: bool = False,
          json.dumps(stored, ensure_ascii=False), cfg.get("model") or "-", now))
     con.commit()
     con.close()
-    return {"ok": True, "cached": False, "code": ts_code, "name": m["name"],
-            "grade": rules["grade"], "score": rules["score"],
-            "rules": rules["hits"], "ai": ai, "end_date": end_max}
+    out = {"ok": True, "cached": False, "code": ts_code, "name": m["name"],
+           "grade": rules["grade"], "score": rules["score"],
+           "rules": rules["hits"], "ai": ai, "end_date": end_max}
+    if degraded:
+        out["degraded"] = True
+    return out
 
 
 def analyze_stock_finance(code: str, path=None) -> dict:

@@ -168,16 +168,22 @@ def _pull_all(api: str, fields: str, ts_code: str):
     1994~2001年上市的老股日线恰为6000行(600760上市1996年, 日线始于2001-03),
     "全史K线"实际缺了最早几年; 复权因子同样被截, 两边末端对不齐 → 最早
     一两百行adj_factor为空(共1077行), 前复权价在这段直接取原始价, 与相邻
-    段差出近一个复权系数的倍数。"""
-    frames, offset = [], 0
+    段差出近一个复权系数的倍数。
+    D1-36: 翻页以"首页实际返回的行数"为一页 — 服务端的单次上限可能低于请求值
+    (积分档位不同), 那时首页就不足6000行, 按"不足请求值即最后一页"会在第一页
+    后停止, 截断悄悄回来。总行数恰为页长整数倍时会多一次空页请求。"""
+    frames, offset, page = [], 0, None
     while True:
         df = T.call(api, fields, ts_code=ts_code, start_date="19900000",
                     end_date=time.strftime("%Y%m%d"),
                     limit=_PAGE_ROWS, offset=offset)
         frames.append(df)
-        if df is None or len(df) < _PAGE_ROWS:
-            break
-        offset += _PAGE_ROWS
+        n = 0 if df is None else len(df)
+        if page is None:
+            page = n or _PAGE_ROWS
+        if n < page:
+            break                          # 不足一页 = 最后一页(首页为空也在这里结束)
+        offset += n
         if offset >= 60000:
             break
     if len(frames) == 1:
@@ -239,9 +245,11 @@ def add_stock(code: str, path=None) -> dict:
 
 def refresh_daily(lookback: int = 7, path=None) -> int:
     """池内日增: 回看N自然日幂等upsert(错过日自动补, 同fetch_etf语义)。
-    D1-35: upsert更新全部OHLC — 原只更新close/vol/amount/复权因子; 盘中点
-    [池日增]写入的是当日盘中快照, 之后各晚的日增都不纠正开高低, 当天的高低价
-    永久停在盘中值。"""
+    D1-35: upsert更新全部OHLC(原只更新close/vol/amount/复权因子) — 已入库的K线
+    在源端修订开高低时也能纠正。
+    注: tushare日线在交易日15~16点收盘后入库, 盘中没有当日行(D1-36核对官方文档,
+    并把库内144根K线与接口逐根比对无一差异)。此前说明里"盘中点[池日增]写入的
+    是当日快照、之后永不纠正"的说法没有依据。"""
     import datetime as dt
     if not T.has_token():
         return -1
@@ -341,6 +349,14 @@ def kline(code: str, adj: str = "qfq", path=None) -> dict:
                 nxt = f
             fill.append(nxt)
         facs = fill[::-1]
+        # 末端(最新几天)缺失时后面没有已知因子可顺延 — 原留空按1.0处理, 后复权在
+        # 最后一根K线上出现断崖(前复权因归一到最新因子而不受影响) → 取前一个已知因子
+        prev = None
+        for i, f in enumerate(facs):
+            if f:
+                prev = f
+            else:
+                facs[i] = prev
     closes_raw = [r[4] for r in rows]
     # qfq: factor/最新factor(归一); hfq: factor本身; none: 1
     def _fac(i):
@@ -380,6 +396,15 @@ def _f(v):
         return x if x == x else None            # NaN→None
     except (TypeError, ValueError):
         return None
+
+
+def _text(v, default: str = "") -> str:
+    """接口文本字段清洗: None/NaN → default, 其余去首尾空白。
+    pandas的NaN是truthy, `v or "默认值"`挡不住它 — 会原样落库成"nan" """
+    if v is None or (isinstance(v, float) and v != v):
+        return default
+    s = str(v).strip()
+    return s if s and s.lower() not in ("nan", "none") else default
 
 
 def _start(lookback: int = None) -> str:
@@ -499,7 +524,7 @@ _VAL_FIELDS = "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv,dv_ttm"
 def refresh_val(code: str, path=None, lookback: int = None) -> int:
     """每日估值(daily_basic): PE_TTM/PB/总市值/流通市值。
     D1-35: 全量拉取走分页 — daily_basic与daily同为单次6000行上限(见_pull_all),
-    池内4只老股的估值史比K线短2~5年(中航高科K线自1994-05、估值自1999-11)"""
+    池内5只老股的估值史比K线短2~5年(中航高科K线自1994-05、估值自1999-11)"""
     ts_code = _norm_code(code)
     try:
         if lookback:
@@ -819,8 +844,11 @@ def _float_risk(ratio) -> str:
 
 
 def _holdertrade_risk(down: bool, cr) -> str:
-    """增减持事件的风险分级: 增持不属风险; 减持按占总股本比例 ≥1%高 / ≥0.1%中 /
+    """增减持事件的风险分级: 增持不属风险; 减持按占流通股本比例 ≥1%高 / ≥0.1%中 /
     更低不算风险事件; 占比未知沿用绝对量口径(中)。
+    (占比是tushare的change_ratio, 基数为流通股本 — D1-36用"变动量÷占比"反推
+    229条样本全部等于当日流通股本; 此前说明误写成总股本。限售股占比高的股票
+    如次新股、A+H, 该比例会高于占总股本的比例)
 
     D1-35: 原只看绝对量(过50万股门槛即中风险)。生产库占比<0.1%的减持里98%
     (115/117)是龙虎榜席位成交(机构专用/券商营业部), 对大盘股不到一天成交量的
@@ -858,7 +886,7 @@ def refresh_float(code: str, path=None, lookback: int = None) -> int:
     con = _conn(path)
     fr = {}
     for _, r in df.iterrows():
-        fd, hn = _iso(r["float_date"]), str(r.get("holder_name") or "未知股东").strip()
+        fd, hn = _iso(r["float_date"]), _text(r.get("holder_name"), "未知股东")
         if len(fd) != 10 or not fd[:4].isdigit():       # 缺解禁日的脏行不入库
             continue
         ratio = _f(r.get("float_ratio"))
@@ -890,8 +918,9 @@ def _fmt_shares(vol: float) -> str:
 
 
 def _clean_holder_name(raw) -> str:
-    """股东名: 压空白; 超长截断不截在括号中间(曾出现"…(非营业场所增持3300万股")"""
-    s = " ".join(str(raw or "").split())
+    """股东名: 压空白; 超长截断不截在括号中间(曾出现"…(非营业场所增持3300万股");
+    空值/NaN → ""(由调用方给默认名)"""
+    s = " ".join(_text(raw).split())
     if len(s) > 24:
         s = s[:24]
         if s.count("(") > s.count(")") or s.count("（") > s.count("）"):
@@ -916,7 +945,10 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
     - 按类型替换旧行: 只动本次拉取成功的类型 — 增量刷新(lookback)只清窗口内
       的行, 全量刷新清该股该类型全部行(接口返回空则不动, 防抖动清库)。
       原只增不删: 标题口径变更/源端修订后旧行永久残留(实测19组同日同股东
-      新旧两行并存, 含"增持1274234.0万股"这类脏行)"""
+      新旧两行并存, 含"增持1274234.0万股"这类脏行)
+    - D1-36: 增减持的全量刷新拉全史 — 原写死自2018-01-01起, 而接口有更早的
+      数据(茅台最早2005-12、五粮液2002-08): 池内9只共148条真实股东的历史
+      增减持(高54/中45/低49)没拉进来, 与"全量刷新"及其他事件类型的口径不符"""
     ts_code = _norm_code(code)
     con = _conn(path)
     ev = []                                 # (ts_code, ev_date, ev_type, title, detail, risk)
@@ -930,7 +962,7 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
             ad, ed = _ann(r.get("ann_date")), _ann(r.get("end_date"))
             if not ad or not ed:                             # 无公告日/无报告期的脏行
                 continue
-            t = str(r.get("type") or "预告").strip()
+            t = _text(r.get("type"), "预告")
             lo, hi = _f(r.get("p_change_min")), _f(r.get("p_change_max"))
             # 无变动幅度的预告(如"不确定")原样落库成"预计变动nan%~nan%"
             chg = f"预计变动{lo}%~{hi}%" if lo is not None and hi is not None \
@@ -965,18 +997,18 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
     try:                                                     # 股东增减持
         df = T.call("stk_holdertrade",
                     "ts_code,ann_date,holder_name,holder_type,in_de,change_vol,change_ratio",
-                    ts_code=ts_code, start_date=_start(lookback) if lookback else "20180101",
+                    ts_code=ts_code, start_date=_start(lookback),      # 全量=全史, 见docstring
                     end_date=time.strftime("%Y%m%d"))
         n0 = len(ev)
         for _, r in df.iterrows():
             vol = _f(r.get("change_vol"))                   # 单位=股(实测锚定), 恒为正
-            cr = _f(r.get("change_ratio"))
+            cr = _f(r.get("change_ratio"))                  # 占流通股本比例%
             if vol is None or abs(vol) < 5e5:               # <50万股噪音滤除
                 continue
             ad = _ann(r.get("ann_date"))
             if not ad:
                 continue
-            in_de = str(r.get("in_de") or "").strip().upper()
+            in_de = _text(r.get("in_de")).upper()
             if in_de.startswith("D"):
                 down = True
             elif in_de.startswith("I"):
@@ -984,7 +1016,7 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
             else:
                 down = vol < 0 or (cr is not None and cr < 0)   # 无in_de: 负号兜底
             ev.append((ts_code, ad, "holdertrade",
-                       f"{_clean_holder_name(r.get('holder_name'))}"
+                       f"{_clean_holder_name(r.get('holder_name')) or '未知股东'}"
                        f"{'减持' if down else '增持'}{_fmt_shares(abs(vol))}",
                        f"变动占比{cr}%" if cr is not None else "变动占比未披露",
                        _holdertrade_risk(down, cr)))
@@ -998,8 +1030,9 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
             sd = _iso(r.get("suspend_date"))
             if len(sd) != 10 or not sd[:4].isdigit():    # 缺停牌日的脏行不入库
                 continue
+            rd = _ann(r.get("resume_date"))              # 尚未复牌时为空: 不写成"至nan复牌"
             ev.append((ts_code, sd, "suspend",
-                       "停牌", f"至{_iso(r.get('resume_date')) or '--'}复牌", "mid"))
+                       "停牌", f"至{rd}复牌" if rd else "复牌日期未定", "mid"))
         got["suspend"] = len(ev) - n0
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 停复牌失败: {str(e)[:50]}")
@@ -1115,14 +1148,21 @@ def float_payload(code: str, path=None) -> dict:
                        "FROM stock_float WHERE ts_code=? ORDER BY float_date",
                        (ts_code,)).fetchall()
     con.close()
-    out = [{"date": r[0], "share_yi": round(r[1] / 1e8, 2) if r[1] else None,
-            "ratio": r[2], "holder": r[3][:12],
+    out = [{"date": r[0],
+            # 柱高用未舍入的亿股(小额解禁舍入到两位小数就成了0, 柱子高度为0);
+            # 文案用 share_txt("6.10万股"/"1.01亿股") — 原图表提示与"未来90天"汇总
+            # 也按亿股两位小数显示, 1122条解禁里644条显示成"0.0亿股"
+            "share_yi": r[1] / 1e8 if r[1] else None,
+            "share_txt": _fmt_float_shares(r[1]),
+            "ratio": r[2], "holder": (r[3] or "未知股东")[:12],
             "future": r[0] > today, "big": (r[2] or 0) >= 5} for r in rows]
     soon = [x for x in out if x["future"] and x["date"] <=
             (dt.date.today() + dt.timedelta(days=90)).isoformat()]
+    soon_yi = sum(x["share_yi"] or 0 for x in soon)
     return {"ok": True, "code": ts_code, "n": len(out), "data": out,
             "soon": {"n": len(soon),
-                     "total_yi": round(sum(x["share_yi"] or 0 for x in soon), 2),
+                     "total_yi": round(soon_yi, 2),
+                     "total_txt": _fmt_float_shares(soon_yi * 1e8) if soon else "--",
                      "max_ratio": max((x["ratio"] or 0 for x in soon), default=0)}}
 
 

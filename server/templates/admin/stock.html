@@ -114,7 +114,7 @@
 <section class="card">
   <h2>个股大事件 <span class="hint" id="evState">选择股票后展示</span></h2>
   <div id="evTable">--</div>
-  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低; 股东增持、占总股本不足0.1%的小额减持属低风险, 不标K线也不计入扫雷的风险事件)</p>
+  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低; 股东增持、占流通股本不足0.1%的小额减持属低风险, 不标K线也不计入扫雷的风险事件)</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -219,8 +219,8 @@ let loadSeq = 0;
 const _stale = seq => seq != null && seq !== loadSeq;   // 无seq(局部重绘)不作废
 
 // D1-35: 切股时清空的面板。原只清扫雷报告: 股东表/事件表/数据集徽标与下面11张图
-// 仍是上一只的 — A2四模块依次加载, 网络慢时"新股票K线+旧股票各图"同屏近1秒;
-// 某模块请求失败时旧内容更会一直留着
+// 仍是上一只的 — A2四模块依次加载, 慢的时候新股票的K线已经出来、下面各图还是
+// 上一只的; 某模块请求失败时旧内容更会一直留着
 const _PANEL_BOXES = ['freshRow', 'hdTable', 'evTable'];
 const _PANEL_STATES = ['hdState', 'mgState', 'pfMsg', 'valState', 'g1State', 'g3State',
                        'g4State', 'flState', 'evState'];
@@ -418,13 +418,14 @@ function renderFloat(d) {
   if (!d.n) { $('flState').textContent = '无解禁数据'; chF.clear(); return; }
   const s = d.soon;
   $('flState').textContent = s.n
-    ? `未来90天: ${s.n}批/共${s.total_yi}亿股, 最大占比${s.max_ratio}%${s.max_ratio >= 5 ? ' ⚠大额' : ''}`
+    ? `未来90天: ${s.n}批/共${s.total_txt || (s.total_yi + '亿股')}, 最大占比${s.max_ratio}%${s.max_ratio >= 5 ? ' ⚠大额' : ''}`
     : '未来90天无解禁';
   chF.setOption({
     animation: false, backgroundColor: 'transparent',
     tooltip: {trigger: 'axis', formatter: ps => {
       const x = d.data[ps[0].dataIndex];
-      return `<b>${x.date}</b><br/>${esc(x.holder)}<br/>解禁${x.share_yi}亿股 (${x.ratio}%)`
+      // 数量文案用接口给的 share_txt("6.10万股"): 按亿股两位小数显示时小额解禁是"0.0亿股"
+      return `<b>${x.date}</b><br/>${esc(x.holder)}<br/>解禁${x.share_txt || (x.share_yi + '亿股')} (${x.ratio}%)`
         + (x.future ? ' · 计划' : ' · 已解禁') + (x.big ? ' <b style="color:#d03b3b">大额</b>' : '');
     }},
     grid: {left: 60, right: 20, top: 24, bottom: 44},
@@ -693,13 +694,18 @@ async function loadAiFin(code, seq) {              // 读扫雷结果(只读缓�
     const r = await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
     if (_stale(seq) || curCode !== code) return;   // 已切股: 结果过期不渲染
     renderAiFin(r);
-    $('aiFinState').textContent = r.cached ? '● 上次扫雷结果' : '● 就绪';
+    $('aiFinState').textContent = _aiState(r, '上次扫雷结果');
   } catch (e) {
     if (_stale(seq) || curCode !== code) return;
     // 404的原因直接给用户: "财务数据仅N季不足…" / "尚无当前口径的扫雷结果…"
     $('aiFinState').textContent = '--(未扫雷) ' + e.message;
   }
 }
+// AI没跑成(模型不可用/返回无法解析)时规则评级仍然有效: 接口带 degraded 标记,
+// 状态行说明并提示可重试 — 原按"缓存无效"处理, 刷新后规则评级也不见了
+const _aiState = (r, done) => r.degraded
+  ? '● 规则评级有效; AI定性未成功 — 可点[一键扫雷]重试'
+  : '● ' + done;
 $('btnSkUpd').onclick = async () => {          // 数据更新
   if (!curCode) { alert('请先选择股票'); return; }
   const updCode = curCode;
@@ -738,7 +744,7 @@ $('btnAiFin').onclick = async () => {          // 一键扫雷
       body: JSON.stringify({code: scanCode, force: true})});
     if (curCode !== scanCode) { $('aiFinState').textContent = '● 已切股, 旧扫雷仅入库不显示'; return; }
     renderAiFin(r);
-    $('aiFinState').textContent = '● 扫雷完成(已入库)';
+    $('aiFinState').textContent = _aiState(r, '扫雷完成(已入库)');
   } catch (e) { if (curCode === scanCode) $('aiFinState').textContent = '✗ ' + e.message; }
   finally { $('btnAiFin').disabled = false; }
 };
