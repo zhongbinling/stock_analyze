@@ -25,8 +25,25 @@ def _conn(path=None):
     return FS._conn(path)
 
 
+def _ttm(series: dict, end_date: str):
+    """滚动12个月值(单位同series, 元): 年报期就是年内累计值; 其余报告期
+    = 上年年报 + 本期累计 − 上年同期累计。任一期缺失 → None(次新股首个年报前算不出)。
+    用滚动值而不是单季/年内累计: 回款有季节性的公司(军工、工程类下半年才回款)
+    按年内累计看, 每年年中都是"现金流为负", 属于正常节奏而非风险"""
+    v = series.get(end_date)
+    if v is None:
+        return None
+    if end_date[5:] == "12-31":
+        return v
+    y = int(end_date[:4])
+    annual, prior = series.get("%d-12-31" % (y - 1)), series.get("%d-%s" % (y - 1, end_date[5:]))
+    if annual is None or prior is None:
+        return None
+    return annual + v - prior
+
+
 def finance_metrics(code: str, n_qua: int = 8, path=None) -> dict:
-    """近N季指标载荷: fina指标 + 商誉/净资产(自算)"""
+    """近N季指标载荷: fina指标 + 商誉/净资产(自算) + 近12个月经营现金流与净利润"""
     import fetch_stock as FS
     ts_code = FS._norm_code(code)
     con = _conn(path)
@@ -38,6 +55,13 @@ def finance_metrics(code: str, n_qua: int = 8, path=None) -> dict:
     bs = {r[0]: r for r in con.execute(
         "SELECT end_date, goodwill, total_assets, total_liab FROM stock_bs "
         "WHERE ts_code=?", (ts_code,))}
+    # D1-37: 现金流规则用。利润表的n_income与经营现金流同为全公司口径(含少数股东),
+    # 都是年内累计值; 表为空(没拉过利润表/现金流量表)时相应字段为None、规则不命中
+    ocf = {r[0]: r[1] for r in con.execute(
+        "SELECT end_date, n_cashflow_act FROM stock_cashflow WHERE ts_code=?",
+        (ts_code,))}
+    inc = {r[0]: r[1] for r in con.execute(
+        "SELECT end_date, n_income FROM stock_income WHERE ts_code=?", (ts_code,))}
     name = con.execute("SELECT name FROM stock_pool WHERE ts_code=?",
                        (ts_code,)).fetchone()
     con.close()
@@ -48,11 +72,14 @@ def finance_metrics(code: str, n_qua: int = 8, path=None) -> dict:
         if b and b[1] and b[2] and b[3]:
             eq = b[2] - b[3]                       # 净资产=总资产-总负债
             gw_ratio = round(b[1] / eq * 100, 1) if eq > 0 else None
+        o_ttm, n_ttm = _ttm(ocf, end_date), _ttm(inc, end_date)
         rows.append({"end_date": end_date, "ann_date": ann,
                      "dedt_yi": round(dedt / 1e8, 2) if dedt is not None else None,
                      "netprofit_yoy": n_yoy, "or_yoy": o_yoy,
                      "gpm": gpm, "roe": roe, "debt_to_assets": dta,
-                     "goodwill_eq": gw_ratio})
+                     "goodwill_eq": gw_ratio,
+                     "ocf_ttm": round(o_ttm / 1e8, 2) if o_ttm is not None else None,
+                     "ni_ttm": round(n_ttm / 1e8, 2) if n_ttm is not None else None})
     return {"code": ts_code, "name": name[0] if name else ts_code,
             "n": len(rows), "rows": rows}
 
@@ -69,9 +96,22 @@ def finance_metrics(code: str, n_qua: int = 8, path=None) -> dict:
 _YOY_DROP_HIGH = 10.0
 _YOY_DROP_MID = 5.0
 
+# 现金流规则(D1-37, 用户要求补上): 看"近12个月经营现金流"相对"近12个月净利润"。
+# 此前规则引擎完全没有现金流维度的规则 — 五粮液2026年前三季度经营现金流合计仅
+# 0.47亿(净利润99.69亿), AI扫雷把"经营现金流连续为负"列为高危, 规则评级却是A。
+#   净流出且流出额达到净利润的一成 → 高危; 本身亏损时只要净流出就算高危。
+#     更小的净流出(如-0.23亿对净利润29.74亿)归到下面一条 — 否则四舍五入级别的
+#     负数也会被判高危, 与"微降被判C"是同一类问题
+#   不足净利润的一半 → 关注。净现比0.5是财报分析里常用的"利润含金量"参考线
+_OCF_NI_LOW = 0.5
+_OCF_BURN = 0.1
+
 
 def run_rules(metrics: dict) -> dict:
-    """规则引擎(可解释硬规则扣分 → 评级锚定): 每条命中-10(高危)-5(关注)"""
+    """规则引擎(可解释硬规则扣分 → 评级锚定): 每条命中-10(高危)-5(关注)。
+    规则: 扣非净利为负 / 扣非净利同比连续下滑、由增转降(按降幅分级) / 资产负债率>70%
+    / 毛利率连续3期下滑 / 营收同比连续为负 / 商誉占净资产>30% / ROE为负
+    / 近12个月经营现金流净流出(高危)或不足净利润一半(关注)"""
     rows = metrics["rows"]
     hits = []
 
@@ -116,10 +156,29 @@ def run_rules(metrics: dict) -> dict:
     roe = _last("roe")
     if roe is not None and roe < 0:
         hits.append({"rule": f"ROE为负({roe:.2f}%)", "level": "高", "score": -10})
+    hits.extend(_cashflow_hits(_last("ocf_ttm"), _last("ni_ttm")))
     score = sum(h["score"] for h in hits)
     grade = "A" if score == 0 else ("B" if score >= -5 else
                                     ("C" if score >= -15 else "D"))
     return {"score": score, "grade": grade, "hits": hits}
+
+
+def _cashflow_hits(ocf, ni) -> list:
+    """近12个月经营现金流(ocf)相对净利润(ni, 均为亿)的规则命中, 门槛见_OCF_NI_LOW。
+    任一值缺失(没拉过利润表/现金流量表, 或次新股还算不出滚动值) → 不判"""
+    if ocf is None or ni is None:
+        return []
+    if ocf < 0 and (ni <= 0 or -ocf >= _OCF_BURN * ni):
+        return [{"rule": f"近12个月经营现金流净流出{-ocf:.2f}亿(净利润{ni:.2f}亿)",
+                 "level": "高", "score": -10}]
+    if ocf < 0:
+        return [{"rule": f"近12个月经营现金流为负({ocf:.2f}亿, 净利润{ni:.2f}亿)",
+                 "level": "中", "score": -5}]
+    if ni > 0 and ocf < _OCF_NI_LOW * ni:
+        return [{"rule": f"近12个月经营现金流仅为净利润的{ocf / ni:.0%}"
+                         f"({ocf:.2f}/{ni:.2f}亿), 利润现金含量低",
+                 "level": "中", "score": -5}]
+    return []
 
 
 KNOWN_METRICS = {"dedt_yi": "扣非净利润(亿)", "netprofit_yoy": "扣非净利同比%",
@@ -459,7 +518,8 @@ def _scan_ai(ts_code, m, inp, rules, cfg) -> dict:
 # v2(D1-35): 筹码栏取最新一期+近4期走势、事件取最近12条、财务表限8季
 # v3(D1-36): 扣非净利同比规则按降幅分级(规则级别进了prompt, 且缓存里存着评级与规则分);
 #            财务表改为每行一个指标并补营收同比; 依据核对加查"数值安错指标"
-SCAN_VERSION = 3
+# v4(D1-37): 新增现金流规则(近12个月经营现金流净流出/不足净利润一半)
+SCAN_VERSION = 4
 
 
 def _ai_cache_state(ai_json) -> str:
