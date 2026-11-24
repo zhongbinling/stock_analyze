@@ -247,22 +247,52 @@ def api_bt_factors():
         "defaults": {"entry": BH.DEFAULT_ENTRY, "exit": BH.DEFAULT_EXIT}})
 
 
+def _bt_params(d: dict):
+    """compute 与保存策略共用的参数校验 → (weights, entry, exit, 原因); 出错时前三项为None。
+    D1-38 review: 原只拦"一个因子都没有"和"阈值不是整数" —
+      · 只传未知因子、或勾选的因子权重全为0: 服务端算出一条空组合, 页面显示
+        "共0日 (undefined ~ undefined)"、当前值 undefined
+      · 买入阈值≤卖出阈值(滞回反向): 照算不误, 结果没有意义
+      · 策略保存对权重范围/因子名不校验, 存进去的配置一加载就坏"""
+    import behavior as BH
+    f = d.get("factors")
+    if not isinstance(f, dict) or not f:
+        return None, None, None, "请至少勾选一个因子"
+    known = {k for k, *_ in BH.FACTOR_DEFS}
+    unknown = sorted(str(k) for k in f if k not in known)
+    if unknown:
+        return None, None, None, "未知因子: " + ", ".join(unknown[:5])
+    is_num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)   # noqa: E731
+    bad = sorted(str(k) for k, v in f.items() if not is_num(v) or not -100 <= v <= 100)
+    if bad:
+        return None, None, None, "因子权重须是-100~100的数字: " + ", ".join(bad[:5])
+    weights = {k: v for k, v in f.items() if v}
+    if not weights:
+        return None, None, None, "所选因子的权重都为0 — 请至少让一个因子的权重大于0"
+    try:
+        entry, exit_ = d.get("entry", BH.DEFAULT_ENTRY), d.get("exit", BH.DEFAULT_EXIT)
+        if isinstance(entry, bool) or isinstance(exit_, bool):
+            raise TypeError
+        entry, exit_ = int(entry), int(exit_)
+    except (TypeError, ValueError, OverflowError):   # JSON 里可写 Infinity: int() 抛的是 OverflowError
+        return None, None, None, "entry/exit应为整数"
+    if not (-100 <= entry <= 100 and -100 <= exit_ <= 100):
+        return None, None, None, "买卖阈值须在-100~100之间"
+    if entry <= exit_:
+        return None, None, None, f"买入阈值须大于卖出阈值(滞回): 现在 买入{entry} ≤ 卖出{exit_}"
+    return weights, entry, exit_, ""
+
+
 @bp_admin.post("/api/backtest/compute")
 @require_level(7)
 def api_bt_compute():
-    """因子组合+状态概率+回测(只读计算~5s首算/0.1s缓存; 交互式同步返回)。
+    """因子组合+状态概率+回测(只读计算; 首算数秒/之后复用缓存; 交互式同步返回)。
     review: 全不勾因子曾静默回退默认权重 — 用户以为在测自己的组合"""
     import behavior as BH
     d = request.get_json(force=True, silent=True) or {}
-    weights = {k: v for k, v in (d.get("factors") or {}).items()
-               if isinstance(v, (int, float)) and -100 <= v <= 100}
-    if not weights:
-        return jsonify({"ok": False, "msg": "请至少勾选一个因子"}), 400
-    try:
-        entry = max(-100, min(100, int(d.get("entry", BH.DEFAULT_ENTRY))))
-        exit_ = max(-100, min(100, int(d.get("exit", BH.DEFAULT_EXIT))))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
+    weights, entry, exit_, err = _bt_params(d)
+    if err:
+        return jsonify({"ok": False, "msg": err}), 400
     # D1-34: 页面加载/点[刷新数据]时带pull — 份额源D+1上午发布而库只在16:35
     # 更新链刷新, 回测页末端整天空柱; 落后则主动拉一次(服务端节流)
     nt_pull = BH.pull_latest() if d.get("pull") else None
@@ -295,7 +325,9 @@ def _bt_cfg(s):
 @bp_admin.post("/api/backtest/strategies")
 @require_level(7)
 def api_bt_strategy_save():
-    """保存/更新策略(同名覆盖): {name, factors, entry, exit}"""
+    """保存策略: {name, factors, entry, exit, overwrite?}。参数校验与compute共用。
+    D1-38: 同名且未带 overwrite=True → 409(exists=True), 由页面确认后重发 — 原对同名
+    策略直接覆盖, 提示只在页面做(策略列表没加载出来时页面无从判断, 原配置静默丢失)"""
     import json as _j
     from server.models import BehaviorStrategy
     from server import db as sdb
@@ -303,17 +335,14 @@ def api_bt_strategy_save():
     name = str(d.get("name", "")).strip()
     if not name or len(name) > 32:
         return jsonify({"ok": False, "msg": "名称需1~32字"}), 400
-    weights = {k: v for k, v in (d.get("factors") or {}).items()
-               if isinstance(v, (int, float))}
-    if not weights:
-        return jsonify({"ok": False, "msg": "策略需至少一个因子"}), 400
-    try:                        # review: 阈值类型校验(曾可存任意串, 加载即坏)
-        entry = int(d.get("entry"))
-        exit_ = int(d.get("exit"))
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "msg": "entry/exit应为整数"}), 400
+    weights, entry, exit_, err = _bt_params(d)
+    if err:
+        return jsonify({"ok": False, "msg": err}), 400
     cfg = {"factors": weights, "entry": entry, "exit": exit_}
     s = BehaviorStrategy.query.filter_by(name=name).first()
+    if s and not d.get("overwrite"):
+        return jsonify({"ok": False, "exists": True,
+                       "msg": f"策略名[{name}]已存在"}), 409
     from server.jobs import _now
     if s:
         s.config_json = _j.dumps(cfg, ensure_ascii=False)

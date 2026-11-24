@@ -54,19 +54,21 @@ def test_regime_probs_sum_and_direction():
 
 
 def test_backtest_no_lookahead_and_rules():
-    """次日执行无前视: 信号当日收盘生成, 当日涨跌不受当日信号影响"""
+    """信号在当日收盘后才算得出 → 下一交易日收盘成交: 持仓从信号日的次日起计, 成交之后
+    各日的收益归策略。(D1-38: 原"信号日收盘"即成交 — 吃到了拿不到的"信号日收盘→次日
+    收盘"这一段, 单因子回测因此被大幅高估)"""
     comp_d = [f"2026-01-{i:02d}" for i in range(1, 9)]
     comp_v = [10, 50, 10, 10, 10, 10, 10, 10]   # 第2日≥entry, 其余回落
     bench = [(f"2026-01-{i:02d}", 100.0 + i) for i in range(1, 9)]  # 每日+1
     r = BH.backtest(comp_d, comp_v, bench, entry=30, exit_=-30)
-    # 持仓: d2收盘转多→d3起持仓; d3收盘信号10(滞回持有)…全程持有到末尾
-    assert r["pos"] == [0, 0, 1, 1, 1, 1, 1, 1]
-    # 策略收益 = d3..d8的6日复利(每日本金+1) ≈ (108/102-1)
-    assert r["metrics"]["total_ret"] == round((108 / 102 - 1) * 100, 1)
-    # 深跌卖出规则
+    # d2收盘后出买入信号 → d3收盘成交 → d4起持仓; d3收盘信号10(滞回持有)…全程持有到末尾
+    assert r["pos"] == [0, 0, 0, 1, 1, 1, 1, 1]
+    # 策略收益 = d4..d8的5日复利(103→108)
+    assert r["metrics"]["total_ret"] == round((108 / 103 - 1) * 100, 1)
+    # 深跌卖出规则: d3收盘后-50 → d4收盘卖出; d4当天的收益仍归策略
     comp_v2 = [10, 50, -50, -50, 10, 10, 10, 10]
     r2 = BH.backtest(comp_d, comp_v2, bench, entry=30, exit_=-30)
-    assert r2["pos"][2] == 1 and r2["pos"][3] == 0   # d3收盘-50→d4空仓
+    assert r2["pos"] == [0, 0, 0, 1, 0, 0, 0, 0]
 
 
 # ── API + 策略CRUD + 页面 ──
@@ -118,19 +120,20 @@ def test_bt_strategy_crud(server_app):
         "entry": 25, "exit": -25}).get_json()
     assert r["ok"] and r["id"]
     sid = r["id"]
-    # 同名覆盖
+    # 同名: 未明确要求覆盖 → 409; 带 overwrite 才覆盖(D1-38: 原直接覆盖)
+    r_dup = c.post("/admin/api/backtest/strategies", json={
+        "name": "低估反转", "factors": {"pe_pct": -50}, "entry": 20, "exit": -20})
+    assert r_dup.status_code == 409 and r_dup.get_json()["exists"] is True
+    assert c.get("/admin/api/backtest/strategies").get_json()["strategies"][0]["config"]["entry"] == 25
     r2 = c.post("/admin/api/backtest/strategies", json={
         "name": "低估反转", "factors": {"pe_pct": -50}, "entry": 20,
-        "exit": -20}).get_json()
+        "exit": -20, "overwrite": True}).get_json()
     assert r2["ok"] and r2["id"] == sid
     lst = c.get("/admin/api/backtest/strategies").get_json()["strategies"]
     s = next(x for x in lst if x["id"] == sid)
     assert s["name"] == "低估反转" and s["config"]["entry"] == 20
     # 空名拒
     assert c.post("/admin/api/backtest/strategies", json={"name": ""}).status_code == 400
-    assert c.post("/admin/api/backtest/strategies/99999/delete",
-                  body := "{}" and None or json.dumps({}),
-                  content_type="json" if False else None) is None or True
     r3 = c.post(f"/admin/api/backtest/strategies/{sid}/delete").get_json()
     assert r3["ok"]
     assert c.post("/admin/api/backtest/strategies/99999/delete").status_code == 404
@@ -142,7 +145,8 @@ def test_bt_page_gates():
                "btnCompute", "btnSave", "stList", "data-load",
                "api/backtest/compute", "api/backtest/strategies", "叠加上证",
                "牛熊比", "国家队ETF动向", "累计净申购", "r.regime.bb", "r.nt",
-               "overlay_index.dates.map((d, i) => [d, r.overlay_index.norm[i]]",
+               "data: r.overlay_index.norm,",
+               "r.nt_overlay.norm[i]",
                "dataThrough", "btnRefresh", "visibilitychange", "data-fdir", "facShare",
                "pctWord", "顺势 +", "反向 −", "splitW", "bindFacInputs"):
         assert mk in html, f"缺: {mk}"

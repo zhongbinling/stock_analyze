@@ -12,21 +12,21 @@
     <span class="hint" id="regNow">加载中…</span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovReg" checked> 叠加上证</label></h2>
   <div id="chartRegime" style="height:260px"></div>
-  <p class="hint">120日动量双sigmoid划分: 强上涨趋势→牛, 深跌→熊, 中间带→震荡; 概率和恒100% · 橙线=牛熊比(牛-熊概率差, -100深熊~+100强牛)</p>
+  <p class="hint" id="regTip">120日动量带阈值划分: 动量高于+10%→牛, 低于−10%→熊, 带内→震荡(带边缘平滑过渡, 三者概率和恒100%) · 橙线=牛熊比(同一个120日动量的平滑映射, 与牛−熊概率同向, −100深熊~+100强牛)</p>
 </section>
 <section class="card">
   <h2>国家队ETF动向 · 净申购/赎回/持仓
     <span class="hint" id="ntNow"></span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovNt" checked> 叠加上证(归一)</label></h2>
   <div id="chartNt" style="height:260px"></div>
-  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓proxy, 份额源T+1无新数据日走平=持仓不变) · 大额申购常现于市场低迷期(护盘)<br>末端空柱=当日份额源端(tushare fund_share)尚未发布 — 次日上午出数, 打开本页或点[刷新数据]时自动拉取</p>
+  <p class="hint">柱=8只国家队宽基ETF日净申购5日均(亿, 红申购/绿赎回; 份额差×收盘价, 2006起全史) · 线=累计净申购(持仓proxy; 按日净申购逐日累加, 份额源T+1无新数据日走平=持仓不变) · 大额申购常现于市场低迷期(护盘)<br>末端空柱=当日份额源端(tushare fund_share)尚未发布 — 次日上午出数, 打开本页或点[刷新数据]时自动拉取</p>
 </section>
 <section class="card">
   <h2>市场行为指数 (-100 ~ +100)
     <span class="hint" id="biNow"></span>
     <label class="chk" style="float:right"><input type="checkbox" id="ovComp" checked> 叠加上证(归一)</label></h2>
   <div id="chartComp" style="height:300px"></div>
-  <p class="hint">因子组合的expanding分位加权(无前视); ≥买入阈值持有多头, ≤卖出阈值空仓 — 详见下方回测</p>
+  <p class="hint" id="compTip">因子组合的expanding分位加权(无前视); ≥买入阈值持有多头, ≤卖出阈值空仓 — 详见下方回测<br>组合按"当日有数据的因子"加权归一: <b>灰色竖虚线=该因子开始有数据的日期</b>, 之前只有部分因子参与(如2005年只有情绪热度, 2010年起才有估值与两融, 2019年起才是全部因子) — 早期指数的含义与现在不同</p>
 </section>
 <section class="card">
   <h2>因子面板 · 组合与回测 <span class="hint" id="btMsg">调整后点[计算回测]</span></h2>
@@ -50,12 +50,11 @@
 <section class="card">
   <h2>回测对照 · <span class="hint" id="btBench"></span></h2>
   <div id="chartBt" style="height:300px"></div>
-  <p class="hint">信号收盘生成次日执行(无前视) · 持有期取基准收益 · 空仓期0收益 · 默认基准510300ETF(上证兜底)</p>
+  <p class="hint">信号在收盘后才算得出(情绪分盘后生成, 两融与ETF份额次日才发布) → <b>下一交易日收盘成交</b>(无前视; 未计交易成本与滑点) · 持有期取基准收益 · 空仓期0收益 · 默认基准510300ETF(上证兜底) · 胜率=已平仓的持仓段里净值上涨的占比</p>
 </section>
 <section class="card">
   <h2>策略列表 <span class="hint">选中加载即还原因子与阈值并重算</span></h2>
   <div id="stList">--</div>
-</section>
 </section>
 <script>
 const CSRF = document.querySelector('meta[name="csrf-token"]').content;
@@ -74,7 +73,12 @@ async function api(url, opts = {}) {
   const r = await fetch(url, Object.assign({}, opts, {headers: Object.assign(
     {'Content-Type': 'application/json', 'X-CSRFToken': CSRF}, opts.headers || {})}));
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.msg || ('HTTP ' + r.status));
+  if (!r.ok) {
+    const err = new Error(j.msg || ('HTTP ' + r.status));
+    err.status = r.status;
+    err.exists = !!j.exists;                      // 保存策略: 409 = 同名策略已存在
+    throw err;
+  }
   return j;
 }
 
@@ -108,7 +112,7 @@ function renderFacPanel(factors, weights) {
       return `<tr>
       <td><input type="checkbox" data-fk="${esc(f.key)}" ${checked ? 'checked' : ''}></td>
       <td>${esc(f.name)}</td>
-      <td class="hint" id="fp_${esc(f.key)}" title="+100=历史最高 · 0=中位 · -100=历史最低">--</td>
+      <td class="hint" id="fp_${esc(f.key)}" style="white-space:nowrap" title="+100=历史最高 · 0=中位 · -100=历史最低">--</td>
       <td><select class="input narrow" data-fdir="${esc(f.key)}" style="width:88px">
         <option value="1" ${dir > 0 ? 'selected' : ''}>顺势 +</option>
         <option value="-1" ${dir < 0 ? 'selected' : ''}>反向 −</option></select></td>
@@ -125,7 +129,8 @@ function collectWeights() {              // w = 方向 × 权重(服务端口径
     if (cb.checked) {
       const k = cb.dataset.fk;
       const dir = +document.querySelector(`#facTable [data-fdir="${k}"]`).value || 1;
-      const mag = +document.querySelector(`#facTable [data-fw="${k}"]`).value || 0;
+      // 幅度取绝对值: 输入框里敲个负数, 原会与"方向"相乘而把方向悄悄翻转
+      const mag = Math.abs(+document.querySelector(`#facTable [data-fw="${k}"]`).value || 0);
       w[k] = dir * mag;
     }
   });
@@ -147,16 +152,38 @@ function updateShare(w) {                 // 归一占比条(因子面板下方)
     : '--';
 }
 
-let lastComputeAt = 0;
+let lastComputeAt = 0, computeSeq = 0;
+// D1-38: 发请求前先在页面上校验(服务端同样校验)。原来不校验: 权重全填0/阈值填反
+// 照样发请求, 服务端算出一条空组合, 页面显示"共0日 (undefined ~ undefined)"
+function readParams() {                      // → {err} 或 {w, entry, exit}
+  const w = collectWeights();
+  if (!Object.keys(w).length) return {err: '请至少勾选一个因子'};
+  if (!Object.values(w).some(v => v)) return {err: '所选因子的权重都为0 — 请至少让一个因子的权重大于0'};
+  const e = String($('btEntry').value).trim(), x = String($('btExit').value).trim();
+  if (e === '' || x === '' || !Number.isFinite(+e) || !Number.isFinite(+x))
+    return {err: '买卖阈值应填 -100~100 的数字'};
+  const entry = Math.round(+e), exit = Math.round(+x);
+  if (Math.abs(entry) > 100 || Math.abs(exit) > 100) return {err: '买卖阈值应在 -100~100 之间'};
+  if (entry <= exit) return {err: `买入阈值须大于卖出阈值(滞回): 现在 买入${entry} ≤ 卖出${exit}`};
+  return {w, entry, exit};
+}
 // pull=true: 先向源端拉一次最新份额再计算(页面加载/自动刷新/点[刷新数据]);
 // 调权重、算回测只读库。服务端有节流, 不会每次都打接口。
 async function compute(pull) {
-  $('btMsg').textContent = pull ? '⏳ 拉取最新份额并计算中…' : '⏳ 计算中(首算~5s, 缓存0.1s)…';
+  // 序号先于参数校验推进: 校验失败时, 之前在途的那次请求回来后不得把错误提示冲掉、
+  // 更不能拿与面板不一致的参数去重绘(独立评审复现)
+  const seq = ++computeSeq;
+  const p = readParams();
+  if (p.err) { $('btMsg').textContent = '✗ ' + p.err; return; }
+  $('btMsg').textContent = pull ? '⏳ 拉取最新份额并计算中…' : '⏳ 计算中(首次约10秒, 之后即时)…';
   try {
     const r = await api('/admin/api/backtest/compute', {method: 'POST',
-      body: JSON.stringify({factors: collectWeights(),
-                            entry: +$('btEntry').value, exit: +$('btExit').value,
+      body: JSON.stringify({factors: p.w, entry: p.entry, exit: p.exit,
                             pull: !!pull})});
+    // D1-38: 连续点两次/改完权重马上再算, 两次请求的返回顺序不保证 —
+    // 原谁后返回谁覆盖, 图上是旧参数的结果。只认最后一次发起的那次
+    if (seq !== computeSeq) return;
+    if (!r.dates || !r.dates.length) throw new Error('没有可计算的数据(所选因子在库内没有数据)');
     cur = r;
     lastComputeAt = Date.now();
     renderAll(r);
@@ -166,7 +193,7 @@ async function compute(pull) {
         ? `份额已更新到 ${r.nt_pull.latest.slice(0, 4)}-${r.nt_pull.latest.slice(4, 6)}-${r.nt_pull.latest.slice(6, 8)} · ` : '')
       + `共${r.dates.length}日 (${r.dates[0]} ~ ${r.dates[r.dates.length-1]})`;
     dataThrough();
-  } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
+  } catch (e) { if (seq !== computeSeq) return; $('btMsg').textContent = '✗ ' + e.message; }
 }
 // D1-32: 数据截至badge — 页面是一次性计算快照(曾整页停在旧数据日,
 // 用户以为更新链异常); 回到页签超5分钟或每30分钟自动重算
@@ -200,9 +227,14 @@ const NT_TIP = ps => [ps[0].axisValueLabel].concat(ps.map(p => {
 function renderAll(r) {
   // 状态卡: 堆叠面积 + 上证叠放
   const i = r.regime.dates.length - 1;
-  $('regNow').innerHTML = `当前: <b style="color:#e34448">牛 ${r.regime.bull[i]}%</b> · `
-    + `<b style="color:#898781">震荡 ${r.regime.range[i]}%</b> · `
-    + `<b style="color:#2f5cd6">熊 ${r.regime.bear[i]}%</b>`;
+  $('regNow').innerHTML = i < 0 ? '库内没有上证指数数据'
+    : `当前: <b style="color:#e34448">牛 ${r.regime.bull[i]}%</b> · `
+      + `<b style="color:#898781">震荡 ${r.regime.range[i]}%</b> · `
+      + `<b style="color:#2f5cd6">熊 ${r.regime.bear[i]}%</b>`;
+  const band = Math.round(((r.params && r.params.band) || 0.10) * 100);   // 带宽取自引擎
+  $('regTip').innerHTML = `120日动量带阈值划分: 动量高于+${band}%→牛, 低于−${band}%→熊, `
+    + `带内→震荡(带边缘平滑过渡, 三者概率和恒100%) · 橙线=牛熊比(同一个120日动量的平滑映射, `
+    + `与牛−熊概率同向, −100深熊~+100强牛)`;
   const regSeries = [
     {name: '牛%', type: 'line', stack: 'reg', data: r.regime.bull, areaStyle: {opacity: .5},
      showSymbol: false, lineStyle: {width: 0}, itemStyle: {color: '#e34448'}},
@@ -247,8 +279,11 @@ function renderAll(r) {
   if ($('ovNt').checked)
     // 叠加线按[日期,值]配对 — 类别轴按索引对齐会把2005起的归一序列
     // 错位压到2006起的nt日期轴上(review: 两轴长度5254≠5002)
+    // D1-38: 用该图自己的归一序列(首日=100) — 原共用行为指数图的归一序列,
+    // 它的起点(2005)早于本图(2006), 叠加线一上来就不是100
     ntSeries.push({name: '上证(归一)', type: 'line', yAxisIndex: 2, showSymbol: false,
-                   data: r.overlay_index.dates.map((d, i) => [d, r.overlay_index.norm[i]]),
+                   data: ((r.nt_overlay || {}).dates || []).map(
+                     (d, i) => [d, r.nt_overlay.norm[i]]),
                    lineStyle: {width: 1.2, color: '#2f5cd6'},
                    itemStyle: {color: '#2f5cd6'}});
   chN.setOption({
@@ -262,15 +297,47 @@ function renderAll(r) {
             {type: 'value', scale: true, offset: 48, position: 'right', name: '上证',
              ...AX, splitLine: {show: false}}],
     dataZoom: DZ, series: ntSeries}, true);
-  // 行为指数卡
+  // 行为指数卡。D1-38(独立评审): 最新交易日的读数在两融、ETF份额入库前只有部分因子
+  // 参与, 是"暂定值" — 与历史口径(也是回测用的口径)不可比: 实测当晚读数与数据到齐后
+  // 中位相差约12点, 约2成的交易日是否越过买卖线结论不同。完整读数与暂定值分开给
   const last = r.composite[r.composite.length - 1];
-  $('biNow').innerHTML = `当前: <b style="color:${last >= 0 ? '#e34448' : '#2f5cd6'}">${last > 0 ? '+' : ''}${last}</b>`
+  const fmtBI = v => `<b style="color:${v >= 0 ? '#e34448' : '#2f5cd6'}">${v > 0 ? '+' : ''}${v}</b>`;
+  const pv = r.provisional;
+  const lastDay = r.dates[r.dates.length - 1];
+  $('biNow').innerHTML = (pv
+      ? (pv.complete_date != null
+          ? `最近完整读数(${pv.complete_date.slice(5)}): ${fmtBI(pv.complete_value)} · ` : '')
+        + `${lastDay.slice(5)} 暂定值 ${fmtBI(last)}`
+        + ` <span class="hint" title="两融余额、ETF份额这类数据要到次日才入库; 入库前最新一天只有部分因子参与计算, 读数会变 (历史上当晚读数与数据到齐后的读数中位相差约12点)">`
+        + `(缺 ${esc(pv.missing.join('、'))} 的当日数据, 按 ${pv.n_factors - pv.missing.length}/${pv.n_factors} 个因子归一)</span>`
+      : `当前: ${fmtBI(last)}`)
     + ` · 买入线 +${r.entry} / 卖出线 ${r.exit}`;
-  const compSeries = [{name: '行为指数', type: 'line', data: r.composite, showSymbol: false,
-                       lineStyle: {width: 1.6, color: '#e67e22'}, itemStyle: {color: '#e67e22'},
-                       markLine: {symbol: 'none', silent: true, data: [
-                         {yAxis: r.entry, lineStyle: {color: '#e34448', type: 'dashed'}},
-                         {yAxis: r.exit, lineStyle: {color: '#2f5cd6', type: 'dashed'}}]}}];
+  // D1-38: 组合按"当日有数据的因子"加权 — 竖虚线标出各因子开始有数据的日期,
+  // 让人看得出哪段只有部分因子参与(2005年只有1~2个, 2019年起才是全部)
+  const joins = r.factor_joins || [];
+  const joinLines = joins.map(j => ({
+    xAxis: j.date,
+    lineStyle: {color: '#b5b4aa', type: 'dotted'},
+    label: {formatter: j.name, color: '#898781', fontSize: 9, rotate: 90, distance: 6,
+            position: 'insideEndTop'}
+  }));
+  const provFrom = pv && pv.complete_date != null ? r.dates.indexOf(pv.complete_date) + 1 : -1;
+  const provLines = provFrom > 0 && provFrom < r.dates.length ? [{
+    xAxis: r.dates[provFrom], lineStyle: {color: '#e67e22', type: 'dashed'},
+    label: {formatter: '此后为暂定值', color: '#e67e22', fontSize: 9, rotate: 90, distance: 6,
+            position: 'insideEndTop'}
+  }] : [];
+  const compSeries = [{
+    name: '行为指数', type: 'line', data: r.composite, showSymbol: false,
+    lineStyle: {width: 1.6, color: '#e67e22'}, itemStyle: {color: '#e67e22'},
+    markLine: {
+      symbol: 'none', silent: true,
+      data: [
+        {yAxis: r.entry, lineStyle: {color: '#e34448', type: 'dashed'}},
+        {yAxis: r.exit, lineStyle: {color: '#2f5cd6', type: 'dashed'}},
+        ...joinLines, ...provLines]
+    }
+  }];
   if ($('ovComp').checked)
     compSeries.push({name: '上证(归一)', type: 'line', yAxisIndex: 1, showSymbol: false,
                      data: r.overlay_index.norm, lineStyle: {width: 1.2, color: '#2f5cd6'},
@@ -292,7 +359,17 @@ function renderAll(r) {
   });
   // 回测卡
   const m = r.backtest.metrics;
-  $('btBench').textContent = `基准 ${r.backtest.bench_name} · ${m.n_days}日`;
+  // 回测区间内有哪些因子参与: 起点几个、中途加入了谁(组合的口径中途会变)。
+  // 都取自这次的计算结果(factors_now 里的权重/数据截至), 不看面板当前勾选 —
+  // 否则改了勾选还没点计算时, 两个数字对不上
+  const btD = r.backtest.dates;
+  const joined = joins.filter(j => j.date > btD[0]);
+  const nFac = Object.values(r.factors_now || {})
+    .filter(f => f.weight && f.latest).length - joined.length;
+  $('btBench').textContent = `基准 ${r.backtest.bench_name} · ${m.n_days}日`
+    + (joined.length
+      ? ` · 起点参与因子 ${nFac} 个` + joined.map(j => `, ${j.date.slice(0, 7)} 起加入${j.name}`).join('')
+      : ` · 全程 ${nFac} 个因子`);
   $('btMetrics').innerHTML = m ? [
     `策略总收益 <b style="color:${m.total_ret >= 0 ? '#e34448' : '#2f5cd6'}">${m.total_ret}%</b>`,
     `基准 <b>${m.bench_ret}%</b>`, `超额 <b>${(m.total_ret - m.bench_ret).toFixed(1)}%</b>`,
@@ -320,24 +397,53 @@ $('btnRefresh').onclick = () => { lastComputeAt = 0; compute(true); };
 $('ovReg').onchange = () => cur && renderAll(cur);
 $('ovComp').onchange = () => cur && renderAll(cur);
 $('ovNt').onchange = () => cur && renderAll(cur);
+let STRATEGIES = [];                      // 已加载的策略(保存时判断是否重名)
 $('btnSave').onclick = async () => {
   const name = $('stName').value.trim();
   if (!name) { $('btMsg').textContent = '✗ 请先填策略名'; return; }
+  const p = readParams();
+  if (p.err) { $('btMsg').textContent = '✗ ' + p.err; return; }
+  // 同名策略会被覆盖 — 确认做两道: ① 按已加载的策略列表先问一次(快捷); ② 服务端对
+  // 同名且未带 overwrite 的保存返回 409, 再问一次 — 策略列表加载失败/还没返回时
+  // ① 拦不住(列表是空的), 原配置就会静默丢失(独立评审复现)
+  const post = overwrite => api('/admin/api/backtest/strategies', {method: 'POST',
+    body: JSON.stringify({name, factors: p.w, entry: p.entry, exit: p.exit, overwrite})});
+  const ask = () => confirm(`策略名[${name}]已存在, 覆盖原有配置?`);
   try {
-    const r = await api('/admin/api/backtest/strategies', {method: 'POST',
-      body: JSON.stringify({name, factors: collectWeights(),
-                            entry: +$('btEntry').value, exit: +$('btExit').value})});
+    let r;
+    if (STRATEGIES.some(s => s.name === name) && !ask()) return;
+    try { r = await post(false); }
+    catch (e) {
+      if (!e.exists) throw e;
+      if (!ask()) return;
+      r = await post(true);
+    }
     $('btMsg').textContent = '✓ ' + r.msg;
     loadStrategies();
   } catch (e) { $('btMsg').textContent = '✗ ' + e.message; }
 };
 
+function strategySummary(cfg) {           // 策略构成一行: 因子 权重(反) · … · 入X/出Y
+  const c = cfg || {}, f = c.factors || {};
+  const parts = Object.entries(f).filter(([, v]) => v).map(([k, v]) => {
+    const nm = (FACERS.find(x => x.key === k) || {}).name || k;
+    return `${esc(nm)} ${Math.abs(v)}${v < 0 ? '(反)' : ''}`;
+  });
+  const num = (v, d) => (Number.isFinite(+v) ? Math.round(+v) : d);
+  return (parts.length ? parts.join(' · ') : '<i>配置缺失</i>')
+       + ` · <b>入${num(c.entry, 30)}/出${num(c.exit, -30)}</b>`;
+}
+
 async function loadStrategies() {
   try {
     const d = await api('/admin/api/backtest/strategies');
+    STRATEGIES = d.strategies;
+    // D1-38: 列表直接给出因子构成与阈值 — 原来只有名字和时间,
+    // 几个策略差别得逐个"加载"才看得出
     $('stList').innerHTML = d.strategies.length
-      ? '<table class="table"><tr><th>策略</th><th>更新时间</th><th></th></tr>'
-        + d.strategies.map(s => `<tr><td>${esc(s.name)}</td>
+      ? '<table class="table"><tr><th>策略</th><th>构成</th><th>更新时间</th><th></th></tr>'
+        + d.strategies.map(s => `<tr><td style="white-space:nowrap">${esc(s.name)}</td>
+          <td class="hint" style="text-align:left">${strategySummary(s.config)}</td>
           <td class="hint">${esc(s.updated_at)}</td>
           <td><button class="btn small" data-load="${s.id}">加载</button>
               <button class="btn small" data-del="${s.id}">删除</button></td></tr>`).join('')

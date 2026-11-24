@@ -129,7 +129,13 @@ def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
 
 
 def net_flow_series(path=None, n_days: int = 120) -> list:
-    """净流入/流出序列: 每日8只ETF份额差×收盘价 → 亿, [{date, net_yi, flows:{code:yi}}]"""
+    """净流入/流出序列: 每日8只ETF份额差×收盘价 → 亿, [{date, net_yi, flows:{code:yi}}]
+
+    D1-38 review: 每只ETF各用自己的"截至当天已知的最新份额"与前一个交易日相减。
+    原按"上一条有份额记录的日期"整体配对 — 份额表里有非交易日的行(季末报告日、个别
+    周六), 且往往只有一两只ETF: 它成了下一个交易日的比较基准, 其余ETF当天的申赎
+    被整段丢掉(实测 2026-01-19 显示-24.8亿, 8只合计实为净赎回379亿)。生产数据上
+    124个交易日的净额因此不对, 累计线虚高约200亿。没有这类行的日子结果与原来相同。"""
     con = ensure_db(path)
     rows = con.execute(
         "SELECT trade_date, code, fd_share FROM etf_share "
@@ -143,25 +149,39 @@ def net_flow_series(path=None, n_days: int = 120) -> list:
         iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d
         by_date.setdefault(iso, {})[c] = s
     dates = sorted(by_date.keys())
-    # 需要etf_daily收盘价
+    # 需要etf_daily收盘价: 一次取齐(D1-38: 原每个交易日查一次, 5000个交易日要近3秒)
+    prices_by_date = {}
+    marks = ",".join("?" * len(ETF_CODES))
+    for d, c, close in con.execute(
+            f"SELECT date, code, close FROM etf_daily WHERE code IN ({marks}) "
+            "AND date>=? AND date<=?", (*ETF_CODES, dates[0], dates[-1])):
+        prices_by_date.setdefault(d, {})[c] = close
     out = []
-    for i in range(1, len(dates)):
-        d, dp = dates[i], dates[i - 1]
-        cur, prev = by_date[d], by_date[dp]
-        prices = {r[0]: r[1] for r in con.execute(
-            "SELECT code, close FROM etf_daily WHERE date=?", (d,))}
-        if not prices:
+    asof = {}                      # 各ETF截至当天已知的最新份额
+    booked = None                  # 各ETF上一次入账时的份额(比较基准)
+    pending = set()                # 有了新份额行、还没按收盘价入账的ETF
+    for d in dates:
+        asof.update(by_date[d])
+        if booked is None:         # 窗口首日: 只作比较基准
+            booked = dict(asof)
             continue
+        pending.update(by_date[d])
+        prices = prices_by_date.get(d)
+        if not prices:
+            continue               # 当日没有收盘价: 份额变化留到该ETF下一个有收盘价的日子
         net_yi, flows = 0.0, {}
         for c in ETF_CODES:
-            if c in cur and c in prev and c in prices:
+            if c not in pending or c not in prices:
+                continue
+            pending.discard(c)
+            if c in booked:
                 # 份额差(万份)×收盘价 = 金额(万元) → 亿=÷1e4
-                flow = (cur[c] - prev[c]) * prices[c] / 1e4
+                flow = (asof[c] - booked[c]) * prices[c] / 1e4
                 flows[c] = round(flow, 2)
                 net_yi += flow
+            booked[c] = asof[c]
         if flows:
-            out.append({"date": d, "net_yi": round(net_yi, 2),
-                        "flows": flows})
+            out.append({"date": d, "net_yi": round(net_yi, 2), "flows": flows})
     con.close()
     return out
 
