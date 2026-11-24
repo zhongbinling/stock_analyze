@@ -48,12 +48,15 @@ def test_run_nightly_daily_vs_weekly(env, monkeypatch):
     monkeypatch.setattr(FS, "refresh_bs", fake_refresh)
     monkeypatch.setattr(FS, "refresh_holders", fake_refresh)
     monkeypatch.setattr(FS, "refresh_float", fake_refresh)
+    monkeypatch.setattr(FS, "refresh_income", fake_refresh)       # D1-35: 周频含两张表
+    monkeypatch.setattr(FS, "refresh_cashflow", fake_refresh)
     r = FS.run_nightly(weekly=False, path=env)
     assert r["stocks"] == 1 and r["daily"] == 3
     assert calls == [("600519.SH", 45), ("600519.SH", 45), ("600519.SH", 30)]  # 仅日频三件
     calls.clear()
     FS.run_nightly(weekly=True, path=env)
-    assert len(calls) == 7                                    # +季频四件(全史None)
+    assert len(calls) == 9                                    # +季频六件(events转全量)
+    assert ("600519.SH", None) in calls                       # 周频events全史(清旧行残留)
 
 
 def test_stats_pool_health(env):
@@ -81,13 +84,15 @@ def test_full_refresh_orchestrates(env, monkeypatch):
     """单只全量: add_stock + 七数据集全史"""
     done = []
     monkeypatch.setattr(FS, "add_stock", lambda c, path=None: {"ok": True, "msg": "x"})
-    for name in ("margin", "val", "finance", "bs", "holders", "events", "float"):
+    for name in ("margin", "val", "finance", "bs", "holders", "events", "float",
+                 "income", "cashflow"):
         monkeypatch.setattr(FS, f"refresh_{name}",
                             lambda c, path=None, lookback=None, _n=name:
                             done.append(_n) or 1)
     r = FS.full_refresh("600519", env)
     assert r["ok"] and sorted(done) == sorted(
-        ["margin", "val", "finance", "bs", "holders", "events", "float"])
+        ["margin", "val", "finance", "bs", "holders", "events", "float",
+         "income", "cashflow"])                                # D1-35: 补利润表/现金流量表
 
 
 def test_jobs_scheduled_and_task(server_app, monkeypatch):

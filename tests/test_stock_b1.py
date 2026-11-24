@@ -150,7 +150,7 @@ def test_full_api_autofetch(server_app, monkeypatch):
     assert c.get("/admin/api/stock/hack").status_code == 400
 
 
-def test_b1_ui_and_js():
+def test_b1_ui_and_js(js_syntax):
     import re
     import shutil
     import subprocess
@@ -163,14 +163,7 @@ def test_b1_ui_and_js():
                "商誉占净资产", "dv_ttm", "质押率"):
         assert mk in html, f"缺: {mk}"
     assert "${{" not in html                          # Jinja陷阱零残留
-    if shutil.which("node"):
-        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-        main = max(blocks, key=len)
-        r = subprocess.run([shutil.which("node"), "-e",
-                            "new Function(process.argv[1])", main],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120)
-        assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+    js_syntax(html)
 
 
 def test_goodwill_graceful_none():

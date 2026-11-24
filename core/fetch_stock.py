@@ -135,7 +135,9 @@ def refresh_basic(path=None) -> int:
 
 def _iso(d) -> str:
     """trade_date归一ISO: 20261107→2026-11-07(已是ISO原样) — 全系统统一口径"""
-    s = str(d or "")
+    s = str(d or "").strip()
+    if s.endswith(".0"):
+        s = s[:-2]                 # 含空值的整数日期列被pandas整体读成浮点: 20261107.0
     return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else s
 
 
@@ -157,8 +159,37 @@ def _norm_code(code: str) -> str:
     return c
 
 
+_PAGE_ROWS = 6000                  # tushare daily/adj_factor/daily_basic 单次返回行数上限
+
+
+def _pull_all(api: str, fields: str, ts_code: str):
+    """全史分页拉取, 按trade_date升序返回DataFrame。
+    D1-35(避雷针体检): 单次调用最多6000行 ≈ 24.6年 — 实测自选池9只里5只
+    1994~2001年上市的老股日线恰为6000行(600760上市1996年, 日线始于2001-03),
+    "全史K线"实际缺了最早几年; 复权因子同样被截, 两边末端对不齐 → 最早
+    一两百行adj_factor为空(共1077行), 前复权价在这段直接取原始价, 与相邻
+    段差出近一个复权系数的倍数。"""
+    frames, offset = [], 0
+    while True:
+        df = T.call(api, fields, ts_code=ts_code, start_date="19900000",
+                    end_date=time.strftime("%Y%m%d"),
+                    limit=_PAGE_ROWS, offset=offset)
+        frames.append(df)
+        if df is None or len(df) < _PAGE_ROWS:
+            break
+        offset += _PAGE_ROWS
+        if offset >= 60000:
+            break
+    if len(frames) == 1:
+        df = frames[0]
+    else:
+        import pandas as pd
+        df = pd.concat([f for f in frames if f is not None], ignore_index=True)
+    return df.sort_values("trade_date") if df is not None and len(df) else df
+
+
 def add_stock(code: str, path=None) -> dict:
-    """入池: 全史日线+复权因子(实测6000行/35年单call)。幂等(已入池只补增量)。"""
+    """入池: 全史日线+复权因子(分页, 见_pull_all)。幂等(已入池同样全量刷新)。"""
     ts_code = _norm_code(code)
     if not T.has_token():
         return {"ok": False, "msg": "无tushare token"}
@@ -173,22 +204,15 @@ def add_stock(code: str, path=None) -> dict:
     except Exception as e:                                   # noqa: BLE001
         return {"ok": False, "msg": f"基础信息失败: {str(e)[:60]}"}
     try:
-        rows = []
-        for api, fill in (("daily", None), ("adj_factor", None)):
-            if api == "daily":
-                df = T.call("daily", "ts_code,trade_date,open,high,low,close,vol,amount",
-                            ts_code=ts_code, start_date="19900000",
-                            end_date=time.strftime("%Y%m%d"))
-                rows = [(ts_code, _iso(r["trade_date"]),
-                         float(r["open"]), float(r["high"]), float(r["low"]),
-                         float(r["close"]), float(r["vol"] or 0),
-                         float(r["amount"] or 0), None) for _, r in df.iterrows()]
-            else:
-                dfa = T.call("adj_factor", "ts_code,trade_date,adj_factor",
-                             ts_code=ts_code, start_date="19900000",
-                             end_date=time.strftime("%Y%m%d"))
-                fac = {_iso(r["trade_date"]): float(r["adj_factor"]) for _, r in dfa.iterrows()}
-                rows = [r[:8] + (fac.get(r[1]),) for r in rows]
+        d = _pull_all("daily", "ts_code,trade_date,open,high,low,close,vol,amount",
+                      ts_code)
+        dfa = _pull_all("adj_factor", "ts_code,trade_date,adj_factor", ts_code)
+        fac = {_iso(r["trade_date"]): float(r["adj_factor"]) for _, r in dfa.iterrows()}
+        rows = [(ts_code, _iso(r["trade_date"]),
+                 float(r["open"]), float(r["high"]), float(r["low"]),
+                 float(r["close"]), float(r["vol"] or 0),
+                 float(r["amount"] or 0), fac.get(_iso(r["trade_date"])))
+                for _, r in d.iterrows()]
     except Exception as e:                                   # noqa: BLE001
         return {"ok": False, "msg": f"行情拉取失败: {str(e)[:60]}"}
     now = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -214,7 +238,10 @@ def add_stock(code: str, path=None) -> dict:
 
 
 def refresh_daily(lookback: int = 7, path=None) -> int:
-    """池内日增: 回看N自然日幂等upsert(错过日自动补, 同fetch_etf语义)"""
+    """池内日增: 回看N自然日幂等upsert(错过日自动补, 同fetch_etf语义)。
+    D1-35: upsert更新全部OHLC — 原只更新close/vol/amount/复权因子; 盘中点
+    [池日增]写入的是当日盘中快照, 之后各晚的日增都不纠正开高低, 当天的高低价
+    永久停在盘中值。"""
     import datetime as dt
     if not T.has_token():
         return -1
@@ -238,6 +265,7 @@ def refresh_daily(lookback: int = 7, path=None) -> int:
                 "INSERT INTO stock_daily(ts_code,trade_date,open,high,low,close,"
                 "vol,amount,adj_factor) VALUES(?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(ts_code,trade_date) DO UPDATE SET "
+                "open=excluded.open,high=excluded.high,low=excluded.low,"
                 "close=excluded.close,vol=excluded.vol,amount=excluded.amount,"
                 "adj_factor=excluded.adj_factor", rows)
             total += len(rows)
@@ -298,19 +326,31 @@ def kline(code: str, adj: str = "qfq", path=None) -> dict:
     con.close()
     if not rows:
         return {"ok": False, "msg": f"{ts_code} 不在池(先add_stock)"}
+    facs = [r[7] for r in rows]
     if adj == "qfq":
-        base = max((r[7] for r in rows if r[7]), default=1.0) or 1.0
+        base = max((f for f in facs if f), default=1.0) or 1.0
     elif adj == "hfq":
         base = 1.0
+    # 复权因子缺失的行(历史上被接口行数上限截掉的那一段, 见_pull_all)顺延取
+    # 其后首个已知因子 — 原按1.0处理, 这段前复权价直接成了原始价(600519
+    # 2002-02-28收盘38.00 vs 次日4.32, 差一个复权系数的倍数)
+    if adj != "none":
+        nxt, fill = None, []
+        for f in reversed(facs):
+            if f:
+                nxt = f
+            fill.append(nxt)
+        facs = fill[::-1]
     closes_raw = [r[4] for r in rows]
     # qfq: factor/最新factor(归一); hfq: factor本身; none: 1
-    def _fac(r):
-        if adj == "none" or r[7] is None:
+    def _fac(i):
+        if adj == "none" or facs[i] is None:
             return 1.0
-        return r[7] / base if adj == "qfq" else r[7]
-    k = [[round(r[1] * _fac(r), 2), round(r[4] * _fac(r), 2),
-          round(r[3] * _fac(r), 2), round(r[2] * _fac(r), 2)] for r in rows]
-    closes = [round(c * _fac(rows[i]), 2) for i, c in enumerate(closes_raw)]
+        return facs[i] / base if adj == "qfq" else facs[i]
+    k = [[round(r[1] * _fac(i), 2), round(r[4] * _fac(i), 2),
+          round(r[3] * _fac(i), 2), round(r[2] * _fac(i), 2)]
+         for i, r in enumerate(rows)]
+    closes = [round(c * _fac(i), 2) for i, c in enumerate(closes_raw)]
     return {
         "ok": True, "code": ts_code, "name": pool[0] if pool else ts_code,
         "adj": adj, "n": len(rows),
@@ -453,13 +493,20 @@ def refresh_margin(code: str, path=None, lookback: int = None) -> int:
     return len(rows)
 
 
+_VAL_FIELDS = "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv,dv_ttm"
+
+
 def refresh_val(code: str, path=None, lookback: int = None) -> int:
-    """每日估值(daily_basic): PE_TTM/PB/总市值/流通市值"""
+    """每日估值(daily_basic): PE_TTM/PB/总市值/流通市值。
+    D1-35: 全量拉取走分页 — daily_basic与daily同为单次6000行上限(见_pull_all),
+    池内4只老股的估值史比K线短2~5年(中航高科K线自1994-05、估值自1999-11)"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("daily_basic", "ts_code,trade_date,pe_ttm,pb,total_mv,circ_mv,dv_ttm",
-                    ts_code=ts_code, start_date=_start(lookback),
-                    end_date=time.strftime("%Y%m%d"))
+        if lookback:
+            df = T.call("daily_basic", _VAL_FIELDS, ts_code=ts_code,
+                        start_date=_start(lookback), end_date=time.strftime("%Y%m%d"))
+        else:
+            df = _pull_all("daily_basic", _VAL_FIELDS, ts_code)
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 估值失败 {ts_code}: {str(e)[:60]}")
         return -1
@@ -513,7 +560,7 @@ def holders_payload(code: str, path=None) -> dict:
         (ts_code,))}
     con.close()
     out = []
-    hn_prev = None                          # D1-31: as-of填充(旧→新遍历时携带)
+    hn_prev = None                          # 最近一期有户数披露的值(as-of)
     for end_date in reversed(periods):        # 旧→新累积prev_ratio(环比=较上期)
         if hnum.get(end_date) is not None:
             hn_prev = hnum[end_date]
@@ -526,10 +573,13 @@ def holders_payload(code: str, path=None) -> dict:
             rows.append({"name": name, "amount": amt, "ratio": ratio,
                          "chg": chg, "tag": _holder_tag(name)})
             prev_ratio[name] = ratio
+        real = hnum.get(end_date)
         out.append({"end_date": end_date,
-                    "holder_num": hnum.get(end_date) if hnum.get(end_date) is not None
-                    else hn_prev,       # D1-31: 非标准披露日(如25-11-05临时
-                                        # 披露)无holdernum → 最近一期as-of
+                    "holder_num": real,        # 本期真实披露值(无披露=None)
+                    # 非标准披露日(如25-11-05临时披露十大股东但不披露户数)
+                    # 的沿用值: 仅供展示"户数≈上期"; 不并入holder_num —
+                    # D1-31曾直接填充, 页面据此算环比得到"+0.0% 筹码分散⚠"的假预警
+                    "holder_num_asof": None if real is not None else hn_prev,
                     "holders": rows})
     out.reverse()                              # 输出恢复倒序(最新在前)
     return {"ok": True, "code": ts_code, "periods": periods, "data": out}
@@ -694,7 +744,10 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
         inst.append((end_date, ratio_sum,
                      hn[0] if hn and hn[0] is not None else hn_prev))  # as-of填
     con.close()
-    dates = sorted({r[0] for r in inc} | set(fin) | set(bs))
+    # 统一取最近n_qua季: 原把利润表(近N季)与财务/资产负债表(全史期数)直接
+    # 求并集 — 茅台实测69期而营收只有最近12期有数(图上前57期营收柱空缺);
+    # 同一序列还是扫雷prompt里标称"近8季"的财务表(实测73行, 多数带None)
+    dates = sorted({r[0] for r in inc} | set(fin) | set(bs))[-n_qua:]
     E = 1e8                                    # 元→亿
     out = {"ok": True, "code": ts_code, "dates": [],
            "profit": {"revenue": [], "n_income": [], "dedt": [], "or_yoy": [],
@@ -765,9 +818,35 @@ def _float_risk(ratio) -> str:
     return "high" if ratio >= 5 else ("mid" if ratio >= 1 else "low")
 
 
+def _holdertrade_risk(down: bool, cr) -> str:
+    """增减持事件的风险分级: 增持不属风险; 减持按占总股本比例 ≥1%高 / ≥0.1%中 /
+    更低不算风险事件; 占比未知沿用绝对量口径(中)。
+
+    D1-35: 原只看绝对量(过50万股门槛即中风险)。生产库占比<0.1%的减持里98%
+    (115/117)是龙虎榜席位成交(机构专用/券商营业部), 对大盘股不到一天成交量的
+    零头; ≥0.1%的91%才是真实股东/董监高减持。新口径扫雷实测把紫金矿业单月4笔
+    合计占比0.01%~0.04%的席位卖出写成"[高]机构集中大额减持加速"。"""
+    if not down:
+        return "low"
+    if cr is None:
+        return "mid"
+    a = abs(cr)
+    return "high" if a >= 1 else ("mid" if a >= 0.1 else "low")
+
+
+def _fmt_float_shares(share) -> str:
+    """解禁股数: ≥1000万股用亿股(两位), 否则用万股(两位) — 原一律"0.00亿股",
+    小额解禁(如6.1万股)显示成"0.0亿股" """
+    if not share:
+        return "--"
+    return f"{share / 1e8:.2f}亿股" if share >= 1e7 else f"{share / 1e4:.2f}万股"
+
+
 def refresh_float(code: str, path=None, lookback: int = None) -> int:
     """个股解禁(share_float) + 同步生成解禁事件(未来>5%为大额高风险)
-    注: 接口不支持ann_date过滤, lookback仅为签名统一(全量拉, 单股行数少)"""
+    注: 接口不支持ann_date过滤, lookback仅为签名统一(全量拉, 单股行数少)。
+    D1-35: 拉到行则替换该股旧的解禁事件(原只增不删, 标题格式变更后旧行残留);
+    事件按(解禁日,股东)去重, 与stock_float主键一致。"""
     ts_code = _norm_code(code)
     try:
         df = T.call("share_float",
@@ -777,9 +856,11 @@ def refresh_float(code: str, path=None, lookback: int = None) -> int:
         print(f"[stock] 解禁失败 {ts_code}: {str(e)[:60]}")
         return -1
     con = _conn(path)
-    fr = []
+    fr = {}
     for _, r in df.iterrows():
         fd, hn = _iso(r["float_date"]), str(r.get("holder_name") or "未知股东").strip()
+        if len(fd) != 10 or not fd[:4].isdigit():       # 缺解禁日的脏行不入库
+            continue
         ratio = _f(r.get("float_ratio"))
         share = _f(r.get("float_share"))
         con.execute("INSERT INTO stock_float VALUES(?,?,?,?,?,?) "
@@ -787,70 +868,139 @@ def refresh_float(code: str, path=None, lookback: int = None) -> int:
                     "ann_date=excluded.ann_date,float_share=excluded.float_share,"
                     "float_ratio=excluded.float_ratio", (ts_code, _ann(r.get("ann_date")),
                     fd, share, ratio, hn))
-        fr.append((ts_code, fd, "float",
-                   f"{hn}解禁{round(share / 1e8, 2) if share else '--'}亿股"
-                   f"({ratio if ratio is not None else '--'}%)",
-                   f"解禁股东: {hn}", _float_risk(ratio)))
-    con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
-                    "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
-                    "detail=excluded.detail,risk=excluded.risk", fr)
+        fr[(fd, hn)] = (ts_code, fd, "float",
+                        f"{hn}解禁{_fmt_float_shares(share)}"
+                        f"({ratio if ratio is not None else '--'}%)",
+                        f"解禁股东: {hn}", _float_risk(ratio))
+    if fr:
+        con.execute("DELETE FROM stock_events WHERE ts_code=? AND ev_type='float'",
+                    (ts_code,))
+        con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
+                        "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
+                        "detail=excluded.detail,risk=excluded.risk", list(fr.values()))
     con.commit()
     con.close()
     return len(fr)
 
 
+def _fmt_shares(vol: float) -> str:
+    """股 → "12.34万股"(<100万股保留两位) / "1274.2万股"(≥100万股保留一位)"""
+    w = vol / 1e4
+    return f"{w:.2f}万股" if w < 100 else f"{w:.1f}万股"
+
+
+def _clean_holder_name(raw) -> str:
+    """股东名: 压空白; 超长截断不截在括号中间(曾出现"…(非营业场所增持3300万股")"""
+    s = " ".join(str(raw or "").split())
+    if len(s) > 24:
+        s = s[:24]
+        if s.count("(") > s.count(")") or s.count("（") > s.count("）"):
+            import re
+            s = re.sub(r"[(（][^(（]*$", "", s)      # 截断点落在未闭合括号内 → 整段括号去掉
+        s = s.rstrip(" ")
+    return s
+
+
+_WINDOWED_EVENTS = ("forecast", "holdertrade")     # 按公告日窗口拉取的事件类型
+
+
 def refresh_events(code: str, path=None, lookback: int = None) -> int:
-    """结构化大事件: 预告/分红/增减持/停牌 → 统一stock_events(风险分级)"""
+    """结构化大事件: 预告/分红/增减持/停牌 → 统一stock_events(风险分级)
+
+    D1-35(避雷针体检, 对照真实接口数据):
+    - 增减持方向取接口字段 in_de(IN增持/DE减持) — change_vol恒为正。原按
+      vol<0判减持 → 全库668条增减持事件全部记成"增持", 减持(最核心的避雷
+      信号)从未被识别、从未进扫雷的风险事件列表。无in_de的旧行仍按负号兜底。
+    - 增持不属风险(risk=low): 原≥50万股的增持一律mid → K线满屏橙点, 且被
+      当作"近一年风险事件"喂给AI
+    - 按类型替换旧行: 只动本次拉取成功的类型 — 增量刷新(lookback)只清窗口内
+      的行, 全量刷新清该股该类型全部行(接口返回空则不动, 防抖动清库)。
+      原只增不删: 标题口径变更/源端修订后旧行永久残留(实测19组同日同股东
+      新旧两行并存, 含"增持1274234.0万股"这类脏行)"""
     ts_code = _norm_code(code)
     con = _conn(path)
-    ev = []
+    ev = []                                 # (ts_code, ev_date, ev_type, title, detail, risk)
+    got = {}                                # 类型 → 本次拉到的行数
+    win = _iso(_start(lookback)) if lookback else None     # 增量窗口起点(ISO)
     try:                                                     # 业绩预告
         df = T.call("forecast", "ts_code,ann_date,end_date,type,p_change_min,p_change_max",
                     ts_code=ts_code, start_date=_start(lookback),
                     end_date=time.strftime("%Y%m%d"))
         for _, r in df.iterrows():
+            ad, ed = _ann(r.get("ann_date")), _ann(r.get("end_date"))
+            if not ad or not ed:                             # 无公告日/无报告期的脏行
+                continue
             t = str(r.get("type") or "预告").strip()
-            ev.append((ts_code, _ann(r.get("ann_date")), "forecast",
+            lo, hi = _f(r.get("p_change_min")), _f(r.get("p_change_max"))
+            # 无变动幅度的预告(如"不确定")原样落库成"预计变动nan%~nan%"
+            chg = f"预计变动{lo}%~{hi}%" if lo is not None and hi is not None \
+                else "未给出变动幅度"
+            ev.append((ts_code, ad, "forecast",
                        f"业绩预告: {t}",
-                       f"{_iso(r['end_date'])}报告期 预计变动{r.get('p_change_min')}%"
-                       f"~{r.get('p_change_max')}%", FORECAST_RISK.get(t, "mid")))
+                       f"{ed}报告期 {chg}", FORECAST_RISK.get(t, "mid")))
+        got["forecast"] = len(ev)
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 预告失败: {str(e)[:50]}")
     try:                                                     # 分红送转
         df = T.call("dividend", "ts_code,end_date,ann_date,cash_div,stk_div",
                     ts_code=ts_code)
+        n0 = len(ev)
         for _, r in df.iterrows():
             cash, stk = _f(r.get("cash_div")), _f(r.get("stk_div"))
-            if not cash and not stk:
+            ad, ed = _ann(r.get("ann_date")), _ann(r.get("end_date"))
+            if not cash and not stk or not ad:
                 continue
-            ev.append((ts_code, _ann(r.get("ann_date")), "dividend",
-                       f"分红: 每10股派{cash}元" + (f" 送{stk}股" if stk else ""),
-                       f"{_iso(r['end_date'])}年度分配", "low"))
+            # 只送转不派息的写成"每10股送N股"(原"每10股派None元 送N股")
+            parts = []
+            if cash:
+                parts.append(f"每10股派{cash}元")
+            if stk:
+                parts.append(f"送{stk}股" if cash else f"每10股送{stk}股")
+            ev.append((ts_code, ad, "dividend",
+                       "分红: " + " ".join(parts),
+                       f"{ed}年度分配" if ed else "分配方案(报告期未注明)", "low"))
+        got["dividend"] = len(ev) - n0
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 分红失败: {str(e)[:50]}")
     try:                                                     # 股东增减持
         df = T.call("stk_holdertrade",
-                    "ts_code,ann_date,holder_name,holder_type,change_vol,change_ratio",
+                    "ts_code,ann_date,holder_name,holder_type,in_de,change_vol,change_ratio",
                     ts_code=ts_code, start_date=_start(lookback) if lookback else "20180101",
                     end_date=time.strftime("%Y%m%d"))
+        n0 = len(ev)
         for _, r in df.iterrows():
-            vol = _f(r.get("change_vol"))                   # 单位=股(实测:
-            cr = _f(r.get("change_ratio"))                  # 0.0011%×12.56亿≈1.38万股=13800股)
+            vol = _f(r.get("change_vol"))                   # 单位=股(实测锚定), 恒为正
+            cr = _f(r.get("change_ratio"))
             if vol is None or abs(vol) < 5e5:               # <50万股噪音滤除
                 continue
-            down = vol < 0
-            hn = str(r.get("holder_name") or "").strip()[:18]
-            risk = "high" if down and (cr is not None and abs(cr) >= 1) else "mid"
-            ev.append((ts_code, _ann(r.get("ann_date")), "holdertrade",
-                       f"{hn}{'减持' if down else '增持'}{abs(round(vol / 1e4, 0))}万股",
-                       f"变动占比{cr}%", risk))
+            ad = _ann(r.get("ann_date"))
+            if not ad:
+                continue
+            in_de = str(r.get("in_de") or "").strip().upper()
+            if in_de.startswith("D"):
+                down = True
+            elif in_de.startswith("I"):
+                down = False
+            else:
+                down = vol < 0 or (cr is not None and cr < 0)   # 无in_de: 负号兜底
+            ev.append((ts_code, ad, "holdertrade",
+                       f"{_clean_holder_name(r.get('holder_name'))}"
+                       f"{'减持' if down else '增持'}{_fmt_shares(abs(vol))}",
+                       f"变动占比{cr}%" if cr is not None else "变动占比未披露",
+                       _holdertrade_risk(down, cr)))
+        got["holdertrade"] = len(ev) - n0
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 增减持失败: {str(e)[:50]}")
     try:                                                     # 停复牌
         df = T.call("suspend", "ts_code,suspend_date,resume_date", ts_code=ts_code)
+        n0 = len(ev)
         for _, r in df.iterrows():
-            ev.append((ts_code, _iso(r["suspend_date"]), "suspend",
+            sd = _iso(r.get("suspend_date"))
+            if len(sd) != 10 or not sd[:4].isdigit():    # 缺停牌日的脏行不入库
+                continue
+            ev.append((ts_code, sd, "suspend",
                        "停牌", f"至{_iso(r.get('resume_date')) or '--'}复牌", "mid"))
+        got["suspend"] = len(ev) - n0
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 停复牌失败: {str(e)[:50]}")
     try:                                                     # 质押(状态类独立表)
@@ -862,6 +1012,14 @@ def refresh_events(code: str, path=None, lookback: int = None) -> int:
                          for _, r in df.iterrows()])
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 质押失败: {str(e)[:50]}")
+    # 旧行替换(见docstring): 窗口型事件在增量刷新时只清窗口内; 其余清该类型全部
+    for t, n in got.items():
+        if lookback and t in _WINDOWED_EVENTS:
+            con.execute("DELETE FROM stock_events WHERE ts_code=? AND ev_type=? "
+                        "AND ev_date>=?", (ts_code, t, win))
+        elif n:
+            con.execute("DELETE FROM stock_events WHERE ts_code=? AND ev_type=?",
+                        (ts_code, t))
     con.executemany("INSERT INTO stock_events VALUES(?,?,?,?,?,?) "
                     "ON CONFLICT(ts_code,ev_date,ev_type,title) DO UPDATE SET "
                     "detail=excluded.detail,risk=excluded.risk", ev)
@@ -1010,8 +1168,10 @@ def risk_payload(code: str, path=None) -> dict:
 
 def run_nightly(weekly: bool = False, path=None) -> dict:
     """A5夜间链: 日频(daily回看7+margin/val 45日+events 30日) ;
-    weekly=True加季频全史(finance/bs/holders/float)。
-    调度: 19:30每晚 + 周五19:35季频(jobs挂载)。"""
+    weekly=True加季频全史(finance/bs/holders/float)且events改全量。
+    调度: 19:30每晚 + 周五19:35季频(jobs挂载)。
+    D1-35: 周频的events全量刷新(近1年窗口→全史) — 借refresh_events的
+    按类型替换清掉旧标题口径的残留行(增量刷新只清窗口内, 清不到更早的)。"""
     import datetime as dt
     r = {"daily": refresh_daily(path=path), "stocks": 0, "weekly": weekly}
     con = _conn(path)
@@ -1021,10 +1181,12 @@ def run_nightly(weekly: bool = False, path=None) -> dict:
         n = 0
         n += max(0, refresh_margin(ts_code, path, lookback=45))
         n += max(0, refresh_val(ts_code, path, lookback=45))
-        n += max(0, refresh_events(ts_code, path, lookback=30))
+        n += max(0, refresh_events(ts_code, path, lookback=None if weekly else 30))
         if weekly:
             n += max(0, refresh_finance(ts_code, path))
             n += max(0, refresh_bs(ts_code, path))
+            n += max(0, refresh_income(ts_code, path))       # D1-35: 营收/净利随季更新
+            n += max(0, refresh_cashflow(ts_code, path))     # D1-35: 经营现金流
             n += max(0, refresh_holders(ts_code, path))
             n += max(0, refresh_float(ts_code, path))
         r["stocks"] += 1
@@ -1034,7 +1196,10 @@ def run_nightly(weekly: bool = False, path=None) -> dict:
 
 
 def full_refresh(code: str, path=None) -> dict:
-    """A5手动单只全量重拉(全史所有数据集)"""
+    """A5手动单只全量重拉(全史所有数据集)。
+    D1-35: 补上利润表/现金流量表 — 自称"所有数据集"却漏了这两张(B1的营收/
+    净利/经营现金流图), 周频夜间链同样不含 → 没点过[数据更新]的股票这三项
+    永远是空的(页面只在这类数据全无时才自动拉)。"""
     ts_code = _norm_code(code)
     r = add_stock(ts_code, path)
     if not r.get("ok"):
@@ -1043,6 +1208,8 @@ def full_refresh(code: str, path=None) -> dict:
          "val": refresh_val(ts_code, path),
          "finance": refresh_finance(ts_code, path),
          "bs": refresh_bs(ts_code, path),
+         "income": refresh_income(ts_code, path),
+         "cashflow": refresh_cashflow(ts_code, path),
          "holders": refresh_holders(ts_code, path),
          "events": refresh_events(ts_code, path),
          "float": refresh_float(ts_code, path)}

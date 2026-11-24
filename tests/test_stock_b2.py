@@ -153,7 +153,7 @@ def test_b2_apis(server_app, monkeypatch):
     assert c.post("/admin/api/stock/scan", json={"code": "x", "force": True}).status_code == 200
 
 
-def test_b2_ui_and_js():
+def test_b2_ui_and_js(js_syntax):
     import re
     import shutil
     import subprocess
@@ -163,14 +163,7 @@ def test_b2_ui_and_js():
                "DIM_COLOR", "[${p.dimension}]", "上次扫雷结果", "未扫雷"):
         assert mk in html, f"缺: {mk}"
     assert "${{" not in html
-    if shutil.which("node"):
-        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-        main = max(blocks, key=len)
-        r = subprocess.run([shutil.which("node"), "-e",
-                            "new Function(process.argv[1])", main],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=120)
-        assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+    js_syntax(html)
 
 
 def test_freshness_sparse_data(env):
@@ -210,7 +203,11 @@ def test_holder_num_asof_fill(env):
     con.commit(); con.close()
     hp = FS.holders_payload("600519", env)
     by_d = {x["end_date"]: x["holder_num"] for x in hp["data"]}
-    assert by_d["2025-11-05"] == 238512.0     # as-of=最近一期(非None)
+    asof = {x["end_date"]: x["holder_num_asof"] for x in hp["data"]}
+    assert by_d["2025-11-05"] is None and asof["2025-11-05"] == 238512.0
+    # D1-35: 股东表holder_num保持真实值(无披露=None), 沿用值单列holder_num_asof —
+    # 曾直接填入holder_num, 页面据此算环比得到"+0.0% 筹码分散⚠"的假预警
+    assert by_d["2025-12-31"] == 255892.0 and asof["2025-12-31"] is None
     assert by_d["2025-12-31"] == 255892.0
     # full payload的inst通道同样填充
     fp = FS.finance_full_payload("600519.SH", path=env)
@@ -226,7 +223,7 @@ def test_stock_page_yfit_and_chips_gates():
     assert ".on('datazoom', () => _fitY(c))" in html      # 十图挂载
     assert "fresh-chip" in html and "skMuted" in html     # 点选忽略
     assert ".fresh-chip.muted" in html                    # 灰调+删除线样式
-    assert "skUpdatedAt < 3 * 60 * 1000" in html          # 刚更新免确认
+    assert "(skUpdated[scanCode] || 0) < 3 * 60 * 1000" in html   # 刚更新免确认(按股票记)
     # JS语法门禁(node哑元不需要 — 该页无Jinja变量混入script)
     import shutil, subprocess, tempfile, os
     blocks = re.findall(r"<script>([\s\S]*?)</script>", html)

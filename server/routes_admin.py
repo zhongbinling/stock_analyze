@@ -2,6 +2,7 @@
 """管理端路由: 管理登录 / 工作台 / 账号管理 (≥5/≥9) + S2 数据管理与数据生成 (≥7) + S3 视图管理 (≥5)"""
 import json
 import re
+import time
 from datetime import datetime
 
 from flask import (Blueprint, abort, flash, jsonify, redirect, render_template,
@@ -422,6 +423,33 @@ def api_stock_daily_refresh():
 
 # ── 避雷针A2: 财务/股东/两融/估值(首访自动拉取, 自选池语义) ──
 
+_B1_AUTOFETCH_GAP = 6 * 3600          # B1四表自动补拉的负缓存(秒)
+_b1_autofetch = {}                   # 次新股/尚未出报表的股票, 不至于每开一次页面重拉一轮全史
+
+
+def _b1_need_autofetch(ts_code: str, p: dict) -> bool:
+    """B1财务全景是否需要自动补拉: 四表全无数据, 或利润表/现金流量表缺失
+    (营收/净利/经营现金流图为空)。D1-35: 原只在全无数据时触发 — 而周频夜间链
+    和[全量重拉]当时都不含这两张表, 没点过[数据更新]的股票永远不会自动补上。"""
+    if p.get("dates"):
+        import fetch_stock as FS
+        con = FS._conn()
+        try:
+            inc, cf = con.execute(
+                "SELECT (SELECT COUNT(*) FROM stock_income WHERE ts_code=?),"
+                " (SELECT COUNT(*) FROM stock_cashflow WHERE ts_code=?)",
+                (ts_code, ts_code)).fetchone()
+        finally:
+            con.close()
+        if inc and cf:
+            return False
+    last = _b1_autofetch.get(ts_code)
+    if last and time.time() - last < _B1_AUTOFETCH_GAP:
+        return False
+    _b1_autofetch[ts_code] = time.time()
+    return True
+
+
 def _stock_module(code, mod):
     """A2/A3模块统一入口: 空数据先refresh再出载荷"""
     import fetch_stock as FS
@@ -442,11 +470,13 @@ def _stock_module(code, mod):
             and not p.get("events")):
         refresher(ts_code)
         p = payload(ts_code)
-    elif mod == "full" and not p.get("dates"):           # B1全景依赖四表
-        FS.refresh_income(ts_code)
-        FS.refresh_cashflow(ts_code)
-        FS.refresh_finance(ts_code)
-        FS.refresh_bs(ts_code)
+    elif mod == "full" and _b1_need_autofetch(ts_code, p):   # B1全景依赖四表
+        for fn in (FS.refresh_income, FS.refresh_cashflow,
+                   FS.refresh_finance, FS.refresh_bs):
+            try:
+                fn(ts_code)
+            except Exception as e:  # noqa: BLE001
+                print(f"[stock] B1自动补拉失败 {fn.__name__}: {str(e)[:60]}")
         p = payload(ts_code)
     elif mod == "risk" and not p.get("items") and not p.get("checked"):
         FS.refresh_float(ts_code)                        # risk依赖float+events
@@ -468,9 +498,12 @@ def api_stock_module(mod):
 @bp_admin.get("/api/stock/finance_ai")
 @require_level(7)
 def api_stock_finance_ai():
-    """A4/B2: 读扫雷结果缓存(无缓存返回incomplete提示)"""
+    """A4/B2: 读扫雷结果缓存(无有效缓存返回nocache, 财务不足返回incomplete)。
+    只读: D1-35前这里调的是不带cached_only的scan_stock — 页面每次加载一只
+    没扫过(或财务数据已更新)的股票, 这个GET就会直接跑一遍AI扫雷: 本地模型
+    被静默占用1~3分钟, 且与用户随后点的[一键扫雷]并发成两遍。"""
     import stock_risk as SR
-    r = SR.scan_stock(request.args.get("code", ""))
+    r = SR.scan_stock(request.args.get("code", ""), cached_only=True)
     if not r.get("ok") and not r.get("cached"):
         return jsonify(r), 404
     return jsonify(r)

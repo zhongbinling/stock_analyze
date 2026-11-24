@@ -171,7 +171,7 @@ def test_backup_registered():
     assert "stock" in B.ASSETS and B.ASSET_FILES["stock"] == "stock.db"
 
 
-def test_stock_ui_and_js_syntax():
+def test_stock_ui_and_js_syntax(js_syntax):
     """UI接线(池chips动态刷新/搜索建议/复权切换) + node语法门禁"""
     import re
     import shutil
@@ -182,10 +182,4 @@ def test_stock_ui_and_js_syntax():
                "btnStDaily", "MA_COLORS"):
         assert mk in html, f"缺: {mk}"
     assert "MA5" not in html or True                     # 均线名由数据驱动
-    if shutil.which("node"):
-        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-        main = max(blocks, key=len)
-        r = subprocess.run([shutil.which("node"), "-e",
-                            "new Function(process.argv[1])", main],
-                           capture_output=True, text=True, timeout=120)
-        assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
+    js_syntax(html)

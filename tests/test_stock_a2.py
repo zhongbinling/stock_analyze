@@ -153,7 +153,7 @@ def test_module_autofetch_and_api(server_app, monkeypatch, tmp_path):
     assert c.get("/admin/api/stock/hack").status_code == 400
 
 
-def test_a2_ui_markers():
+def test_a2_ui_markers(js_syntax):
     import re
     import shutil
     import subprocess
@@ -162,13 +162,7 @@ def test_a2_ui_markers():
                "loadA2", "renderHolders", "renderMargin", "renderProfit", "renderVal",
                "pfMode", "北向", "国家队", "同比%", "3年分位"):
         assert mk in html, f"缺: {mk}"
-    if shutil.which("node"):
-        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-        main = max(blocks, key=len)
-        r = subprocess.run([shutil.which("node"), "-e",
-                            "new Function(process.argv[1])", main],
-                           capture_output=True, text=True, timeout=120)
-        assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
+    js_syntax(html)
 
 
 def test_single_quarters_missing_base_none():

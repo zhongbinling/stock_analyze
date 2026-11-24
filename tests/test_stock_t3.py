@@ -54,6 +54,7 @@ _e2e = pytest.mark.skipif(not _e2e_ready(),
 # ── ① 真实数据E2E: 全维度载荷(不加mock) ──
 
 @_e2e
+@pytest.mark.real_stock_db          # 读生产真数据(其余测试默认隔离生产库)
 def test_e2e_finance_full_real():
     """真库茅台: 四组载荷量级合理性断言(非trivial)"""
     d = FS.finance_full_payload("600519.SH")
@@ -65,6 +66,7 @@ def test_e2e_finance_full_real():
 
 
 @_e2e
+@pytest.mark.real_stock_db          # 读生产真数据(其余测试默认隔离生产库)
 def test_e2e_scan_real_model():
     """真模型扫雷(force): 规则+AI全链路, 评级合法且报告入库可回看"""
     r = SR.scan_stock("600519.SH", force=True)
@@ -81,6 +83,7 @@ def test_e2e_scan_real_model():
 
 
 @_e2e
+@pytest.mark.real_stock_db          # 读生产真数据(其余测试默认隔离生产库)
 def test_e2e_kline_adj_consistency_real():
     """真库复权一致性: qfq最新价≈原始收盘价(归一到最新因子)"""
     k = FS.kline("600519.SH", "qfq")

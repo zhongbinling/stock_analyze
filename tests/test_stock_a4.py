@@ -148,10 +148,14 @@ def test_finance_ai_api(server_app, monkeypatch):
     """B2后: GET读scan缓存(404含incomplete); 扫雷走POST /scan"""
     c = server_app["client"]
     import stock_risk
-    monkeypatch.setattr(stock_risk, "scan_stock",
-                        lambda code, force=False: {"ok": False, "incomplete": True,
-                                                   "msg": "数据不足"})
+    seen = {}
+
+    def fake_scan(code, force=False, cached_only=False):
+        seen["cached_only"] = cached_only
+        return {"ok": False, "incomplete": True, "msg": "数据不足"}
+    monkeypatch.setattr(stock_risk, "scan_stock", fake_scan)
     assert c.get("/admin/api/stock/finance_ai?code=x").status_code == 404
+    assert seen["cached_only"] is True                 # D1-35: GET只读缓存, 不触发AI
     r = c.post("/admin/api/stock/scan", json={"code": "x"})
     assert r.status_code == 404 and r.get_json().get("incomplete") is True
 
@@ -171,7 +175,7 @@ def test_validate_chinese_evidence_not_suspect():
     assert out["points"][2]["suspect"] is True      # 无中生有仍拦
 
 
-def test_a4_ui_markers():
+def test_a4_ui_markers(js_syntax):
     import re
     import shutil
     import subprocess
@@ -179,10 +183,4 @@ def test_a4_ui_markers():
     for mk in ("btnAiFin", "aiFinBody", "GRADE_COLOR", "loadAiFin", "依据存疑",
                "非投资建议", "规则分"):
         assert mk in html, f"缺: {mk}"
-    if shutil.which("node"):
-        blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
-        main = max(blocks, key=len)
-        r = subprocess.run([shutil.which("node"), "-e",
-                            "new Function(process.argv[1])", main],
-                           capture_output=True, text=True, timeout=120)
-        assert r.returncode == 0, f"JS语法错误: {r.stderr[:300]}"
+    js_syntax(html)

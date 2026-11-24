@@ -209,3 +209,96 @@ def _real_manifest_canary():
     assert not lost, (
         f"真实备份清单在测试期间被改写: {len(lost)}/{len(before)} 条在册条目丢失"
         f"(如 {lost[:3]}) — 有测试未隔离, 直接写了 backups/ 下的文件")
+
+
+# ── D1-35: 测试与生产个股库(core/data/stock.db)隔离 ──
+# 事故复盘(11-24): 新写的避雷针页面渲染测试带了server_app却没带env(各stock测试
+# 文件里把FS.STOCK_DB指到临时库的夹具) — server_app只隔离app.db, FS._conn()连的
+# 是生产库, 一条INSERT OR REPLACE往生产自选池塞了14只假股票、覆盖了茅台那一行
+# (已按事前快照逐行恢复)。此前个股库的隔离全靠每个测试自己记得带env。
+_REAL_STOCK_DB = CORE / "data" / "stock.db"
+
+
+def _stock_pool_rows():
+    """生产自选池成员(代码/名称/行业/入池时间); 库不存在或读失败 → None"""
+    if not _REAL_STOCK_DB.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{_REAL_STOCK_DB.as_posix()}?mode=ro", uri=True,
+                              timeout=30)
+        rows = con.execute("SELECT ts_code, name, industry, added_at FROM stock_pool "
+                           "ORDER BY ts_code").fetchall()
+        con.close()
+        return rows
+    except sqlite3.Error:
+        return None
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_stock_db: 该用例接触生产个股库(仅T3端到端: 读生产真数据+真模型)")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_stock_db(request, tmp_path, monkeypatch):
+    """每个测试默认把 fetch_stock.STOCK_DB 指到空的临时库 — 测试里任何不带path的
+    FS._conn()/刷新函数都落不到生产库。需要真实数据的用例显式打 real_stock_db
+    标记; 各文件自带的env夹具在其后执行(同为monkeypatch, 后设置的生效), 行为不变。"""
+    if request.node.get_closest_marker("real_stock_db"):
+        return
+    import fetch_stock as FS
+    monkeypatch.setattr(FS, "STOCK_DB", tmp_path / "_isolated_stock.db")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_stock_pool_canary():
+    """守卫: 测试期间生产自选池成员不得变化 — 没有测试应该增删改池成员(页面上
+    正常入池是用户操作, 与跑测试同时发生才会误报)。套件结束时任选失败。"""
+    before = _stock_pool_rows()
+    yield
+    after = _stock_pool_rows()
+    if before is None or after is None or after == before:
+        return
+    gone = [r for r in before if r not in after]
+    new = [r for r in after if r not in before]
+    raise AssertionError(
+        f"生产自选池在测试期间被改写: 新增{len(new)}条(如 {new[:3]})、"
+        f"丢失或变更{len(gone)}条(如 {gone[:3]}) — 有测试未隔离, 直接写了生产 stock.db")
+
+
+# ── JS语法门禁(共享): 脚本写临时文件再交给node ──
+# 原各测试内联 `node -e "new Function(process.argv[1])" <整段脚本>` — 脚本经
+# 命令行参数传递, Windows命令行上限约32767字符; 避雷针页脚本涨到33076字符时
+# 5个门禁同时报 WinError 206(文件名或扩展名太长), 被误读成页面脚本有语法错。
+def _main_script(html: str) -> str:
+    """模板里最长的一段内联<script>(无src的才是页面逻辑)"""
+    import re
+    blocks = re.findall(r"<script>([\s\S]*?)</script>", html)
+    assert blocks, "模板中没有内联<script>"
+    return max(blocks, key=len)
+
+
+@pytest.fixture()
+def js_syntax(tmp_path):
+    """返回校验函数: js_syntax(source) / js_syntax.check_html(html)"""
+    import os
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node不可用")
+
+    def check(source: str) -> None:
+        if "<script>" in source:                 # 传入整份模板 → 取最长内联脚本
+            source = _main_script(source)
+        p = tmp_path / "_gate.js"
+        p.write_text(source, encoding="utf-8")
+        r = subprocess.run(
+            [node, "-e",
+             'new Function(require("fs").readFileSync(process.argv[1],"utf8"))', str(p)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+        assert r.returncode == 0, f"JS语法错误: {(r.stderr or '')[:300]}"
+
+    check.check_html = lambda html: check(_main_script(html))
+    return check

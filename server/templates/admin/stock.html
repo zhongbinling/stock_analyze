@@ -7,7 +7,7 @@
   text-decoration: line-through; background: transparent; }
 </style>
 <section class="card">
-  <h2>避雷针 · 个股分析 <span class="hint" id="stState">A股个股风险体检(A1: K线+均线+量额)</span></h2>
+  <h2>避雷针 · 个股分析 <span class="hint" id="stState">K线+均线+量额 · 股东/两融/财务全景/估值/解禁/事件 · AI一键扫雷</span></h2>
   <div class="row-flex" style="flex-wrap:wrap;gap:8px;align-items:center">
     <input class="input" id="stQ" placeholder="代码/名称搜索(≥2字)" style="width:200px" autocomplete="off">
     <div id="stSug" style="position:relative"></div>
@@ -23,17 +23,16 @@
   <div class="row-flex" style="margin-top:6px;gap:8px;flex-wrap:wrap;align-items:center">
     <span class="hint">自选池(<span id="poolN">{{ pool|length }}</span>):</span>
     <span id="poolChips" style="display:inline-flex;gap:6px;flex-wrap:wrap">
-      {% for p in pool[:12] %}
+      {% for p in pool %}{# 服务端渲染全部(原只渲染前12只+点不动的"…"); 首次加载后由renderPool折叠 #}
       <a href="javascript:void(0)" class="btn small" data-code="{{ p.code }}">{{ p.name }}</a>
       {% endfor %}
-      {% if pool|length > 12 %}<span class="hint">…</span>{% endif %}
     </span>
   </div>
   <p class="hint" id="stSummary">输入代码或名称搜索 → 选中自动入池并展示全史K线</p>
   <div id="riskBanner" style="display:none; padding:6px 10px; border:1px solid #d03b3b;
        border-radius:6px; background:rgba(208,59,59,.06); margin-bottom:6px"></div>
   <div id="chartK" style="height:600px"></div>
-  <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加 · <b style="color:#d03b3b">▲</b>=高风险事件(<span id="evCount">0</span>条: 解禁/预亏/大额减持)</p>
+  <p class="hint">K线默认前复权(均线口径一致) · MA5/10/20/30/60/180/250可点图例显隐 · 涨红跌绿(同花顺口径) · 成交额(亿)折线叠加 · <b style="color:#d03b3b">▲</b>=高风险 / <b style="color:#e67e22">●</b>=中风险事件(<span id="evCount">0</span>条标在图上; 晚于最新K线的未来事件见顶部风险提示与解禁图)</p>
 </section>
 <section class="card">
   <h2>前十大流通股东 <span class="hint" id="hdState">选择股票后展示</span>
@@ -115,7 +114,7 @@
 <section class="card">
   <h2>个股大事件 <span class="hint" id="evState">选择股票后展示</span></h2>
   <div id="evTable">--</div>
-  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低)</p>
+  <p class="hint">解禁/业绩预告/分红/股东增减持/停复牌(结构化事件, 按风险分级: 红=高/橙=中/灰=低; 股东增持、占总股本不足0.1%的小额减持属低风险, 不标K线也不计入扫雷的风险事件)</p>
 </section>
 
 <script src="{{ url_for('static', filename='js/echarts.min.js') }}"></script>
@@ -150,8 +149,12 @@ function renderK(d) {
     const rising = c && c[1] >= c[0];
     return {value: v, itemStyle: {color: rising ? up : dn}};
   });
-  // A3: 事件标记 — 高风险红▲/中橙●, 日期吸附最近≥该日的K线交易日
-  const evMarks = curEvents.filter(e => e.risk !== 'low').map(e => {
+  // A3: 事件标记 — 高风险红▲/中橙●, 日期吸附最近≥该日的K线交易日。
+  // D1-35: 晚于最后一根K线的事件(未来的解禁/停牌等)不上图 — 原吸附到最后一根
+  // K线, 多条未来事件全堆在今天这根上, 看着像"今天出了高风险事件"
+  // (未来解禁由顶部风险横幅与解禁图负责提示)
+  const lastDate = d.dates[d.dates.length - 1];
+  const evMarks = curEvents.filter(e => e.risk !== 'low' && e.date <= lastDate).map(e => {
     let i = d.dates.findIndex(x => x >= e.date);
     if (i < 0) i = d.dates.length - 1;
     const k = d.k[i];
@@ -160,6 +163,7 @@ function renderK(d) {
             symbolSize: e.risk === 'high' ? 11 : 7,
             itemStyle: {color: e.risk === 'high' ? '#d03b3b' : '#e67e22'}};
   }).filter(m => m.value[1] != null);
+  $('evCount').textContent = evMarks.length;
   const evByDate = {};
   curEvents.forEach(e => { (evByDate[e.date] = evByDate[e.date] || []).push(e); });
   chart.setOption({
@@ -203,31 +207,67 @@ function renderK(d) {
        showSymbol: false, lineStyle: {width: 1, color: '#eda100'},
        itemStyle: {color: '#eda100'}}]
   }, true);
-  window.addEventListener('resize', () => chart.resize());
 }
+// resize只注册一次(原在renderK内: 每次渲染都新增一个监听, 切股/切复权越点越多)
+window.addEventListener('resize', () => chart.resize());
+
+// D1-35: 切股守卫(全页面)。原只有扫雷按钮带scanCode守卫: K线/股东/两融/财务/
+// 估值/事件各自异步, 谁后返回谁覆盖 — 快速切换或"新股票(入池拉全史, 慢)→
+// 池内股票(快)"时, 旧股票的响应后到: 页面回跳成旧股票, 或K线是新股票而
+// 下方各图是旧股票的数据。每次load取一个序号, 过期响应一律不渲染。
+let loadSeq = 0;
+const _stale = seq => seq != null && seq !== loadSeq;   // 无seq(局部重绘)不作废
+
+// D1-35: 切股时清空的面板。原只清扫雷报告: 股东表/事件表/数据集徽标与下面11张图
+// 仍是上一只的 — A2四模块依次加载, 网络慢时"新股票K线+旧股票各图"同屏近1秒;
+// 某模块请求失败时旧内容更会一直留着
+const _PANEL_BOXES = ['freshRow', 'hdTable', 'evTable'];
+const _PANEL_STATES = ['hdState', 'mgState', 'pfMsg', 'valState', 'g1State', 'g3State',
+                       'g4State', 'flState', 'evState'];
 
 async function load(code) {
+  const seq = ++loadSeq;
+  const switched = code !== curCode;      // 切复权/数据更新后重载同一只: 不清面板(免闪烁)
   $('stState').textContent = '加载中…';
   curEvents = [];                        // 切换股票先清旧标记(防错标)
+  $('aiFinBody').innerHTML = '--';       // 上一只的扫雷报告不得留在页面上
+  $('aiFinState').textContent = '';
+  $('riskBanner').style.display = 'none';
+  if (switched) {
+    _PANEL_BOXES.forEach(id => { $(id).innerHTML = ''; });
+    _PANEL_STATES.forEach(id => { $(id).textContent = ''; });
+    [chH, chM, chP, chV, chF, g1, g1b, g2, g2b, g3, g3b, g4].forEach(c => c.clear());
+  }
   try {
     const d = await api('/admin/api/stock/kline?code=' + encodeURIComponent(code)
                         + '&adj=' + $('stAdj').value);
+    if (_stale(seq)) return;             // 期间已切股: 丢弃过期响应
     renderK(d);
     $('stState').textContent = '● 就绪';
     loadPool();
-    loadA2(d.code);                       // A2四模块并行
-    loadB1(d.code);                       // B1财务全景四组图
-    loadFresh(d.code);                    // B2数据集状态徽标
-    loadAiFin(d.code);                    // A4: 读缓存(无缓存提示手动分析)
+    loadA2(d.code, seq);                   // A2四模块并行
+    loadB1(d.code, seq);                   // B1财务全景四组图
+    loadFresh(d.code, seq);                // B2数据集状态徽标
+    loadAiFin(d.code, seq);                // B2: 读扫雷缓存(只读, 无缓存提示手动扫雷)
     // A3: 事件先取(K线标记依赖), 再K线重绘 + 风险/解禁/事件表
     try {
       const ev = await api('/admin/api/stock/events?code=' + encodeURIComponent(d.code));
+      if (_stale(seq)) return;
       curEvents = ev.events || [];
-      $('evCount').textContent = curEvents.filter(e => e.risk !== 'low').length;
       renderK(d);
-      loadA3(d.code);
-    } catch (e) { renderK(d); }
-  } catch (e) { $('stState').textContent = '✗ ' + e.message; }
+      loadA3(d.code, seq);
+    } catch (e) { if (!_stale(seq)) renderK(d); }
+  } catch (e) {
+    if (_stale(seq)) return;
+    // 新股票没加载出来(如代码不存在): 页面上不留"旧K线配空面板"的半只旧股票;
+    // 同一只重载失败则保留原内容(页面显示的仍是它, 状态行给出原因)
+    if (switched) {
+      curCode = null;
+      chart.clear();
+      $('stSummary').innerHTML = '';
+    }
+    $('stState').textContent = '✗ ' + e.message;
+  }
 }
 
 // ── A2模块渲染 ──
@@ -252,11 +292,15 @@ function renderHolders(d) {
           <td>${h.ratio ?? '--'}</td>
           <td style="color:${h.chg == null ? '#898781' : h.chg >= 0 ? '#e34448' : '#1baf7a'}">${h.chg == null ? '--' : (h.chg > 0 ? '+' : '') + h.chg}</td></tr>`).join('')
       + '</table>';
-    // 户数环比(用户找回): 与上一期有户数数据的报告期比较 — 筹码集中/分散信号
+    // 户数环比(用户找回): 本期有披露用本期值; 非标准披露日(如临时公告十大股东)用沿用值并标明。
+    // 环比只在本期有真实披露时算(与上一期有披露的报告期比较) — 筹码集中/分散信号。
+    // D1-35: 接口曾把沿用值直接当holder_num, 这里算出"+0.0% 筹码分散⚠"的假预警
+    const shownNum = item.holder_num || item.holder_num_asof;
     const prevNum = d.data.filter(x => x.end_date < item.end_date && x.holder_num)[0];
     const numChg = (prevNum && item.holder_num && prevNum.holder_num)
       ? (item.holder_num - prevNum.holder_num) / prevNum.holder_num * 100 : null;
-    $('hdState').innerHTML = `${sel.value} · 户数 ${item.holder_num ? (item.holder_num / 1e4).toFixed(2) + '万' : '--'}`
+    $('hdState').innerHTML = `${sel.value} · 户数 ${shownNum ? (shownNum / 1e4).toFixed(2) + '万' : '--'}`
+      + (item.holder_num == null && shownNum ? ' <span class="hint">(本期未披露户数, 沿用最近一期)</span>' : '')
       + (numChg != null
         ? ` · 环比 <b style="color:${numChg >= 0 ? '#e34448' : '#1baf7a'}">${numChg > 0 ? '+' : ''}${numChg.toFixed(1)}%</b> <span class="hint">${numChg >= 0 ? '筹码分散⚠' : '筹码集中'}</span>`
         : '');
@@ -523,7 +567,9 @@ function renderFull(d) {
   g3b.setOption(_gridOpt(ds, g3lines, '%'), true);
   $('g4State').textContent = d.pledge_ratio != null
     ? `质押率 ${d.pledge_ratio}%${d.pledge_ratio >= 30 ? ' ⚠平仓风险区' : ''}` : '无质押数据';
-  // 户数前向填充: 非标准披露日(如25-11-05)有holders无holdernum → 用前期值
+  // 户数前向填充: 非标准披露日(如25-11-05)有holders无holdernum → 用前期值。
+  // D1-35: 换算成万 — 图例/轴标的是"股东户数(万)/万户", 原直接画原始户数
+  // (茅台278364), 右轴刻度大了1万倍
   const hnFilled = [];
   let hnPrev = null;
   for (let i = 0; i < d.inst.dates.length; i++) {
@@ -531,6 +577,7 @@ function renderFull(d) {
     hnFilled.push(v != null ? v : hnPrev);
     if (v != null) hnPrev = v;
   }
+  const hnWan = hnFilled.map(v => v == null ? null : +(v / 1e4).toFixed(2));
   g4.setOption({
     animation: false, backgroundColor: 'transparent',
     legend: {data: ['机构持仓占比%', '股东户数(万)'], textStyle: {fontSize: 11}, top: 0},
@@ -546,22 +593,34 @@ function renderFull(d) {
       {name: '机构持仓占比%', type: 'line', data: d.inst.ratio, showSymbol: true,
        symbolSize: 5, lineStyle: {width: 1.6, color: '#6250d6'},
        itemStyle: {color: '#6250d6'}},
-      {name: '股东户数(万)', type: 'bar', yAxisIndex: 1, data: hnFilled,
+      {name: '股东户数(万)', type: 'bar', yAxisIndex: 1, data: hnWan,
        barMaxWidth: 18, itemStyle: {color: '#8ba0b6'}}]
   }, true);
 }
 
-async function loadB1(code) {
-  try { renderFull(await api('/admin/api/stock/full?code=' + encodeURIComponent(code))); }
-  catch (e) { $('g1State').textContent = '✗ ' + e.message; }
+async function loadB1(code, seq) {
+  try {
+    const d = await api('/admin/api/stock/full?code=' + encodeURIComponent(code));
+    if (_stale(seq)) return;                             // 已切股: 不渲染
+    renderFull(d);
+  }
+  catch (e) { if (!_stale(seq)) $('g1State').textContent = '✗ ' + e.message; }
 }
 
-async function loadA3(code) {
+async function loadA3(code, seq) {
   const enc = encodeURIComponent(code);
   for (const [mod, fn] of [["risk", renderRisk], ["float", renderFloat], ["events", renderEvents]]) {
-    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
-    catch (e) { $(mod === 'risk' ? 'riskBanner' : mod === 'float' ? 'flState' : 'evState')
-              .textContent = '✗ ' + e.message; }
+    try {
+      const d = await api(`/admin/api/stock/${mod}?code=${enc}`);
+      if (_stale(seq)) return;
+      fn(d);
+    } catch (e) {
+      if (_stale(seq)) return;
+      // risk出错时横幅默认隐藏, 只改文字看不见 → 显示出来
+      const el = $(mod === 'risk' ? 'riskBanner' : mod === 'float' ? 'flState' : 'evState');
+      if (mod === 'risk') el.style.display = '';
+      el.textContent = '✗ ' + e.message;
+    }
   }
 }
 
@@ -602,7 +661,8 @@ const DIM_COLOR = {财务: '#e34448', 筹码: '#6250d6', 估值: '#2f5cd6', 事�
 let _mutedInit = [];
 try { _mutedInit = JSON.parse(localStorage.getItem('skMutedDs') || '[]'); } catch (e) {}
 const skMuted = new Set(Array.isArray(_mutedInit) ? _mutedInit : []);
-let skUpdatedAt = 0;                     // 数据更新时间戳(3分钟内扫雷免确认)
+// "刚数据更新"标记按股票记: 原是全局时间戳 — 更新完A切到B, 3分钟内B也免确认
+const skUpdated = {};                     // code → 数据更新完成时刻(3分钟内该股扫雷免确认)
 
 function renderFresh(ds) {               // 数据集状态徽标行(可点选忽略)
   $('freshRow').innerHTML = Object.entries(ds || {}).map(([k, v]) =>
@@ -619,36 +679,43 @@ function renderFresh(ds) {               // 数据集状态徽标行(可点选�
     });
 }
 
-async function loadFresh(code) {
+async function loadFresh(code, seq) {
   try {
     const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(code));
+    if (_stale(seq)) return;
     renderFresh(d.datasets);
   } catch (e) {}
 }
 
-async function loadAiFin(code) {              // 读扫雷结果(缓存回看, 切股守卫)
+async function loadAiFin(code, seq) {              // 读扫雷结果(只读缓存, 切股守卫)
   $('aiFinState').textContent = '加载中…';
   try {
     const r = await api('/admin/api/stock/finance_ai?code=' + encodeURIComponent(code));
-    if (curCode !== code) return;           // 已切股: 结果过期不渲染
+    if (_stale(seq) || curCode !== code) return;   // 已切股: 结果过期不渲染
     renderAiFin(r);
     $('aiFinState').textContent = r.cached ? '● 上次扫雷结果' : '● 就绪';
   } catch (e) {
-    if (curCode === code) $('aiFinState').textContent = '--(未扫雷)';
+    if (_stale(seq) || curCode !== code) return;
+    // 404的原因直接给用户: "财务数据仅N季不足…" / "尚无当前口径的扫雷结果…"
+    $('aiFinState').textContent = '--(未扫雷) ' + e.message;
   }
 }
 $('btnSkUpd').onclick = async () => {          // 数据更新
   if (!curCode) { alert('请先选择股票'); return; }
+  const updCode = curCode;
   $('aiFinState').textContent = '⏳ 数据更新中(~20秒)…';
   $('btnSkUpd').disabled = true;
   try {
     const r = await api('/admin/api/stock/update_all', {method: 'POST',
-      body: JSON.stringify({code: curCode})});
+      body: JSON.stringify({code: updCode})});
+    // 更新确实完成了: 该股的扫雷免确认照记(与是否已切股无关), 否则切回去
+    // 3分钟内点扫雷仍弹"数据不新鲜"确认
+    skUpdated[updCode] = Date.now();              // D1-31: 刚更新过, 该股扫雷免确认
+    if (updCode !== curCode) return;          // 更新期间已切股: 结果不覆盖新股票的徽标
     renderFresh(r.datasets);
-    skUpdatedAt = Date.now();                     // D1-31: 刚更新过, 扫雷免确认
     $('aiFinState').textContent = '● 数据已更新';
-    load(curCode);                             // 各图表随之刷新
-  } catch (e) { $('aiFinState').textContent = '✗ ' + e.message; }
+    load(updCode);                             // 各图表随之刷新
+  } catch (e) { if (updCode === curCode) $('aiFinState').textContent = '✗ ' + e.message; }
   finally { $('btnSkUpd').disabled = false; }
 };
 $('btnAiFin').onclick = async () => {          // 一键扫雷
@@ -659,7 +726,7 @@ $('btnAiFin').onclick = async () => {          // 一键扫雷
     const d = await api('/admin/api/stock/freshness?code=' + encodeURIComponent(scanCode));
     // D1-31: 忽略项(点选灰调)不触发; 刚数据更新3分钟内不弹(用户实测
     // '更新多次后扫雷仍提示'的困扰 — 更新已尽力, 剩余不新鲜多为源端延迟)
-    const fresh = Date.now() - skUpdatedAt < 3 * 60 * 1000;
+    const fresh = Date.now() - (skUpdated[scanCode] || 0) < 3 * 60 * 1000;
     stale = !fresh && Object.entries(d.datasets || {})
       .some(([k, x]) => !x.fresh && !skMuted.has(k));
   } catch (e) {}
@@ -676,37 +743,59 @@ $('btnAiFin').onclick = async () => {          // 一键扫雷
   finally { $('btnAiFin').disabled = false; }
 };
 
-async function loadA2(code) {
-  // A2四模块并行(holders/margin/profit/val) — B2批JS块替换时误删定义,
+async function loadA2(code, seq) {
+  // A2四模块依次加载(holders/margin/profit/val) — B2批JS块替换时误删定义,
   // 调用点仍在(前端"数据都是空的"根因); 恢复自A2原始版(pfState→pfMsg)
   const enc = encodeURIComponent(code);
   for (const [mod, fn] of [["holders", renderHolders], ["margin", renderMargin],
                            ["profit", d => renderProfit(d, document.querySelector('input[name=pfMode]:checked').value)],
                            ["val", renderVal]]) {
-    try { fn(await api(`/admin/api/stock/${mod}?code=${enc}`)); }
-    catch (e) { $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
-              : mod === 'profit' ? 'pfMsg' : 'valState').textContent = '✗ ' + e.message; }
+    try {
+      const d = await api(`/admin/api/stock/${mod}?code=${enc}`);
+      if (_stale(seq)) return;                           // 已切股: 旧股票数据不上图
+      fn(d);
+    }
+    catch (e) {
+      if (_stale(seq)) return;
+      $(mod === 'holders' ? 'hdState' : mod === 'margin' ? 'mgState'
+        : mod === 'profit' ? 'pfMsg' : 'valState').textContent = '✗ ' + e.message;
+    }
   }
 }
 
 document.querySelectorAll('input[name=pfMode]').forEach(r =>
   r.onchange = async () => {
     if (!curCode) return;
-    try { renderProfit(await api('/admin/api/stock/profit?code=' + encodeURIComponent(curCode)),
-                       document.querySelector('input[name=pfMode]:checked').value); }
+    const code = curCode;                               // 请求期间可能已切股
+    try {
+      const d = await api('/admin/api/stock/profit?code=' + encodeURIComponent(code));
+      if (curCode === code)                             // 只渲染当前股票
+        renderProfit(d, document.querySelector('input[name=pfMode]:checked').value);
+    }
     catch (e) {}
   });
 
+// ── 自选池chips ──
+// 池随"查过即入池"只增不减; 原只列前12个加一个"…", 其余的点不到。
+let poolAll = false, poolLast = [];
+function renderPool() {
+  const list = poolLast;
+  const shown = poolAll ? list : list.slice(0, 12);
+  $('poolN').textContent = list.length;
+  $('poolChips').innerHTML = shown.map(p =>
+    `<a href="javascript:void(0)" class="btn small" data-code="${esc(p.code)}">${esc(p.name)}</a>`).join('')
+    + (list.length > 12
+      ? ` <a href="javascript:void(0)" class="hint" id="poolToggle">${poolAll ? '收起' : `展开全部(${list.length})`}</a>` : '');
+  document.querySelectorAll('#poolChips [data-code]').forEach(a =>
+    a.onclick = () => { $('stQ').value = a.dataset.code; load(a.dataset.code); });
+  const tog = $('poolToggle');
+  if (tog) tog.onclick = () => { poolAll = !poolAll; renderPool(); };
+}
 async function loadPool() {
   /* 池chips动态刷新: 新入池股票即时可见(review修复, 原为死代码) */
   try {
-    const d = await api('/admin/api/stock/pool');
-    $('poolN').textContent = d.pool.length;
-    $('poolChips').innerHTML = d.pool.slice(0, 12).map(p =>
-      `<a href="javascript:void(0)" class="btn small" data-code="${esc(p.code)}">${esc(p.name)}</a>`).join('')
-      + (d.pool.length > 12 ? '<span class="hint">…</span>' : '');
-    document.querySelectorAll('#poolChips [data-code]').forEach(a =>
-      a.onclick = () => { $('stQ').value = a.dataset.code; load(a.dataset.code); });
+    poolLast = (await api('/admin/api/stock/pool')).pool;
+    renderPool();
   } catch (e) {}
 }
 
