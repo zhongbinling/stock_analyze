@@ -223,7 +223,9 @@ def test_stock_page_yfit_and_chips_gates():
     assert ".on('datazoom', () => _fitY(c))" in html      # 十图挂载
     assert "fresh-chip" in html and "skMuted" in html     # 点选忽略
     assert ".fresh-chip.muted" in html                    # 灰调+删除线样式
-    assert "(skUpdated[scanCode] || 0) < 3 * 60 * 1000" in html   # 刚更新免确认(按股票记)
+    # 刚更新免确认(按股票记, 3分钟): 扫雷与状态行共用同一个判定
+    assert "const _justUpdated = code => Date.now() - (skUpdated[code] || 0) < 3 * 60 * 1000" in html
+    assert "const fresh = _justUpdated(scanCode);" in html
     # JS语法门禁(node哑元不需要 — 该页无Jinja变量混入script)
     import shutil, subprocess, tempfile, os
     blocks = re.findall(r"<script>([\s\S]*?)</script>", html)

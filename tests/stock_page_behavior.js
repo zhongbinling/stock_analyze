@@ -446,6 +446,81 @@ test('数据更新期间切股: 新股票的界面不被刷新, 但被更新那�
   await drainPending();
 });
 
+// ═══ 12b. 更新成功后的确认 ═══
+// (沙箱与localStorage是各用例共用的: 前面的用例给A记过"刚更新"、忽略过数据集 — 先复位)
+const resetScanState = () => {
+  G('Object.keys(skUpdated).forEach(k => delete skUpdated[k])');
+  G('skMuted.clear()');
+};
+
+test('数据更新成功: 页面重载扫雷结果后, 状态行仍标着"数据已更新"(切到别的股票不带)', async () => {
+  resetScanState();
+  await loadStock('A');
+  await drainPending();
+  assert.strictEqual($id('aiFinState').textContent, '● 上次扫雷结果');
+  click('btnSkUpd');
+  reply(take('/api/stock/update_all'), {datasets: {'日线': {fresh: true, last: DATES[4]}}});
+  await settle();
+  const k = take('/api/stock/kline?code=A');
+  assert.ok(k, '更新后应重新加载该股票');
+  reply(k, mkK('A'));
+  await settle();
+  await drainPending();                         // 含扫雷结果的读回 — 会顶掉"● 数据已更新"
+  assert.strictEqual($id('aiFinState').textContent, '● 数据已更新 · 上次扫雷结果');
+  assert.ok($id('freshRow').innerHTML.includes('日线✓'), $id('freshRow').innerHTML);
+  await loadFull('B', 222222);                   // 没更新过的股票: 不带这句
+  assert.strictEqual($id('aiFinState').textContent, '● 上次扫雷结果');
+});
+
+test('数据更新成功但该股还没扫过雷: "数据已更新"与未扫雷的说明并存', async () => {
+  resetScanState();
+  await loadStock('A');
+  await drainPending();
+  click('btnSkUpd');
+  reply(take('/api/stock/update_all'), {datasets: {}});
+  await settle();
+  reply(take('/api/stock/kline?code=A'), mkK('A'));
+  await settle();
+  const fa = take('/api/stock/finance_ai?code=A');
+  assert.ok(fa, '重载时应读回扫雷结果');
+  reply(fa, {msg: '尚无当前口径的扫雷结果'}, 404);
+  await drainPending();
+  assert.strictEqual($id('aiFinState').textContent, '● 数据已更新 · (未扫雷) 尚无当前口径的扫雷结果');
+});
+
+// ═══ 13. 更新被服务端拦下 ═══
+test('数据更新被安全校验拦下(400): 显示服务端的说明, 不报"数据已更新", 也不记"刚更新"', async () => {
+  resetScanState();
+  await loadStock('A');
+  await drainPending();                         // 加载时的各模块请求(含新鲜度)都应答完
+  click('btnSkUpd');
+  const u = take('/api/stock/update_all');
+  const msg = '登录状态已变化, 请刷新页面后重试';
+  reply(u, {ok: false, csrf: true, msg}, 400); await settle();
+  assert.strictEqual($id('aiFinState').textContent, '✗ ' + msg);   // 原先服务端回HTML, 这里只有 "✗ HTTP 400"
+  assert.ok(!$id('btnSkUpd').disabled, '失败后按钮应恢复可用');
+  // 更新没成功: A不算"刚更新", 点扫雷照常先查新鲜度
+  confirmed.length = 0;
+  click('btnAiFin');
+  const fa = take('/api/stock/freshness?code=A');
+  assert(fa, '更新失败的股票不应跳过新鲜度检查');
+  reply(fa, {datasets: {'日线': {fresh: false}}}); await settle();
+  assert.strictEqual(confirmed.length, 1, '更新失败的股票不应免确认');
+  await drainPending();
+});
+
+test('数据更新遇到登录失效(401): 显示说明, 不把登录页当成空结果报"数据已更新"', async () => {
+  resetScanState();
+  await loadStock('A');
+  await drainPending();
+  click('btnSkUpd');
+  reply(take('/api/stock/update_all'), {ok: false, msg: '未登录或登录已失效, 请刷新页面重新登录'}, 401);
+  await settle();
+  assert.strictEqual($id('aiFinState').textContent, '✗ 未登录或登录已失效, 请刷新页面重新登录');
+  assert.strictEqual(G('skUpdated')['A'], undefined, '失败的更新不应记为"刚更新"');
+  assert.strictEqual(pend.length, 0, '更新失败后不应再发任何请求: ' + pend.map(p => p.url).join(', '));
+});
+
 (async () => {
   let fail = 0;
   for (const [name, fn] of tests) {

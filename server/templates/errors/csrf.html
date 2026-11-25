@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}400 · {{ app_name }}{% endblock %}
+{% block content %}
+<section class="card auth-card">
+  <h1>400 · 请求校验未通过</h1>
+  <p>{{ msg }}</p>
+  <p class="hint">表单里的安全令牌是页面打开时生成的，与当时的登录状态绑定（比如之后在别的标签页退出或重新登录过，令牌就对不上了）。请回到原页面<b>刷新</b>后再提交。</p>
+  <a class="btn primary" href="{{ back }}">返回</a>
+</section>
+{% endblock %}

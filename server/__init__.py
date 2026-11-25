@@ -12,12 +12,13 @@ import sys
 from pathlib import Path
 
 import yaml
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_bcrypt import Bcrypt
-from flask_login import AnonymousUserMixin, LoginManager
+from flask_login import AnonymousUserMixin, LoginManager, current_user
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
 from flask_wtf import CSRFProtect
+from flask_wtf.csrf import CSRFError
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -67,6 +68,10 @@ def create_app() -> Flask:
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         THEME_DEFAULT=cfg["app"].get("theme_default", "light"),
         SERVER_CFG=cfg,
+        # 防跨站令牌写死在页面里, 不设有效期。Flask-WTF 默认 3600 秒: 管理页都是长期开着的
+        # 看板, 页面打开超过一小时后上面的每个写操作(数据更新/扫雷/保存策略/入队…)都被 400 拒绝。
+        # 令牌仍与签发它的会话绑定(会话里的随机值, 换会话即换), 旧页面的令牌换会话后照样被拒。
+        WTF_CSRF_TIME_LIMIT=None,
     )
     app.json.ensure_ascii = False
 
@@ -107,6 +112,14 @@ def create_app() -> Flask:
     @app.errorhandler(403)
     def forbidden(e):
         return render_template("errors/403.html"), 403
+
+    @app.errorhandler(CSRFError)
+    def csrf_rejected(e):
+        from server.auth import csrf_rejected_response
+        who = current_user.username if current_user.is_authenticated else "匿名"
+        app.logger.warning("CSRF校验未通过 %s %s(%s): %s",
+                           request.method, request.path, who, e.description)
+        return csrf_rejected_response(e.description)
 
     @app.context_processor
     def inject_globals():
