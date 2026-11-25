@@ -159,24 +159,23 @@ def _norm_code(code: str) -> str:
     return c
 
 
-_PAGE_ROWS = 6000                  # tushare daily/adj_factor/daily_basic 单次返回行数上限
+_PAGE_ROWS = 6000                  # 单次请求的行数(服务端实际上限可能更低, 见 _pull_frames)
+_MAX_ROWS = 60000                  # 单只股票全史的行数上限(日线约245年): 接口异常时不至于无限翻页
 
 
-def _pull_all(api: str, fields: str, ts_code: str):
-    """全史分页拉取, 按trade_date升序返回DataFrame。
-    D1-35(避雷针体检): 单次调用最多6000行 ≈ 24.6年 — 实测自选池9只里5只
-    1994~2001年上市的老股日线恰为6000行(600760上市1996年, 日线始于2001-03),
-    "全史K线"实际缺了最早几年; 复权因子同样被截, 两边末端对不齐 → 最早
-    一两百行adj_factor为空(共1077行), 前复权价在这段直接取原始价, 与相邻
-    段差出近一个复权系数的倍数。
-    D1-36: 翻页以"首页实际返回的行数"为一页 — 服务端的单次上限可能低于请求值
-    (积分档位不同), 那时首页就不足6000行, 按"不足请求值即最后一页"会在第一页
-    后停止, 截断悄悄回来。总行数恰为页长整数倍时会多一次空页请求。"""
+def _pull_frames(api: str, fields: str, **params) -> list:
+    """接口分页取全: 返回各页的 DataFrame(接口原始顺序)。
+
+    一页 = 首页实际返回的行数 — 服务端的单次上限低于请求值 limit=_PAGE_ROWS:
+    日线/复权因子 6000 行, 三大报表与财务指标只有 100 行(实测)。按"返回行数不足
+    请求值即最后一页"来判断的话, 首页就被当成最后一页, 截断悄悄回来。
+    D1-35: 日线单次 6000 行 ≈ 24.6 年 — 自选池9只里5只1994~2001年上市的老股日线恰为
+    6000行(600760上市1996年, 日线始于2001-03), "全史K线"缺了最早几年; 复权因子同样
+    被截, 两端对不齐 → 最早一两百行 adj_factor 为空, 前复权价在这段直接取原始价。
+    总行数恰为页长整数倍时会多一次空页请求。"""
     frames, offset, page = [], 0, None
     while True:
-        df = T.call(api, fields, ts_code=ts_code, start_date="19900000",
-                    end_date=time.strftime("%Y%m%d"),
-                    limit=_PAGE_ROWS, offset=offset)
+        df = T.call(api, fields, limit=_PAGE_ROWS, offset=offset, **params)
         frames.append(df)
         n = 0 if df is None else len(df)
         if page is None:
@@ -184,14 +183,55 @@ def _pull_all(api: str, fields: str, ts_code: str):
         if n < page:
             break                          # 不足一页 = 最后一页(首页为空也在这里结束)
         offset += n
-        if offset >= 60000:
+        if offset >= _MAX_ROWS:
             break
+    return frames
+
+
+def _pull_all(api: str, fields: str, ts_code: str):
+    """日线类全史分页拉取, 按trade_date升序返回DataFrame(见 _pull_frames)。"""
+    frames = _pull_frames(api, fields, ts_code=ts_code, start_date="19900000",
+                          end_date=time.strftime("%Y%m%d"))
     if len(frames) == 1:
         df = frames[0]
     else:
         import pandas as pd
         df = pd.concat([f for f in frames if f is not None], ignore_index=True)
     return df.sort_values("trade_date") if df is not None and len(df) else df
+
+
+def _one_per_period(rows: list) -> list:
+    """季报表/财务指标: 同一报告期(end_date)只留一行 — 实际公告日最晚的, 同日取更正后的
+    (update_flag=1)。
+
+    接口里同一报告期常有两行(原始/更正后), 先后并不固定(财务指标是更正行在前, 三大报表
+    是原始行在前), 靠 upsert 后写覆盖的话留下哪一版取决于接口的行序。还可能是三行:
+    五粮液2025年中报有 2025-08-28 的原始行、同日更正行, 和一行实际公告日为 2026-04-30 的
+    (2025年报发布时追溯调整后: 营收由527.7亿调整为235.1亿)。必须取最后这一行 — 2025年
+    年报数(净利润93.2亿)就是调整后口径, 留原披露值的话 9月累计净利润222亿比全年还大,
+    滚动12个月净利润会被算成负数。所以要比"实际公告日"f_ann_date, 不能只比 ann_date
+    (追溯调整那一行的 ann_date 仍是首次公告日)。"""
+    best = {}
+    for r in rows:
+        k = _iso(r.get("end_date"))
+        when = _iso(_text(r.get("f_ann_date"))) or _iso(_text(r.get("ann_date")))
+        rank = (when, _text(r.get("update_flag")) == "1")
+        if k not in best or rank > best[k][0]:
+            best[k] = (rank, r)
+    return [v[1] for v in best.values()]
+
+
+def _pull_stmt(api: str, fields: str, ts_code: str, start: str = "19900000") -> list:
+    """三大报表/财务指标的全史拉取(分页 + 每个报告期一行), start 为公告日起始。
+    D1-40: 这几个接口单次最多返回100行(实测 balancesheet/cashflow/fina_indicator;
+    income 单次可到130行以上), 而同一报告期常有两行(update_flag 0=原始/1=更正后),
+    100行只够56~84个报告期: 茅台的财务指标只到2012-12、资产负债表只到2009-09,
+    更早的一段在库里一直缺着 — 页面上盈利/现金流/资产负债几组图的"全史"其实是
+    最近十几年。"""
+    frames = _pull_frames(api, fields, ts_code=ts_code, start_date=start,
+                          end_date=time.strftime("%Y%m%d"))
+    return _one_per_period([r for df in frames if df is not None
+                            for r in df.to_dict("records")])
 
 
 def add_stock(code: str, path=None) -> dict:
@@ -416,15 +456,14 @@ def _start(lookback: int = None) -> str:
 
 
 def refresh_finance(code: str, path=None, lookback: int = None) -> int:
-    """季度财务(fina_indicator全史单call): 扣非/增速/毛利率/ROE/负债率"""
+    """季度财务(fina_indicator全史分页): 扣非/增速/毛利率/ROE/负债率"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("fina_indicator",
-                    "ts_code,end_date,ann_date,profit_dedt,netprofit_yoy,or_yoy,"
-                    "grossprofit_margin,roe,debt_to_assets,netprofit_margin,"
-                    "inv_turn,ar_turn",
-                    ts_code=ts_code, start_date=_start(lookback),
-                    end_date=time.strftime("%Y%m%d"))
+        recs = _pull_stmt("fina_indicator",
+                          "ts_code,end_date,ann_date,update_flag,profit_dedt,"
+                          "netprofit_yoy,or_yoy,grossprofit_margin,roe,debt_to_assets,"
+                          "netprofit_margin,inv_turn,ar_turn",
+                          ts_code, _start(lookback))
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 财务失败 {ts_code}: {str(e)[:60]}")
         return -1
@@ -434,7 +473,7 @@ def refresh_finance(code: str, path=None, lookback: int = None) -> int:
              _f(r.get("roe")), _f(r.get("debt_to_assets")),
              _f(r.get("netprofit_margin")), _f(r.get("inv_turn")),
              _f(r.get("ar_turn")))
-            for _, r in df.iterrows()]
+            for r in recs]
     con = _conn(path)
     con.executemany(
         "INSERT INTO stock_finance(ts_code,end_date,ann_date,profit_dedt,"
@@ -723,16 +762,17 @@ def val_payload(code: str, path=None) -> dict:
 
 # ══════════ B1: 财务指标全景 ══════════
 
-def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
-    """B1: 四组指标全景(近N季, 单位: 金额亿/比率%/周转次数)
+def finance_full_payload(code: str, path=None, n_qua: int | None = None) -> dict:
+    """B1: 四组指标全景(单位: 金额亿/比率%/周转次数)
     盈利(营收/净利/扣非/增速/毛利率/净利率/ROE/股息率) · 现金流与营运
     (经营现金流/应收/应付/存货/货币资金/存货周转/应收周转) ·
-    资产负债(资产/负债/负债率/商誉及占净资产) · 筹码(机构持仓比例/质押率)"""
+    资产负债(资产/负债/负债率/商誉及占净资产) · 筹码(机构持仓比例/质押率)
+    报告期默认取全史(页面图表); n_qua 为整数时只取最近 n 季(扫雷 prompt 的财务表)。"""
     ts_code = _norm_code(code)
     con = _conn(path)
-    inc = con.execute("SELECT end_date, revenue, n_income FROM stock_income "
-                      "WHERE ts_code=? ORDER BY end_date DESC LIMIT ?",
-                      (ts_code, n_qua)).fetchall()
+    inc = {r[0]: r for r in con.execute(
+        "SELECT end_date, revenue, n_income FROM stock_income WHERE ts_code=?",
+        (ts_code,))}
     cf = {r[0]: r[1] for r in con.execute(
         "SELECT end_date, n_cashflow_act FROM stock_cashflow WHERE ts_code=?",
         (ts_code,))}
@@ -769,10 +809,13 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
         inst.append((end_date, ratio_sum,
                      hn[0] if hn and hn[0] is not None else hn_prev))  # as-of填
     con.close()
-    # 统一取最近n_qua季: 原把利润表(近N季)与财务/资产负债表(全史期数)直接
-    # 求并集 — 茅台实测69期而营收只有最近12期有数(图上前57期营收柱空缺);
-    # 同一序列还是扫雷prompt里标称"近8季"的财务表(实测73行, 多数带None)
-    dates = sorted({r[0] for r in inc} | set(fin) | set(bs))[-n_qua:]
+    # 报告期 = 利润表/财务指标/资产负债表三张表报告期的并集, 各表起点不同
+    # (茅台现金流量表始于2005年, 其余1998年; 中航沈飞1993年)。图表看的是全史;
+    # 扫雷 prompt 另传 n_qua 只取最近几期 — 曾在载荷里统一截成最近12期,
+    # 页面上盈利/现金流/资产负债六张图就只剩最近三年, 缩放拖动也到不了更早
+    dates = sorted(set(inc) | set(fin) | set(bs))
+    if n_qua:
+        dates = dates[-n_qua:]
     E = 1e8                                    # 元→亿
     out = {"ok": True, "code": ts_code, "dates": [],
            "profit": {"revenue": [], "n_income": [], "dedt": [], "or_yoy": [],
@@ -787,7 +830,7 @@ def finance_full_payload(code: str, path=None, n_qua: int = 12) -> dict:
     if dv:
         out["profit"]["dv_ttm"] = dv[0]
     for d in dates:
-        i = next((r for r in inc if r[0] == d), None)
+        i = inc.get(d)
         f = fin.get(d)
         b = bs.get(d)
         out["dates"].append(d)
@@ -1066,12 +1109,11 @@ def refresh_bs(code: str, path=None) -> int:
     流动资产负债 — 148字段实测定位, 货币资金= money_cap)"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("balancesheet",
-                    "ts_code,end_date,money_cap,accounts_receiv,acct_payable,"
-                    "inventories,goodwill,total_assets,total_liab,"
-                    "total_cur_assets,total_cur_liab",
-                    ts_code=ts_code, start_date="19900000",
-                    end_date=time.strftime("%Y%m%d"))
+        recs = _pull_stmt("balancesheet",
+                          "ts_code,end_date,ann_date,f_ann_date,update_flag,money_cap,"
+                          "accounts_receiv,acct_payable,inventories,goodwill,"
+                          "total_assets,total_liab,total_cur_assets,total_cur_liab",
+                          ts_code)
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 资产负债表失败 {ts_code}: {str(e)[:60]}")
         return -1
@@ -1079,7 +1121,7 @@ def refresh_bs(code: str, path=None) -> int:
              _f(r.get("accounts_receiv")), _f(r.get("acct_payable")),
              _f(r.get("inventories")), _f(r.get("goodwill")),
              _f(r.get("total_assets")), _f(r.get("total_liab")))
-            for _, r in df.iterrows()]
+            for r in recs]
     con = _conn(path)
     con.executemany(
         "INSERT INTO stock_bs(ts_code,end_date,money_cap,accounts_receiv,"
@@ -1098,15 +1140,15 @@ def refresh_income(code: str, path=None) -> int:
     """B1: 利润表(营业收入/营业总收入/净利润)"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("income", "ts_code,end_date,revenue,total_revenue,n_income",
-                    ts_code=ts_code, start_date="19900000",
-                    end_date=time.strftime("%Y%m%d"))
+        recs = _pull_stmt("income",
+                          "ts_code,end_date,ann_date,f_ann_date,update_flag,revenue,"
+                          "total_revenue,n_income", ts_code)
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 利润表失败 {ts_code}: {str(e)[:60]}")
         return -1
     rows = [(ts_code, _iso(r["end_date"]), _f(r.get("revenue")),
              _f(r.get("total_revenue")), _f(r.get("n_income")))
-            for _, r in df.iterrows()]
+            for r in recs]
     con = _conn(path)
     con.executemany("INSERT INTO stock_income VALUES(?,?,?,?,?) "
                     "ON CONFLICT(ts_code,end_date) DO UPDATE SET "
@@ -1121,14 +1163,14 @@ def refresh_cashflow(code: str, path=None) -> int:
     """B1: 现金流量表(经营活动现金流净额)"""
     ts_code = _norm_code(code)
     try:
-        df = T.call("cashflow", "ts_code,end_date,n_cashflow_act",
-                    ts_code=ts_code, start_date="19900000",
-                    end_date=time.strftime("%Y%m%d"))
+        recs = _pull_stmt("cashflow",
+                          "ts_code,end_date,ann_date,f_ann_date,update_flag,n_cashflow_act",
+                          ts_code)
     except Exception as e:                                   # noqa: BLE001
         print(f"[stock] 现金流量表失败 {ts_code}: {str(e)[:60]}")
         return -1
     rows = [(ts_code, _iso(r["end_date"]), _f(r.get("n_cashflow_act")))
-            for _, r in df.iterrows()]
+            for r in recs]
     con = _conn(path)
     con.executemany("INSERT INTO stock_cashflow VALUES(?,?,?) "
                     "ON CONFLICT(ts_code,end_date) DO UPDATE SET "

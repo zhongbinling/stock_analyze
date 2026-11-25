@@ -68,9 +68,22 @@ const document = {
 };
 const charts = {};
 const echarts = {init(el) {
-  const c = {id: el.id, opt: null, n: 0,
-             setOption(o) { this.opt = o; this.n++; },
-             clear() { this.opt = null; }, on() {}, getOption() { return this.opt; }, resize() {}};
+  const c = {id: el.id, opt: null, n: 0, _h: {}, acts: [],
+             setOption(o, opts) {       // 同真库: 默认合并到现有配置, 第二参为 true 才整体替换
+               this.opt = (opts === true || !this.opt) ? o : Object.assign({}, this.opt, o);
+               this.n++;
+             },
+             clear() { this.opt = null; },
+             on(ev, fn) { (this._h[ev] = this._h[ev] || []).push(fn); },
+             dispatchAction(a) {        // 缩放动作: 更新滑块区间, 并同步触发本图的 datazoom 事件
+               this.acts.push(a);
+               if (a.type === 'dataZoom' && a.start != null && this.opt) {
+                 const s = (this.opt.dataZoom || []).find(d => d.type === 'slider');
+                 if (s) { s.start = a.start; s.end = a.end; }
+               }
+               (this._h.datazoom || []).forEach(f => f());
+             },
+             getOption() { return this.opt; }, resize() {}};
   charts[el.id] = c;
   return c;
 }};
@@ -519,6 +532,103 @@ test('数据更新遇到登录失效(401): 显示说明, 不把登录页当成�
   assert.strictEqual($id('aiFinState').textContent, '✗ 未登录或登录已失效, 请刷新页面重新登录');
   assert.strictEqual(G('skUpdated')['A'], undefined, '失败的更新不应记为"刚更新"');
   assert.strictEqual(pend.length, 0, '更新失败后不应再发任何请求: ' + pend.map(p => p.url).join(', '));
+});
+
+// ═══ 14. 财务全景: 整段历史 ═══
+const GSTMT_IDS = ['chartG1', 'chartG1b', 'chartG2', 'chartG2b', 'chartG3', 'chartG3b'];
+const quarters = n => Array.from({length: n}, (_, i) => {        // 自 2000-12-31 起的 n 个报告期
+  const g = 2000 * 4 + 3 + i;
+  return `${Math.floor(g / 4)}-${['03-31', '06-30', '09-30', '12-31'][g % 4]}`;
+});
+function fullPayload(n) {
+  const arr = v => Array.from({length: n}, () => v);
+  return {ok: true, code: 'A', dates: quarters(n),
+    profit: {revenue: arr(10), n_income: arr(3), dedt: arr(2.5), or_yoy: arr(8), net_yoy: arr(5),
+             gpm: arr(50), npm: arr(20), roe: arr(15), dv_ttm: 3.5274},
+    cashflow: {ocf: arr(4), ar: arr(1), ap: arr(2), inv: arr(3), cash: arr(9), inv_turn: arr(0.3),
+               ar_turn: arr(5)},
+    balance: {assets: arr(100), liab: arr(40), dta: arr(40), goodwill: arr(0), gw_eq: arr(0),
+              liab_pct: arr(40)},
+    inst: {dates: [], ratio: [], holder_num: []}, pledge_ratio: null};
+}
+
+test('财务全景六张图: 报告期轴是整段历史(不是最近12期); 超过40期时默认显示最近40期, 缩放条覆盖全程', () => {
+  G(`renderFull(${JSON.stringify(fullPayload(104))})`);
+  for (const id of GSTMT_IDS) {
+    const o = charts[id].opt;
+    assert.strictEqual(o.xAxis.data.length, 104, id);
+    eq(o.xAxis.data.slice(0, 3), ['00-12-31', '01-03-31', '01-06-30']);
+    assert.strictEqual(o.series[0].data.length, 104, id);
+    assert.strictEqual(o.dataZoom[2].start, 61.538, id);        // (1 − 40/104) × 100
+    assert.strictEqual(o.dataZoom[0].start, 61.538, id);
+    // 首末刻度标签贴齐轴的两端(一屏几十期时, 居中的第一个标签会压到纵轴刻度名上)
+    assert.strictEqual(o.xAxis.axisLabel.alignMinLabel, 'left', id);
+    assert.strictEqual(o.xAxis.axisLabel.alignMaxLabel, 'right', id);
+  }
+  assert.strictEqual($id('g1State').textContent,
+    '104期(00-12-31起) · 默认显示最近10年, 缩放可看更早 · 股息率(dv_ttm) 3.5274%');
+});
+
+test('财务全景不足40期: 全部显示, 状态行写明期数与起止', () => {
+  G(`renderFull(${JSON.stringify(fullPayload(30))})`);
+  const ds = quarters(30);
+  assert.strictEqual(charts.chartG1.opt.dataZoom[2].start, 0);
+  assert.strictEqual(charts.chartG1.opt.xAxis.data.length, 30);
+  assert.strictEqual($id('g1State').textContent,
+    `30期(${ds[0].slice(2)} ~ ${ds[29].slice(2)}) · 股息率(dv_ttm) 3.5274%`);
+});
+
+test('季度净利润图同样默认显示最近40期', () => {
+  const n = 104, arr = v => Array.from({length: n}, () => v);
+  G(`renderProfit(${JSON.stringify({dates: quarters(n), cum: arr(5), single: arr(1),
+    cum_yoy: arr(5), single_yoy: arr(3)})}, 'cum')`);
+  const o = charts.chartProfit.opt;
+  assert.strictEqual(o.xAxis.data.length, 104);
+  assert.strictEqual(o.dataZoom[2].start, 61.538);
+  assert.strictEqual(o.xAxis.axisLabel.alignMinLabel, 'left');
+});
+
+test('缩放后纵轴按可视窗口重算: 计入窗口最后一期, 上下限取整到刻度步长, 非负数据不越过0线', () => {
+  const c = charts.chartG1;
+  const bars = [1.47, 5, 3, 6, 4, 7, 5, 9, 6, 8, 8, 24.35, 999, null];   // 第13期(999)在窗口外
+  c.opt = {xAxis: [{type: 'category', data: bars.map((_, i) => 'd' + i)}],
+    yAxis: [{type: 'value'}, {type: 'value'}],
+    dataZoom: [{type: 'inside', startValue: 0, endValue: 11}, {type: 'slider'}],
+    series: [{type: 'bar', yAxisIndex: 0, data: bars},
+             {type: 'line', yAxisIndex: 1,
+              data: [10, 20, 15, 25, 30, 22, 28, 35, 40, 32, 38, 36, -999]},
+             {type: 'candlestick', yAxisIndex: 0, data: [[1, 1e6, 0, 1]]}]};
+  c._h.datazoom.forEach(f => f());
+  eq(c.opt.yAxis[0], {min: 0, max: 30});      // 原: 窗口最后一期不计入, 且上下限是 0.95/8.52 这样的数
+  eq(c.opt.yAxis[1], {min: 5, max: 45});      // 先取 0~50, 两端留白过多 → 步长减半 → 5~45
+  assert.ok(c.opt.xAxis && c.opt.dataZoom, '只合并 yAxis, 其余配置保留');
+});
+
+test('六张季报图联动缩放: 在一张上缩放, 其余五张跟到同一区间, 联动不再互相触发', () => {
+  const G6 = GSTMT_IDS.map(id => charts[id]);
+  const n = 104;
+  G6.forEach(c => { c.acts = []; c.opt = {
+    xAxis: [{type: 'category', data: quarters(n)}], yAxis: [{type: 'value'}, {type: 'value'}],
+    dataZoom: [{type: 'inside', start: 61.5, end: 100}, {type: 'inside', start: 61.5, end: 100},
+               {type: 'slider', start: 61.5, end: 100}],
+    series: [{type: 'bar', yAxisIndex: 0, data: Array.from({length: n}, (_, i) => i % 7)}]}; });
+  Object.assign(G6[2].opt.dataZoom[2], {start: 10, end: 30});         // 在第3张图上拖了滑块
+  G6[2]._h.datazoom.forEach(f => f());
+  for (const c of [G6[0], G6[1], G6[3], G6[4], G6[5]]) {
+    eq(c.acts, [{type: 'dataZoom', start: 10, end: 30}]);             // 各派发一次, 不成环
+    assert.strictEqual(c.opt.dataZoom[2].start, 10);
+  }
+  assert.strictEqual(G6[2].acts.length, 0, '不回派给发起的那张');
+  G6.forEach(c => { c.acts = []; });
+  Object.assign(G6[0].opt.dataZoom[2], {start: 0, end: 100});         // 再在第1张上拉回全程
+  G6[0]._h.datazoom.forEach(f => f());
+  for (const c of G6.slice(1)) eq(c.acts, [{type: 'dataZoom', start: 0, end: 100}]);
+  // 其余图(净利润/两融/估值/筹码)不参与联动
+  const p = charts.chartProfit;
+  p.acts = []; p.opt = G6[1].opt;
+  G6.forEach(c => { c.acts = []; });
+  p._h.datazoom.forEach(f => f());
+  assert.strictEqual(p.acts.length + G6.reduce((s, c) => s + c.acts.length, 0), 0);
 });
 
 (async () => {

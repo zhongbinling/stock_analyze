@@ -275,6 +275,9 @@ const chH = echarts.init($('chartHnum')), chM = echarts.init($('chartMargin')),
       chP = echarts.init($('chartProfit')), chV = echarts.init($('chartVal'));
 window.addEventListener('resize', () => [chH, chM, chP, chV].forEach(c => c.resize()));
 const AX = {axisLabel: {color: '#898781'}, splitLine: {lineStyle: {color: '#eee'}}};
+// 季频类目轴(一期一个类目): 首末两个刻度标签贴齐轴的两端 — 一屏几十期时, 居中的第一个
+// 标签会伸到纵轴刻度名上, 读成 "016-09-30"
+const AXQ = {...AX, axisLabel: {...AX.axisLabel, alignMinLabel: 'left', alignMaxLabel: 'right'}};
 
 function renderHolders(d) {
   const sel = $('hdPeriod');
@@ -346,22 +349,27 @@ function renderMargin(d) {
   }, true);
 }
 
+// 季报图默认只显示最近 _G_WIN_Q 个季度, 更早的用底部滑块或滚轮缩放去看(整段历史都在)。
+// 全史一次铺开: 一百多期挤在不到一千像素里, 柱子只有两三像素宽; 早期基数极小时的同比
+// 动辄几千个百分点(中航沈飞2007~2009年营收同比 -4000%~+2500%), 同比线全程被压成直线
+const _G_WIN_Q = 40;
+const _winStart = n => n > _G_WIN_Q ? +(100 * (1 - _G_WIN_Q / n)).toFixed(3) : 0;
 function renderProfit(d, mode) {
   if (!d.dates.length) { $('pfMsg').textContent = '无财务数据'; chP.clear(); return; }
   const vals = mode === 'cum' ? d.cum : d.single;
   const yoys = mode === 'cum' ? d.cum_yoy : d.single_yoy;
-  const up = '#e34448', dn = '#1baf7a';
+  const up = '#e34448', dn = '#1baf7a', zs = _winStart(d.dates.length);
   chP.setOption({
     animation: false, backgroundColor: 'transparent',
     legend: {data: ['净利润(亿)', '同比%'], textStyle: {fontSize: 11}, top: 0},
     tooltip: {trigger: 'axis'},
     grid: {left: 56, right: 56, top: 28, bottom: 44},
-    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
+    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AXQ},
     yAxis: [{type: 'value', name: '亿', ...AX},
             {type: 'value', name: '%', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', xAxisIndex: 0},
-               {type: 'inside', xAxisIndex: 0},
-               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', xAxisIndex: 0, start: zs},
+               {type: 'inside', xAxisIndex: 0, start: zs},
+               {type: 'slider', xAxisIndex: 0, start: zs, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series: [
       {name: '净利润(亿)', type: 'bar', data: vals.map(v =>
@@ -384,7 +392,7 @@ function renderVal(d) {
     legend: {data: ['PE_TTM', 'PB'], textStyle: {fontSize: 11}, top: 0},
     tooltip: {trigger: 'axis'},
     grid: {left: 56, right: 56, top: 28, bottom: 44},
-    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AX},
+    xAxis: {type: 'category', data: d.dates.map(x => x.slice(2)), ...AXQ},
     yAxis: [{type: 'value', scale: true, name: 'PE', ...AX},
             {type: 'value', scale: true, name: 'PB', ...AX, splitLine: {show: false}}],
     dataZoom: [{type: 'inside', xAxisIndex: 0},
@@ -474,7 +482,7 @@ function _fitY(c) {
   if (!total) return;
   const z = opt.dataZoom[0];
   let i0 = z.startValue != null ? z.startValue : Math.floor((z.start || 0) / 100 * total);
-  let i1 = z.endValue != null ? z.endValue : Math.ceil((z.end || 100) / 100 * total);
+  let i1 = z.endValue != null ? z.endValue + 1 : Math.ceil((z.end || 100) / 100 * total);   // endValue 含端点
   i0 = Math.max(0, Math.min(i0, total - 1));
   i1 = Math.max(i0 + 1, Math.min(i1, total));
   const ext = {};                                   // yAxisIndex → [min,max]
@@ -497,13 +505,44 @@ function _fitY(c) {
     if (!a || !isFinite(a[0]) || !isFinite(a[1])) return {};
     const span = a[1] - a[0];
     const pad = span * 0.08 || Math.max(Math.abs(a[1]), Math.abs(a[0]), 1) * 0.1;
-    const lo = a[0] - pad, hi = a[1] + pad;
-    return {min: +lo.toFixed(4), max: +hi.toFixed(4)};
+    let lo = a[0] - pad, hi = a[1] + pad;
+    if (a[0] >= 0 && lo < 0) lo = 0;          // 数据全为非负/非正时不越过0线(柱子从0起)
+    if (a[1] <= 0 && hi > 0) hi = 0;
+    const b = _niceBounds(lo, hi);
+    return {min: b[0], max: b[1]};
   });
   if (patch.some(p => Object.keys(p).length)) c.setOption({yAxis: patch}, {silent: true});
 }
-[chM, chP, chV, g1, g1b, g2, g2b, g3, g3b, g4].forEach(c =>
-  c.on('datazoom', () => _fitY(c)));
+// 轴的上下限取整到刻度步长的整数倍: 直接用数据拟合出来的上下限时, 首末两个刻度
+// 是 "19.7004" "0.1196" 这样的数。步长取 1/2/2.5/5×10^n; 两端留白超过数据跨度的
+// 四成(如 8~34 被撑成 0~40)时步长减半再取(→5~35)
+function _niceBounds(lo, hi) {
+  const raw = (hi - lo) / 5, e = Math.pow(10, Math.floor(Math.log10(raw))), m = raw / e;
+  let step = (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e;
+  const snap = () => [+(Math.floor(lo / step) * step).toFixed(10),
+                      +(Math.ceil(hi / step) * step).toFixed(10)];
+  let b = snap();
+  if (b[1] - b[0] > (hi - lo) * 1.4) {
+    step /= 2;
+    b = snap();
+  }
+  return b;
+}
+[chM, chP, chV, g4].forEach(c => c.on('datazoom', () => _fitY(c)));
+// 六张季报图共用同一条报告期轴: 在任何一张上缩放/拖动, 其余五张跟着走
+const GSTMT = [g1, g1b, g2, g2b, g3, g3b];
+let _zoomSyncing = false;                // dispatchAction 会同步触发其余各图的 datazoom 事件
+function _syncZoom(src) {
+  const op = src.getOption();
+  const z = op && (op.dataZoom || []).find(d => d.type === 'slider');
+  if (_zoomSyncing || !z || z.start == null || z.end == null) return;
+  _zoomSyncing = true;
+  try {
+    for (const c of GSTMT)
+      if (c !== src) c.dispatchAction({type: 'dataZoom', start: z.start, end: z.end});
+  } finally { _zoomSyncing = false; }
+}
+GSTMT.forEach(c => c.on('datazoom', () => { _fitY(c); _syncZoom(c); }));
 
 function _bars(name, data, color, yi = 1) {
   return {name, type: 'bar', data, barMaxWidth: 10 * yi,
@@ -514,16 +553,17 @@ function _line(name, data, color, idx = 1) {
           lineStyle: {width: 1.3, color}, itemStyle: {color}, yAxisIndex: idx};
 }
 function _gridOpt(d, series, y0name = '亿') {
+  const zs = _winStart(d.length);
   return {animation: false, backgroundColor: 'transparent',
     legend: {data: series.map(x => x.name), textStyle: {fontSize: 10}, top: 0},
     tooltip: {trigger: 'axis'},
     grid: {left: 54, right: 54, top: 26, bottom: 44},
-    xAxis: {type: 'category', data: d, ...AX},
+    xAxis: {type: 'category', data: d, ...AXQ},
     yAxis: [{type: 'value', scale: true, name: y0name, ...AX},
             {type: 'value', scale: true, name: '%/次', ...AX, splitLine: {show: false}}],
-    dataZoom: [{type: 'inside', xAxisIndex: 0},
-               {type: 'inside', xAxisIndex: 0},
-               {type: 'slider', xAxisIndex: 0, height: 14, bottom: 4,
+    dataZoom: [{type: 'inside', xAxisIndex: 0, start: zs},
+               {type: 'inside', xAxisIndex: 0, start: zs},
+               {type: 'slider', xAxisIndex: 0, start: zs, height: 14, bottom: 4,
       borderColor: '#ddd', fillerColor: 'rgba(42,120,214,0.1)'}],
     series};
 }
@@ -533,7 +573,10 @@ function renderFull(d) {
   if (!ds.length) { $('g1State').textContent = '无财务数据(点上方"分析"或先选股)';
     [g1, g1b, g2, g2b, g3, g3b, g4].forEach(c => c.clear()); return; }
   const P = d.profit, C = d.cashflow, B = d.balance;
-  $('g1State').textContent = `${ds[ds.length-1]}期 · 股息率(dv_ttm) ${P.dv_ttm ?? '--'}%`;
+  const span = ds.length > _G_WIN_Q
+    ? `${ds.length}期(${ds[0]}起) · 默认显示最近${_G_WIN_Q / 4}年, 缩放可看更早`
+    : `${ds.length}期(${ds[0]} ~ ${ds[ds.length-1]})`;
+  $('g1State').textContent = `${span} · 股息率(dv_ttm) ${P.dv_ttm ?? '--'}%`;
   // 盈利①: 金额(亿柱)+增速(%线) — 同量纲归组
   g1.setOption(_gridOpt(ds, [
     _bars('营收(亿)', P.revenue, '#8ba0b6'), _bars('净利(亿)', P.n_income, '#e34448'),
@@ -584,7 +627,7 @@ function renderFull(d) {
     legend: {data: ['机构持仓占比%', '股东户数(万)'], textStyle: {fontSize: 11}, top: 0},
     tooltip: {trigger: 'axis'},
     grid: {left: 54, right: 54, top: 26, bottom: 44},
-    xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AX},
+    xAxis: {type: 'category', data: d.inst.dates.map(x => x.slice(2)), ...AXQ},
     yAxis: [{type: 'value', name: '%', ...AX},
             {type: 'value', name: '万户', ...AX, splitLine: {show: false}}],
     dataZoom: [{type: 'inside', xAxisIndex: 0},

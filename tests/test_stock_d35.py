@@ -335,23 +335,30 @@ def test_refresh_events_text_without_null_leaks(env, monkeypatch):
 
 # ════════════ ⑥ 财务全景窗口 ════════════
 
-def test_finance_full_payload_limited_to_n_qua(env):
-    """近N季: 原把利润表(近N季)与财务表全史期数直接并集 — 茅台实测69期而营收只有12期"""
+def test_finance_full_payload_full_history_and_last_n(env):
+    """报告期默认取全史(页面图表), 传 n_qua 才截最近N季(扫雷 prompt 的财务表)。
+    D1-35 时为了让营收与财务指标期数对齐, 在载荷里统一截成最近12期(D1-40 撤回):
+    页面上六张季报图只剩最近三年, 缩放拖动也到不了更早; 而更早之前是利润表查询带
+    LIMIT, 并集出来69期而营收只有最近12期有数"""
     con = FS._conn(env)
     fin_dates = [f"{y}-{m}" for y in range(2019, 2027) for m in ("03-31", "06-30", "09-30", "12-31")][:30]
     for d in fin_dates:
         con.execute("INSERT INTO stock_finance(ts_code,end_date,profit_dedt,netprofit_yoy) "
                     "VALUES('600519.SH',?,1e9,5.0)", (d,))
-    for d in ("2026-03-31", "2026-06-30", "2026-09-30"):
         con.execute("INSERT INTO stock_income VALUES('600519.SH',?,?,?,?)", (d, 300e8, 300e8, 150e8))
+    for d in fin_dates[8:]:                    # 现金流量表起点晚于其余表(真实数据如此)
+        con.execute("INSERT INTO stock_cashflow VALUES('600519.SH',?,120e8)", (d,))
     con.commit()
     con.close()
     p = FS.finance_full_payload("600519", env)
-    assert len(p["dates"]) == 12 and p["dates"][-1] == "2026-09-30"
-    assert p["dates"][0] == "2023-12-31"         # 并集的最后12期
-    assert sum(1 for v in p["profit"]["revenue"] if v is not None) == 3
+    assert p["dates"] == fin_dates                       # 全史30期, 不是最近12期
+    assert p["profit"]["revenue"] == [300.0] * 30        # 营收每一期都有
+    assert p["profit"]["dedt"] == [10.0] * 30
+    assert p["cashflow"]["ocf"] == [None] * 8 + [120.0] * 22
+    t = FS.finance_full_payload("600519", env, n_qua=12)
+    assert t["dates"] == fin_dates[-12:] and t["profit"]["revenue"] == [300.0] * 12
     s = FS.finance_full_payload("600519", env, n_qua=8)       # 扫雷口径
-    assert len(s["dates"]) == 8 and len(s["profit"]["revenue"]) == 8
+    assert s["dates"] == fin_dates[-8:] and len(s["profit"]["revenue"]) == 8
 
 
 # ════════════ ⑦ 扫雷输入 ════════════

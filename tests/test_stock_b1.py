@@ -63,7 +63,10 @@ def test_refresh_income_cashflow_bs(env, monkeypatch):
                                       "total_liab": [5e10]*3, "total_cur_assets": [None]*3,
                                       "total_cur_liab": [None]*3}),
     }
-    monkeypatch.setattr(FS.T, "call", lambda api, fields="", **kw: dfs[api])
+    def fake(api, fields="", **kw):          # 接口语义: 按 offset 取一页, 超出总行数返回空
+        off = kw.get("offset") or 0
+        return dfs[api].iloc[off:off + FS._PAGE_ROWS].reset_index(drop=True)
+    monkeypatch.setattr(FS.T, "call", fake)
     assert FS.refresh_income("600519", env) == 3
     assert FS.refresh_cashflow("600519", env) == 3
     assert FS.refresh_bs("600519", env) == 3

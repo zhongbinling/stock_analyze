@@ -220,7 +220,8 @@ def test_stock_page_yfit_and_chips_gates():
     import re
     html = (REPO / "server" / "templates" / "admin" / "stock.html").read_text(encoding="utf-8")
     assert "function _fitY" in html                       # X缩放→Y重算
-    assert ".on('datazoom', () => _fitY(c))" in html      # 十图挂载
+    assert ".on('datazoom', () => _fitY(c))" in html      # 十图挂载(季报六张见下一行)
+    assert "GSTMT.forEach(c => c.on('datazoom', () => { _fitY(c); _syncZoom(c); }))" in html
     assert "fresh-chip" in html and "skMuted" in html     # 点选忽略
     assert ".fresh-chip.muted" in html                    # 灰调+删除线样式
     # 刚更新免确认(按股票记, 3分钟): 扫雷与状态行共用同一个判定
