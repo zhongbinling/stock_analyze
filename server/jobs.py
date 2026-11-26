@@ -437,7 +437,8 @@ def _run_steps(append, steps):
 def task_update(append):
     """增量更新三步链(D2-1): 抓取 → 大盘评分 → 板块温度(含SW聚合)"""
     return _run_steps(append, [
-        ("抓取", ["fetch_daily.py"], ("index", "mood", "sector_daily")),
+        ("抓取", ["fetch_daily.py"],
+         ("index", "index_extra", "board_daily", "mood", "sector_daily")),
         ("大盘评分", ["score.py"], ("sentiment",)),
         ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
     ])

@@ -45,7 +45,11 @@ def test_read_aux_aligned_and_units(aux_db):
     assert r["val"]["000300.SH"]["pe"] == [None, 13.8, 13.9]
     assert r["margin"] == [None, None, 24000.0]          # 2.4万亿→24000亿
     assert r["etf"]["510300.SH"]["amt"] == [None, None, 15.4]   # 15.4e5千元→15.4亿
-    assert len(r["val"]) == 7 and len(r["etf"]) == 8
+    import fetch_etf as FE
+    import fetch_val as FV
+    # 估值清单含深证成指(MI-1); ETF 这张副图仍只认国家队 8 只(深成指ETF跟着抓但不进来)
+    assert len(r["val"]) == len(FV.VAL_INDEXES) and "399001.SZ" in r["val"]
+    assert len(r["etf"]) == len(FE.ETF_INDEXES) == 8 and "159903.SZ" not in r["etf"]
 
 
 def test_read_aux_tolerates_missing_tables(tmp_path, monkeypatch):

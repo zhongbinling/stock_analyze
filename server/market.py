@@ -102,6 +102,10 @@ def pipeline_stats() -> dict:
             except sqlite3.Error:
                 out[key] = (0, None)
         q("index", "SELECT COUNT(*), MAX(date) FROM index_daily")
+        # MI-1: 情绪图多指数的底座(更新链日志显示每步增量)
+        q("index_extra", "SELECT COUNT(*), MAX(date) FROM index_daily "
+                         "WHERE code IN ('0.399001','0.399006','1.000688')")
+        q("board_daily", "SELECT COUNT(*), MAX(date) FROM board_daily")
         q("mood", "SELECT COUNT(*), MAX(date) FROM mood_raw")
         q("sentiment", "SELECT COUNT(*), MAX(date) FROM sentiment")
         q("sector_daily", "SELECT COUNT(*), MAX(date) FROM sector_daily")
@@ -182,8 +186,19 @@ def score_datasets() -> list:
 # ---- D1-1: 数据资产注册表 (代码级清单; 第四阶段运维动态注册时再迁 app.db) ----
 # (code, 名称, 表, 日期口径where, 来源, 陈旧阈值天, 基础说明)
 _ASSET_DATE_TABLES = [
-    ("index", "指数日线(上证+深综)", "index_daily", None, "东财/腾讯", 4,
-     "三源回退·上证为评分主力指数"),
+    # MI-1: 只认主力/深综两个代码 — index_daily 里另有三个指数情绪分用的指数(见下),
+    # 不加条件的话"最早"会被深证成指(2004起)拉前、行数混在一起
+    ("index", "指数日线(上证+深综)", "index_daily", "code IN ('1.000001','0.399106')",
+     "东财/腾讯", 4, "三源回退·上证为评分主力指数"),
+    ("index_399001", "指数日线·深证成指", "index_daily", "code='0.399001'",
+     "tushare", 4, "指数情绪分的量价输入·2004起"),
+    ("index_399006", "指数日线·创业板指", "index_daily", "code='0.399006'",
+     "tushare", 4, "指数情绪分的量价输入·2010-06起"),
+    ("index_000688", "指数日线·科创50", "index_daily", "code='1.000688'",
+     "tushare", 4, "指数情绪分的量价输入·2019-12-31起"),
+    # MI-1: 板块级日表 — 指数情绪分的结构分量(沪/深/创业板/科创板的强弱势家数)
+    ("board_daily", "板块广度与结构(沪/深/创业板/科创板)", "board_daily", None,
+     "个股日线聚合", 4, "强势/弱势=涨跌幅≥±9.8%·资金流2007起"),
     ("pool", "涨停复盘池(同花顺口径)", "mood_raw", "zt_count IS NOT NULL", "同花顺", 4,
      "源历史约一年滚动·2012-2019为估算回补"),
     ("breadth", "当日涨跌家数", "mood_raw", "up_count IS NOT NULL", "乐咕(可选)", 4,
@@ -204,15 +219,15 @@ _ASSET_DATE_TABLES = [
     ("sw_pool", "SW涨停结构", "sw_pool", None, "估算+官方", 4,
      "2005-2019估算/2020+官方覆盖"),
     ("sw_fflow", "SW主力资金流", "sw_fflow", None, "成分聚合", 4, "moneyflow 2007起"),
-    # D1-14 H1: 指数估值(50/300/500/1000/上证/创业板/科创50, 2014-06起)
+    # D1-14 H1: 指数估值(50/300/500/1000/上证/创业板/科创50/深证成指, 2014-06起)
     ("index_val", "指数估值PE/PB", "index_val_daily", None, "tushare", 7,
-     "宽基7指数·中证全指不在源清单"),
+     "7宽基+深证成指·中证全指不在源清单"),
     # D1-14 H3: 宽基ETF(国家队口径8只, 2005-02起)
     ("etf", "宽基ETF成交", "etf_daily", None, "tushare", 7,
-     "8只·50/三只300/500/1000/科创50/创业板"),
+     "国家队8只·50/三只300/500/1000/科创50/创业板; 另存深成指ETF(指数情绪副图用)"),
     # C1+: ETF份额(净流入底座) — 日期列trade_date且YMD格式(第8元覆盖默认date列)
     ("etf_flow", "宽基ETF份额·净流入", "etf_share", None, "tushare", 7,
-     "fund_share 8只·净流入=份额差×收盘价(2006起逐步上市)", "trade_date"),
+     "fund_share 国家队8只+深成指ETF·净流入=份额差×收盘价(2006起逐步上市)", "trade_date"),
     # D1-15 I1: 全A/宽基估值(daily_basic自算整体法, 2010起)
     ("mkt_val", "全A/宽基估值PE/PB", "mkt_val_daily", None, "tushare计算", 7,
      "全A整体法+四宽基成分加权·与官方互校"),
@@ -279,7 +294,10 @@ _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
               "sector_fflow": "dc_fflow", "index_val": "index_val",
               "margin": "margin_hist", "etf": "etf_daily",
               "etf_flow": "etf_flow",
-              "mkt_val": "mkt_val", "calendar": "calendar"}
+              "mkt_val": "mkt_val", "calendar": "calendar",
+              # MI-1: 情绪图多指数的底座(三个指数日线共用一个补全数据集)
+              "index_399001": "index_extra", "index_399006": "index_extra",
+              "index_000688": "index_extra", "board_daily": "board_daily"}
 # 注: raw_daily/raw_mf 无定向补全通道(纯链路内自愈), 不入本表 —
 # 否则修复诊断会误报"回补零写入"
 # 兼容别名(D1-19期名称)

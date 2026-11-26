@@ -159,37 +159,17 @@ def _norm_code(code: str) -> str:
     return c
 
 
-_PAGE_ROWS = 6000                  # 单次请求的行数(服务端实际上限可能更低, 见 _pull_frames)
-_MAX_ROWS = 60000                  # 单只股票全史的行数上限(日线约245年): 接口异常时不至于无限翻页
-
-
-def _pull_frames(api: str, fields: str, **params) -> list:
-    """接口分页取全: 返回各页的 DataFrame(接口原始顺序)。
-
-    一页 = 首页实际返回的行数 — 服务端的单次上限低于请求值 limit=_PAGE_ROWS:
-    日线/复权因子 6000 行, 三大报表与财务指标只有 100 行(实测)。按"返回行数不足
-    请求值即最后一页"来判断的话, 首页就被当成最后一页, 截断悄悄回来。
-    D1-35: 日线单次 6000 行 ≈ 24.6 年 — 自选池9只里5只1994~2001年上市的老股日线恰为
-    6000行(600760上市1996年, 日线始于2001-03), "全史K线"缺了最早几年; 复权因子同样
-    被截, 两端对不齐 → 最早一两百行 adj_factor 为空, 前复权价在这段直接取原始价。
-    总行数恰为页长整数倍时会多一次空页请求。"""
-    frames, offset, page = [], 0, None
-    while True:
-        df = T.call(api, fields, limit=_PAGE_ROWS, offset=offset, **params)
-        frames.append(df)
-        n = 0 if df is None else len(df)
-        if page is None:
-            page = n or _PAGE_ROWS
-        if n < page:
-            break                          # 不足一页 = 最后一页(首页为空也在这里结束)
-        offset += n
-        if offset >= _MAX_ROWS:
-            break
-    return frames
+_PAGE_ROWS = T.PAGE_ROWS          # 分页取全的实现与说明见 tushare_api.pull_frames
+_MAX_ROWS = T.MAX_ROWS
+_pull_frames = T.pull_frames
 
 
 def _pull_all(api: str, fields: str, ts_code: str):
-    """日线类全史分页拉取, 按trade_date升序返回DataFrame(见 _pull_frames)。"""
+    """日线类全史分页拉取, 按trade_date升序返回DataFrame。
+    D1-35: 单次调用最多6000行 ≈ 24.6年 — 实测自选池9只里5只1994~2001年上市的老股
+    日线恰为6000行(600760上市1996年, 日线始于2001-03), "全史K线"实际缺了最早几年;
+    复权因子同样被截, 两边末端对不齐 → 最早一两百行adj_factor为空, 前复权价在这段
+    直接取原始价。"""
     frames = _pull_frames(api, fields, ts_code=ts_code, start_date="19900000",
                           end_date=time.strftime("%Y%m%d"))
     if len(frames) == 1:

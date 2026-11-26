@@ -79,6 +79,104 @@ def fetch_index(cfg, index_start):
               f"({df['date'].iloc[0]} ~ {df['date'].iloc[-1]})")
 
 
+_IDX_UPSERT = (
+    "INSERT INTO index_daily(code,date,open,high,low,close,volume,amount,pct_chg) "
+    "VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(code,date) DO UPDATE SET "
+    "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,"
+    # 量额为空的行(指数基日只有基点收盘值)不把已有的量额冲掉
+    "volume=COALESCE(excluded.volume, index_daily.volume),"
+    "amount=COALESCE(excluded.amount, index_daily.amount),pct_chg=excluded.pct_chg")
+# 东财 / 腾讯回退时只补库里还没有的日子: 这两个源给深证成指、创业板指的量额不是指数口径,
+# 拿去覆盖已有的行等于把整段历史的成交量 / 成交额换成别的口径(或清空)
+_IDX_FILL = (
+    "INSERT OR IGNORE INTO index_daily(code,date,open,high,low,close,volume,amount,pct_chg) "
+    "VALUES(?,?,?,?,?,?,?,?,?)")
+
+
+def _extra_specs(cfg) -> list:
+    """config index.extra: 指数情绪分用的三个指数(深证成指/创业板指/科创50)"""
+    return list((cfg.get("index") or {}).get("extra") or [])
+
+
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def fetch_index_extra(cfg=None, start=None) -> dict:
+    """三个新指数的日线 → index_daily(config index.extra; 主力/深综两个指数仍走 fetch_index)。
+
+    以 tushare 为主: 它给的成交量 / 成交额是指数自身(成分股)口径, 每次整段重写。东财 / 腾讯
+    对深证成指、创业板指给的是全市场 / 全板块合计(11-26 深证成指 5.45 亿手 = 深市全部个股
+    之和, tushare 1.50 亿手), 所以 tushare 失败回退到它们时只补库里还没有的日子, 且只取
+    开高低收与涨跌幅、量额留空, 已有的行不动 — 指数情绪分的量能分量只在这几天缺数据,
+    下次更新链 tushare 恢复后补上。
+    start(YYYYMMDD) 是各指数起点的下限, 省略时用 config 里的 start。
+    返回 {代码: {"n": 写入行数, "src": 来源}}。"""
+    import tushare_api
+    cfg = cfg or load_cfg()
+    specs = _extra_specs(cfg)
+    if not specs:
+        return {}
+    conn = connect()
+    out = {}
+    end = time.strftime("%Y%m%d")
+    floor = str(start).replace("-", "") if start else "0"
+    try:
+        for sp in specs:
+            code, ts_code = sp["code"], sp["ts_code"]
+            beg = max(str(sp.get("start") or "19900101"), floor)
+            rows, src = [], None
+            try:
+                if not tushare_api.has_token():
+                    raise RuntimeError("无 tushare token")
+                frames = tushare_api.pull_frames(
+                    "index_daily", "trade_date,open,high,low,close,vol,amount,pct_chg",
+                    ts_code=ts_code, start_date=beg, end_date=end)
+                for df in frames:
+                    for r in (df.to_dict("records") if df is not None else []):
+                        amt = _num(r.get("amount"))
+                        rows.append((code, norm_date(str(r["trade_date"])), _num(r.get("open")),
+                                     _num(r.get("high")), _num(r.get("low")), _num(r.get("close")),
+                                     _num(r.get("vol")), amt * 1000.0 if amt is not None else None,   # 千元→元
+                                     _num(r.get("pct_chg"))))
+                src = "tushare"
+            except Exception as e:                                   # noqa: BLE001
+                print(f"[index-extra] {code} tushare 失败, 回退东财/腾讯(只取开高低收): {str(e)[:80]}")
+                try:
+                    df, src = em_api.index_kline(code, beg=beg)
+                except Exception as e2:                             # noqa: BLE001  三个源都不通: 不影响其余指数
+                    print(f"[index-extra] {code} 东财/腾讯也失败, 跳过: {str(e2)[:80]}")
+                    out[code] = {"n": 0, "src": "none"}
+                    continue
+                rows = [(code, norm_date(str(r["date"])), _num(r.get("open")), _num(r.get("high")),
+                         _num(r.get("low")), _num(r.get("close")), None, None, _num(r.get("pct_chg")))
+                        for _, r in df.iterrows()]
+                src = "fallback:" + src
+            if not rows:
+                print(f"[index-extra] {code}: 无数据")
+                out[code] = {"n": 0, "src": src}
+                continue
+            # 接口若无视起点也不收; 连收盘都没有的行(全空)不收。指数基日那天只有基点收盘值、
+            # 没有开高低与成交(创业板指 2010-05-31 = 1000 点)照常入库, 空的留空
+            rows = [r for r in rows if r[1].replace("-", "") >= beg and r[5] is not None]
+            rows.sort(key=lambda r: r[1])
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            cur.executemany(_IDX_UPSERT if src == "tushare" else _IDX_FILL, rows)
+            conn.commit()
+            out[code] = {"n": max(cur.rowcount, 0), "src": src}
+            if rows:
+                print(f"[index-extra] {sp.get('name', code)}({code}) {src}: {out[code]['n']} 行 "
+                      f"({rows[0][1]} ~ {rows[-1][1]})")
+    finally:
+        conn.close()
+    return out
+
+
 def fetch_pools(cfg, dates, force=False):
     conn = connect()
     done = set() if force else get_mood_dates(conn)
@@ -642,6 +740,8 @@ def fetch_sw_daily(lookback=10):
     from datetime import date, timedelta
     start = (date.today() - timedelta(days=lookback)).strftime("%Y%m%d")
     for name, fn in (("raw", lambda: __import__("raw_daily").backfill(start)),
+                     # MI-1: 板块级日表(沪/深/创业板/科创板的广度与强弱势结构), 指数情绪分的板块输入
+                     ("boards", lambda: __import__("boards").build(start)),
                      ("breadth", lambda: __import__("raw_daily").agg(start)),
                      ("pool-est", lambda: __import__("sw_pool").build(start)),
                      ("pool-official", lambda: __import__("sw_pool").overlay(start)),
@@ -764,13 +864,20 @@ BACKFILLS = {
     "dc_fflow": ("板块资金流·tushare回补(2023-09起)",
                  [("sector_fundflow", None, "date")],
                  lambda start: __import__("fetch_dc").backfill_fflow_dc(start), "20230901"),
-    "index_val": ("指数估值PE/PB回补(2014-06起)",
+    "index_val": ("指数估值PE/PB回补(2014-06起, 含深证成指)",
                   [("index_val_daily", None, "date")],
                   lambda start: __import__("fetch_val").run(start), "20140601"),
+    # MI-1: 情绪图多指数 — 三个指数的日线 / 板块级日表
+    "index_extra": ("指数日线·深证成指/创业板指/科创50(2004起, tushare)",
+                    [("index_daily", None, "date")],
+                    lambda start: fetch_index_extra(start=start), "20040101"),
+    "board_daily": ("板块广度与结构·沪/深/创业板/科创板(2005起)",
+                    [("board_daily", None, "date")],
+                    lambda start: __import__("boards").build(start), "20050101"),
     "margin_hist": ("两融余额历史回补(2010-03起)",
                     [("margin_daily", None, "date")],
                     lambda start: backfill_margin(start), "20100331"),
-    "etf_daily": ("宽基ETF日线回补(2005-02起)",
+    "etf_daily": ("宽基ETF日线回补(2005-02起, 国家队8只+深成指ETF)",
                   [("etf_daily", None, "date")],
                   lambda start: __import__("fetch_etf").run(start), "20050223"),
     "etf_flow": ("宽基ETF份额·净流入历史回补(fund_share全史, 按年分块控频)",
@@ -914,6 +1021,10 @@ def main():
 
     cfg = load_cfg()
     fetch_index(cfg, args.index_start or cfg["index_start"])
+    try:                                  # MI-1: 情绪图多指数的三个指数日线(可选链, 失败不影响主流程)
+        fetch_index_extra(cfg)
+    except Exception as e:                # noqa: BLE001
+        print(f"[index-extra] 挂载异常(跳过): {type(e).__name__}: {e}")
 
     conn = connect()
     start = args.start or cfg["pool_start"]

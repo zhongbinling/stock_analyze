@@ -120,7 +120,7 @@ def _year_chunks():
 
 
 def test_backfill_chunks_pace_idempotent(env, monkeypatch):
-    """按年分块×8ETF逐块拉取; 块间控频sleep; upsert幂等(二跑不重复)"""
+    """按年分块×抓取清单(国家队8只+深成指ETF)逐块拉取; 块间控频sleep; upsert幂等(二跑不重复)"""
     import fetch_etf_flow as EF
     calls, sleeps = [], []
     monkeypatch.setattr(EF.T, "has_token", lambda: True)
@@ -128,9 +128,10 @@ def test_backfill_chunks_pace_idempotent(env, monkeypatch):
     monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
     n = EF.backfill("20240101", env, pace_s=6)
     today, chunks = _year_chunks()
-    assert n == 8 * len(chunks)
-    assert calls == [(c, s, e) for c in EF.ETF_CODES for s, e in chunks]
-    assert sleeps == [6] * (8 * len(chunks))          # 每块后控频
+    n_etf = len(EF.ETF_ALL)
+    assert n == n_etf * len(chunks)
+    assert calls == [(c, s, e) for c in EF.ETF_ALL for s, e in chunks]
+    assert sleeps == [6] * (n_etf * len(chunks))        # 每块后控频
     con = sqlite3.connect(str(env))
     assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n
     con.close()
@@ -156,16 +157,42 @@ def test_backfill_skips_complete_years(env, monkeypatch):
         calls, rows_for=lambda s: 243 if s[:4] < this_year else 1))
     monkeypatch.setattr(EF.time, "sleep", lambda s: sleeps.append(s))
     EF.backfill("20240101", env, pace_s=6)
-    assert len(calls) == 8 * len(chunks)             # 首跑: 全部年块
+    n_etf = len(EF.ETF_ALL)
+    assert len(calls) == n_etf * len(chunks)           # 首跑: 全部年块
     calls.clear()
     sleeps.clear()
     n2 = EF.backfill("20240101", env, pace_s=6)
-    assert n2 == 8 and len(calls) == 8 and len(sleeps) == 8     # 仅当年块(8只×1块)
-    assert {c for c, _s, _e in calls} == set(EF.ETF_CODES)
+    assert n2 == n_etf and len(calls) == n_etf and len(sleeps) == n_etf   # 仅当年块(每只×1块)
+    assert {c for c, _s, _e in calls} == set(EF.ETF_ALL)
     assert all(s[:4] == this_year for _c, s, _e in calls)
     con = sqlite3.connect(str(env))
-    assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == 8 * (n_past * 243 + 1)
+    assert con.execute("SELECT COUNT(*) FROM etf_share").fetchone()[0] == n_etf * (n_past * 243 + 1)
     con.close()
+
+
+def test_net_flow_series_ignores_extra_etf_rows(env):
+    """MI-1: 份额表里多出国家队口径之外的ETF(深成指ETF)时, 国家队净申购序列不变 —
+    原按 LIMIT 天数×8 取行, 每天多一行就会把窗口挤短、序列起点上移"""
+    import fetch_etf_flow as EF
+    assert len(EF.ETF_CODES) == 8 and EF.ETF_EXTRA_CODES == ("159903.SZ",)
+    con = EF.ensure_db(env)
+    con.execute("CREATE TABLE IF NOT EXISTS etf_daily(code TEXT, date TEXT, close REAL)")
+    days = [f"202610{d:02d}" for d in range(20, 31)]          # 10 个"交易日"
+    for i, d8 in enumerate(days):
+        iso = f"{d8[:4]}-{d8[4:6]}-{d8[6:]}"
+        for c in EF.ETF_CODES:
+            con.execute("INSERT INTO etf_share VALUES(?,?,?)", (c, d8, 10000 + 100 * i))
+        for c, p in (("510050.SH", 3.0), ("510300.SH", 4.0)):
+            con.execute("INSERT INTO etf_daily(code,date,close) VALUES(?,?,?)", (c, iso, p))
+    con.commit()
+    before = EF.net_flow_series(env, n_days=9)
+    assert len(before) == 8                                 # 窗口首日只作基准
+    for i, d8 in enumerate(days):                           # 深成指ETF的份额行
+        con.execute("INSERT INTO etf_share VALUES(?,?,?)", ("159903.SZ", d8, 500 + i))
+    con.commit()
+    con.close()
+    after = EF.net_flow_series(env, n_days=9)
+    assert len(after) == 8 and after == before              # 窗口与数值都不变
 
 
 def test_backfill_incomplete_year_not_skipped(env):

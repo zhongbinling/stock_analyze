@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """D1-14 H1: 指数估值(PE/PB) — tushare index_dailybasic
 
-表 index_val_daily(code,date,pe,pb,name); 7指数白名单。
-回补=按代码查全史(实测2014-06起, 每代码1次调用); 日增=按trade_date一次拿全指数。
+表 index_val_daily(code,date,pe,pb,name); 宽基白名单(7个宽基 + 上证指数 + 深证成指)。
+回补=按代码查全史(实测2014-06起, 每代码1次调用; 深证成指2014-07起); 日增=按trade_date一次拿全指数。
 批次走 guarded_batch/guarded_day_write 守卫(值域 pe(0,500)/pb(0,30)容None)。
 
 用法: python fetch_val.py --start 20140601   # 回补; 日增由更新链挂载
@@ -20,10 +20,11 @@ import tushare_api as T  # noqa: E402
 from fetch_daily import norm_date, ymd  # noqa: E402
 
 # 宽基白名单(中证全指不在接口清单, 全A口径以宽基组合呈现——见计划H1执行稿)
+# 深证成指(MI-1): 情绪图多指数的副图用, 2014-07-24 起有数
 VAL_INDEXES = {
     "000016.SH": "上证50", "000300.SH": "沪深300", "000905.SH": "中证500",
     "000852.SH": "中证1000", "000001.SH": "上证指数", "399006.SZ": "创业板指",
-    "000688.SH": "科创50",
+    "000688.SH": "科创50", "399001.SZ": "深证成指",
 }
 UPSERT = ("INSERT INTO index_val_daily(code,date,pe,pb,name) VALUES(?,?,?,?,?) "
           "ON CONFLICT(code,date) DO UPDATE SET pe=excluded.pe,pb=excluded.pb")

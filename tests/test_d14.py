@@ -30,7 +30,7 @@ def _hist_df():
 
 
 def test_run_backfills_per_code(val_env, monkeypatch):
-    """按代码回补: start前滤除, 白名单7指数, 幂等行数正确"""
+    """按代码回补: start前滤除, 白名单逐个查(7个宽基+上证指数; MI-1 加了深证成指), 幂等行数正确"""
     seen = []
 
     def fake(api, fields="", **kw):
@@ -39,9 +39,10 @@ def test_run_backfills_per_code(val_env, monkeypatch):
     monkeypatch.setattr(FV.T, "has_token", lambda: True)
     monkeypatch.setattr(FV.T, "call", fake)
     assert FV.run("20140601") is True
-    assert sorted(seen) == sorted(FV.VAL_INDEXES)      # 7指数逐个查
+    assert sorted(seen) == sorted(FV.VAL_INDEXES)
+    assert "399001.SZ" in FV.VAL_INDEXES            # 深证成指: 情绪图多指数的副图用
     c = sqlite3.connect(str(val_env["path"]))
-    assert c.execute("SELECT COUNT(*) FROM index_val_daily").fetchone()[0] == 14  # 7×2日
+    assert c.execute("SELECT COUNT(*) FROM index_val_daily").fetchone()[0] == len(FV.VAL_INDEXES) * 2
     assert c.execute("SELECT COUNT(*) FROM index_val_daily "
                      "WHERE date='2013-06-01'").fetchone()[0] == 0
     row = c.execute("SELECT name FROM index_val_daily WHERE code='000300.SH' LIMIT 1").fetchone()

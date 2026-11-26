@@ -278,7 +278,7 @@ def test_etf_run_failfast_and_idempotent(tmp_path, monkeypatch, capsys):
     conn = sqlite3.connect(str(db))
     n2 = conn.execute("SELECT COUNT(*) FROM etf_daily").fetchone()[0]
     conn.close()
-    assert n1 == len(FE.ETF_INDEXES) * 3 and n2 == n1      # 幂等
+    assert n1 == len(FE.ETF_ALL) * 3 and n2 == n1         # 抓取清单(国家队8只+深成指ETF); 幂等
 
 
 def test_val_run_start_filter_and_failfast(tmp_path, monkeypatch, capsys):

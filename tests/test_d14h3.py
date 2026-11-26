@@ -22,7 +22,7 @@ def etf_env(tmp_path, monkeypatch):
 
 
 def test_run_paginates_5000_cap(etf_env, monkeypatch):
-    """单次5000行上限 → 分页续拉拼全史; 白名单8只; start过滤"""
+    """单次5000行上限 → 分页续拉拼全史; 抓取清单=国家队8只+深成指ETF; start过滤"""
     pages = []
 
     def fake(api, fields="", **kw):
@@ -49,7 +49,7 @@ def test_run_paginates_5000_cap(etf_env, monkeypatch):
     c = sqlite3.connect(str(etf_env["path"]))
     n = c.execute("SELECT COUNT(*) FROM etf_daily WHERE code='510050.SH'").fetchone()[0]
     assert n == 4902                                    # 两页拼接
-    assert c.execute("SELECT COUNT(DISTINCT code) FROM etf_daily").fetchone()[0] == 8
+    assert c.execute("SELECT COUNT(DISTINCT code) FROM etf_daily").fetchone()[0] == len(FE.ETF_ALL)
     c.close()
 
 
@@ -77,10 +77,10 @@ def test_refresh_daily(etf_env, monkeypatch):
                              "amount": [1000.0], "vol": [20.0]})
     monkeypatch.setattr(FE.T, "call", fake)
     assert FE.refresh(conn=sqlite3.connect(str(etf_env["path"]))) is True
-    assert len(calls) == 8
+    assert len(calls) == len(FE.ETF_ALL)
     c = sqlite3.connect(str(etf_env["path"]))
     n = c.execute("SELECT COUNT(*) FROM etf_daily").fetchone()[0]
-    assert n == 7                                       # 7只出数
+    assert n == len(FE.ETF_ALL) - 1                    # 除未出数的那只
     c.close()
 
 
@@ -100,6 +100,10 @@ def test_etf_registered():
     assert "fetch_etf.refresh()" in src                 # 更新链挂载
     html = (REPO / "server" / "templates" / "admin" / "data.html").read_text(encoding="utf-8")
     assert "etf_daily" in html and "自2005-02起" in html
+    # MI-1: 深成指ETF跟着一起抓, 但国家队口径的两个清单仍是 8 只 —
+    # "宽基ETF成交额"副图、国家队净申购序列、份额窗口都按这两个清单读
+    assert len(FE.ETF_INDEXES) == 8 and "159903.SZ" not in FE.ETF_INDEXES
+    assert FE.ETF_EXTRA == {"159903.SZ": "深成指ETF"} and len(FE.ETF_ALL) == 9
 
 
 def test_refresh_mixed_dates_written_separately(etf_env, monkeypatch):
@@ -115,7 +119,7 @@ def test_refresh_mixed_dates_written_separately(etf_env, monkeypatch):
     c = sqlite3.connect(str(etf_env["path"]))
     n26 = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date='2026-10-26'").fetchone()[0]
     n23 = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date='2026-10-23'").fetchone()[0]
-    assert n26 == 7 and n23 == 1                     # 两日各自落库, 谁也没拖累谁
+    assert n26 == len(FE.ETF_ALL) - 1 and n23 == 1     # 两日各自落库, 谁也没拖累谁
     c.close()
 
 
@@ -130,5 +134,5 @@ def test_refresh_lookback_heals_missed_days(etf_env, monkeypatch):
     c = sqlite3.connect(str(etf_env["path"]))
     for d in ("2026-10-23", "2026-10-27"):
         n = c.execute("SELECT COUNT(*) FROM etf_daily WHERE date=?", (d,)).fetchone()[0]
-        assert n == 8                              # 8只全落
+        assert n == len(FE.ETF_ALL)               # 清单里的全部落库
     c.close()

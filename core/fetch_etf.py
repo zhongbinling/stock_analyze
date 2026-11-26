@@ -2,7 +2,9 @@
 """D1-14 H3: 宽基ETF日线 — tushare fund_daily
 
 表 etf_daily(code,date,close,amount,name,vol); amount单位千元, vol单位手。
-白名单8只国家队宽基(50/三只300/500/1000/科创50/创业板)。
+白名单8只国家队宽基(50/三只300/500/1000/科创50/创业板), 另加深成指ETF(159903,
+情绪图多指数里深证成指页签的"挂钩ETF净流入"副图用)。国家队口径的合计与净申购只认
+ETF_INDEXES 那 8 只 — ETF_EXTRA 只跟着一起抓数, 不进那些口径。
 按代码查有5000行单次上限 → 分页续拉; 批次走守卫写入。
 
 用法: python fetch_etf.py --start 20050223   # 回补; 日增由更新链挂载
@@ -26,6 +28,10 @@ ETF_INDEXES = {
     "510310.SH": "300ETF易方达", "510500.SH": "500ETF", "512100.SH": "1000ETF",
     "588000.SH": "科创50ETF", "159915.SZ": "创业板ETF",
 }
+# 不属于国家队口径、但跟着一起抓日线与份额的ETF(MI-1)。ETF_INDEXES 被"宽基ETF成交额"
+# 副图、国家队净申购等按 8 只口径读取, 新增的不能混进去
+ETF_EXTRA = {"159903.SZ": "深成指ETF"}
+ETF_ALL = {**ETF_INDEXES, **ETF_EXTRA}       # 日线抓取范围
 UPSERT = ("INSERT INTO etf_daily(code,date,close,amount,name,vol) VALUES(?,?,?,?,?,?) "
           "ON CONFLICT(code,date) DO UPDATE SET close=excluded.close,"
           "amount=excluded.amount,vol=excluded.vol")
@@ -70,7 +76,7 @@ def refresh(conn=None, lookback_days: int = 7) -> bool:
     start = (_d.today() - _td(days=lookback_days)).strftime("%Y%m%d")
     today = time.strftime("%Y%m%d")
     rows = []
-    for code, name in ETF_INDEXES.items():
+    for code, name in ETF_ALL.items():
         try:
             df = T.call("fund_daily", "trade_date,close,amount,vol",
                         ts_code=code, start_date=start, end_date=today)
@@ -100,9 +106,9 @@ def run(start="20050223") -> bool:
     iso = norm_date(str(start))
     beg = ymd(iso)
     end = time.strftime("%Y%m%d")
-    print(f"[etf] 回补 {len(ETF_INDEXES)} 只自 {iso}")
+    print(f"[etf] 回补 {len(ETF_ALL)} 只自 {iso}")
     fails = 0
-    for code, name in sorted(ETF_INDEXES.items()):
+    for code, name in sorted(ETF_ALL.items()):
         try:
             all_rows, cur = [], beg
             while cur <= end:                       # 分页续拉(单次5000行上限)

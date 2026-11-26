@@ -15,6 +15,10 @@ MACRO_DB = BASE / "data" / "sentiment.db"
 
 ETF_CODES = ("510050.SH", "510300.SH", "510310.SH", "510330.SH",
              "510500.SH", "512100.SH", "588000.SH", "159915.SZ")
+# 不属于国家队口径、但跟着一起抓份额的ETF(MI-1: 深证成指页签的"挂钩ETF净流入"副图)。
+# 国家队净申购序列只认 ETF_CODES 那 8 只 — 新增的不能混进去
+ETF_EXTRA_CODES = ("159903.SZ",)
+ETF_ALL = ETF_CODES + ETF_EXTRA_CODES
 
 
 def ensure_db(path=None):
@@ -29,7 +33,7 @@ def ensure_db(path=None):
 
 
 def refresh(path=None, lookback: int = 30) -> int:
-    """日增: fund_share近N日×8只ETF(每只1次调用)"""
+    """日增: fund_share近N日×(8只国家队ETF+深成指ETF)(每只1次调用)"""
     import datetime as dt
     if not T.has_token():
         return -1
@@ -37,7 +41,7 @@ def refresh(path=None, lookback: int = 30) -> int:
     end = time.strftime("%Y%m%d")
     con = ensure_db(path)
     total = 0
-    for code in ETF_CODES:
+    for code in ETF_ALL:
         try:
             df = T.call("fund_share", "ts_code,trade_date,fd_share",
                         ts_code=code, start_date=start, end_date=end)
@@ -83,7 +87,7 @@ def _complete_years(con, this_year: str) -> set:
 
 
 def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
-    """历史回补: fund_share按年分块×8只ETF(接口支持全史, 实测2018整年247行)。
+    """历史回补: fund_share按年分块×(8只国家队ETF+深成指ETF)(接口支持全史, 实测2018整年247行)。
     逐年窗口+间隔控频(限频20/min层内); upsert幂等 — 中断/限频失败重跑只补缺块;
     已完整的历史年块跳过不调用(_complete_years)。
     价格侧etf_daily已有2006起全史, 份额补齐即得净流入长史。"""
@@ -101,7 +105,7 @@ def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
     con = ensure_db(path)
     done = _complete_years(con, str(today.year))
     total, fails, skipped = 0, 0, 0
-    for code in ETF_CODES:
+    for code in ETF_ALL:
         for s, e in chunks:
             if (code, s[:4]) in done:
                 skipped += 1
@@ -137,9 +141,12 @@ def net_flow_series(path=None, n_days: int = 120) -> list:
     被整段丢掉(实测 2026-01-19 显示-24.8亿, 8只合计实为净赎回379亿)。生产数据上
     124个交易日的净额因此不对, 累计线虚高约200亿。没有这类行的日子结果与原来相同。"""
     con = ensure_db(path)
+    # 只取国家队 8 只: 表里还有别的ETF(深成指ETF)时, 按 LIMIT n×8 截取的窗口会被它们
+    # 挤短, 序列起点随之上移
+    marks = ",".join("?" * len(ETF_CODES))
     rows = con.execute(
-        "SELECT trade_date, code, fd_share FROM etf_share "
-        "ORDER BY trade_date DESC, code LIMIT ?", (n_days * 8,)).fetchall()
+        f"SELECT trade_date, code, fd_share FROM etf_share WHERE code IN ({marks}) "
+        "ORDER BY trade_date DESC, code LIMIT ?", (*ETF_CODES, n_days * len(ETF_CODES))).fetchall()
     if not rows:
         con.close()
         return []

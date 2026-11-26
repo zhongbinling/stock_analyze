@@ -56,6 +56,33 @@ def call(api: str, fields: str = "", **params) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=fields_l)
 
 
+# ---------------------------------------------------------------- 分页取全
+PAGE_ROWS = 6000        # 单次请求的行数(服务端实际上限可能更低, 见 pull_frames)
+MAX_ROWS = 60000        # 单个查询对象的全史行数上限: 接口异常时不至于无限翻页
+
+
+def pull_frames(api: str, fields: str, **params) -> list:
+    """接口分页取全: 返回各页的 DataFrame(接口原始顺序), 不排序不去重。
+
+    一页 = 首页实际返回的行数。服务端的单次上限低于请求值 limit=PAGE_ROWS 时不报错:
+    日线/复权因子 6000 行, 三大报表与财务指标只有 100 行。按"返回行数不足请求值即
+    最后一页"来判断的话, 首页就被当成最后一页, 截断悄悄回来。
+    偏移量超过末尾时返回 0 行; 总行数恰为页长整数倍时会多一次空页请求。"""
+    frames, offset, page = [], 0, None
+    while True:
+        df = call(api, fields, limit=PAGE_ROWS, offset=offset, **params)
+        frames.append(df)
+        n = 0 if df is None else len(df)
+        if page is None:
+            page = n or PAGE_ROWS
+        if n < page:
+            break
+        offset += n
+        if offset >= MAX_ROWS:
+            break
+    return frames
+
+
 # ---------------------------------------------------------------- 常用接口
 
 def trade_cal(start: str, end: str, exchange: str = "SSE") -> pd.DataFrame:
