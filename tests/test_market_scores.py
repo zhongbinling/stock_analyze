@@ -11,6 +11,10 @@ sys.path.insert(0, str(REPO))
 
 from server import market  # noqa: E402
 
+# MI-2: 指数情绪分(深证成指 / 创业板指 / 科创50), 插在大盘情绪分之后、板块温度之前
+IDX = ["score:idx_399001", "score:idx_399006", "score:idx_000688"]
+CODES = ["score:sentiment"] + IDX + ["score:bk", "score:sw1", "score:sw2", "score:sw3"]
+
 
 @pytest.fixture()
 def mkt(fixture_db, tmp_path, monkeypatch):
@@ -25,7 +29,7 @@ def mkt(fixture_db, tmp_path, monkeypatch):
 def test_score_datasets_four_types(mkt):
     ds = mkt.score_datasets()
     codes = [d["code"] for d in ds]
-    assert codes == ["score:sentiment", "score:bk", "score:sw1", "score:sw2", "score:sw3"]
+    assert codes == CODES
     by = {d["code"]: d for d in ds}
     # 夹具: sentiment 40行~09-30; BK 3板×30日(1 NULL仍计行); SW1/SW2 各1×30
     assert by["score:sentiment"]["rows"] == 40 and by["score:sentiment"]["last"] == "2026-09-30"
@@ -35,14 +39,19 @@ def test_score_datasets_four_types(mkt):
     assert by["score:sw3"]["codes"] == 0 and by["score:sw3"]["health"] == "bad"  # 夹具无SW3行
     assert by["score:bk"]["first"] == "2026-09-01" and by["score:bk"]["last"] == "2026-09-30"
     assert by["score:bk"]["days"] == 30
+    # MI-2: 指数情绪分三行 — 夹具库没有这三个指数的日线与评分表, 也要逐行给出、说明指向日线补全
+    assert [by[c]["name"] for c in IDX] == ["指数情绪分·深证成指", "指数情绪分·创业板指", "指数情绪分·科创50"]
+    for c in IDX:
+        assert by[c]["source"] == "score_index.py" and by[c]["rows"] == 0 and by[c]["health"] == "bad"
+        assert "无该指数日线" in by[c]["note"]
 
 
 def test_health_ok_when_caught_up(mkt):
     """夹具中评分与 index_daily 同步到 2026-09-30 → 全部 ok, 说明可读(非'='标记)"""
     by = {d["code"]: d for d in mkt.score_datasets()}
     for c, d in by.items():
-        if c == "score:sw3":
-            continue                                # 夹具无SW3行 → bad属预期
+        if c == "score:sw3" or c in IDX:              # 夹具无SW3行 / 无三个新指数 → bad属预期
+            continue
         assert d["health"] == "ok", f"{c} 应为 ok"
         assert "与行情同步" in d["note"], f"{c} ok态说明应含'与行情同步': {d['note']!r}"
     assert "=" not in by["score:sw1"]["note"].replace("==", "")  # 无孤立'='标记
@@ -102,6 +111,5 @@ def test_api_datasets_includes_scores(server_app, mkt):
     r = server_app["client"].get("/admin/api/datasets")
     assert r.status_code == 200
     j = r.get_json()
-    assert [s["code"] for s in j["scores"]] == \
-           ["score:sentiment", "score:bk", "score:sw1", "score:sw2", "score:sw3"]
+    assert [s["code"] for s in j["scores"]] == CODES
     assert j["datasets"]                                  # 基础数据仍在

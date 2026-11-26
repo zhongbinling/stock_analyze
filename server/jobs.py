@@ -2,7 +2,7 @@
 """任务系统: 单工作线程队列 + 子进程执行(core CLI) + APScheduler 定时 + 种子数据
 
 任务类型:
-  update    增量更新行情数据(core/fetch_daily.py + core/score.py)
+  update    增量更新行情数据(core/fetch_daily.py + core/score.py + core/score_index.py)
   generate  按生成规则产出视图(core/viewer.py → views_store/)
 
 设计要点:
@@ -412,34 +412,47 @@ def _run(cmd, append, cwd=CORE, env_extra=None):
 # ---------------------------------------------------------------- D2-1: 更新链分步执行
 
 def _run_steps(append, steps):
-    """分步执行: 每步分隔线+耗时+增量计数(pipeline_stats前后差); 失败即中止"""
+    """分步执行: 每步分隔线+耗时+增量计数(pipeline_stats前后差); 失败即中止后续步骤。
+    步骤可带第 4 项 soft=True: 失败只记日志、不中止 — 用于与后面步骤无关的辅助步骤"""
     import server.market as market
     pre = market.pipeline_stats()
     n = len(steps)
-    for i, (name, cmd, keys) in enumerate(steps, 1):
+    for i, step in enumerate(steps, 1):
+        name, cmd, keys = step[:3]
+        soft = len(step) > 3 and step[3]
         append(f"━━━━ [{i}/{n}] {name} ({' '.join(cmd)}) ━━━━")
         t0 = time.time()
         rc = _run([sys.executable, "-u"] + cmd, append)
         if rc:
-            append(f"━━━━ [{i}/{n}] {name} ✗ 失败, 中止后续步骤 ({time.time() - t0:.1f}s) ━━━━")
-            return rc
-        post = market.pipeline_stats()
-        grown = [f"{k} +{post.get(k, {}).get('rows', 0) - pre.get(k, {}).get('rows', 0)}行"
-                 f"(最新 {post.get(k, {}).get('last')})"
-                 for k in keys
-                 if post.get(k, {}).get("rows", 0) > pre.get(k, {}).get("rows", 0)]
-        append(f"━━━━ [{i}/{n}] {name} ✓ ({time.time() - t0:.1f}s)"
-               f"{'; ' + ', '.join(grown) if grown else ''} ━━━━")
-        pre = post
+            append(f"━━━━ [{i}/{n}] {name} ✗ {'部分完成' if rc == 3 else '失败'}, "
+                   f"{'不阻断后续步骤' if soft else '中止后续步骤'} ({time.time() - t0:.1f}s) ━━━━")
+            if not soft:
+                return rc
+        else:
+            post = market.pipeline_stats()
+            grown = [f"{k} +{post.get(k, {}).get('rows', 0) - pre.get(k, {}).get('rows', 0)}行"
+                     f"(最新 {post.get(k, {}).get('last')})"
+                     for k in keys
+                     if post.get(k, {}).get("rows", 0) > pre.get(k, {}).get("rows", 0)]
+            append(f"━━━━ [{i}/{n}] {name} ✓ ({time.time() - t0:.1f}s)"
+                   f"{'; ' + ', '.join(grown) if grown else ''} ━━━━")
+            pre = post
     return 0
 
 
+# MI-2: 指数情绪分(情绪图多指数)。它只写自己的表 index_sentiment, 后面的板块温度不依赖它 —
+# 所以 soft: 失败也不挡住现役链路的后续步骤(失败原因在日志里, 评分卡会显示它落后)。
+# score_index.py 的退出码: 3 = 部分指数失败, 日志行标"部分完成"
+_INDEX_SCORE = ("指数情绪评分", ["score_index.py"], ("index_sentiment",), True)
+
+
 def task_update(append):
-    """增量更新三步链(D2-1): 抓取 → 大盘评分 → 板块温度(含SW聚合)"""
+    """增量更新四步链(D2-1): 抓取 → 大盘评分 → 指数情绪评分 → 板块温度(含SW聚合)"""
     return _run_steps(append, [
         ("抓取", ["fetch_daily.py"],
          ("index", "index_extra", "board_daily", "mood", "sector_daily")),
         ("大盘评分", ["score.py"], ("sentiment",)),
+        _INDEX_SCORE,
         ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
     ])
 
@@ -448,6 +461,7 @@ def task_recalc(append):
     """D2-3: 评分重算(不抓取): 补全后联动, 保证视图生成用到完整评分"""
     return _run_steps(append, [
         ("大盘评分", ["score.py"], ("sentiment",)),
+        _INDEX_SCORE,
         ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
     ])
 
@@ -475,14 +489,18 @@ def task_repair(window_days: int = 7, trigger: str = "manual"):
         # 拉取, 此前早退致16:35定时更新空跑(11-03实测全表滞留11-02)
         # fetch_daily幂等(已有日秒跳), 非交易日跑一遍也仅秒级
         # D1-10r-review: fetch链各源本就按日幂等跳过已有 — 单趟全链覆盖全部
-        # 缺口表(index/池/板块/SW/两融/日历), 修复后重算评分; [k/3]步进度
-        rc = _run([sys.executable, "-u", "fetch_daily.py"], append)   # [1/3] 全链补拉
+        # 缺口表(index/池/板块/SW/两融/日历), 修复后重算评分; [k/4]步进度
+        rc = _run([sys.executable, "-u", "fetch_daily.py"], append)   # [1/4] 全链补拉
         if rc:
             return rc
-        rc = _run([sys.executable, "-u", "score.py"], append)          # [2/3] 大盘评分
+        rc = _run([sys.executable, "-u", "score.py"], append)          # [2/4] 大盘评分
         if rc:
             return rc
-        rc = _run([sys.executable, "-u", "sector.py", "calc"], append) # [3/3] 板块温度
+        # [3/4] 指数情绪评分(MI-2): 只写自己的表, 失败不阻断后面与它无关的板块温度
+        rc = _run([sys.executable, "-u", "score_index.py"], append)
+        if rc:
+            append(f"[repair] 指数情绪评分{'部分完成' if rc == 3 else '失败'}, 继续后续步骤")
+        rc = _run([sys.executable, "-u", "sector.py", "calc"], append) # [4/4] 板块温度
         if rc:
             return rc
         after = market.scan_gaps(window_days)

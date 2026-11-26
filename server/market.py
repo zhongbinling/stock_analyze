@@ -108,6 +108,9 @@ def pipeline_stats() -> dict:
         q("board_daily", "SELECT COUNT(*), MAX(date) FROM board_daily")
         q("mood", "SELECT COUNT(*), MAX(date) FROM mood_raw")
         q("sentiment", "SELECT COUNT(*), MAX(date) FROM sentiment")
+        # MI-2: 指数情绪分(没出分的日子也存、score 为空 — 只数出了分的)
+        q("index_sentiment", "SELECT COUNT(score), MAX(CASE WHEN score IS NOT NULL THEN date END) "
+                             "FROM index_sentiment")
         q("sector_daily", "SELECT COUNT(*), MAX(date) FROM sector_daily")
         q("bk", "SELECT COUNT(*), MAX(date) FROM sector_scores WHERE code LIKE 'BK%'")
         q("sw1", "SELECT COUNT(*), MAX(date) FROM sector_scores WHERE code LIKE 'SW1_%'")
@@ -136,13 +139,7 @@ def score_datasets() -> list:
                 return 0
             if not base:
                 return 0 if _stale_days(last) <= 4 else _stale_days(last)
-            try:
-                from datetime import date
-                b = date(*map(int, base.split("-")))
-                l = date(*map(int, last.split("-")))
-                return (b - l).days
-            except ValueError:
-                return 0
+            return _days_between(base, last)
 
         rows, first, last = con.execute(
             "SELECT COUNT(*), MIN(date), MAX(date) FROM sentiment").fetchone()
@@ -153,6 +150,8 @@ def score_datasets() -> list:
                     "health": ("bad" if not last else "warn" if lag > 0 else "ok"),
                     "note": ("无数据" if not last else
                              f"{'与行情同步' if lag == 0 else f'落后行情 {lag} 天'}·重算评分后刷新")})
+
+        out.extend(_index_score_rows(con))
 
         for code, pat, name in (("score:bk", "BK%", "板块温度·行业板块"),
                                 ("score:sw1", "SW1_%", "板块温度·申万一级"),
@@ -181,6 +180,74 @@ def score_datasets() -> list:
                  "first": None, "last": None, "health": "bad", "note": f"读取失败: {e}"}]
     finally:
         con.close()
+
+
+def _index_score_rows(con) -> list:
+    """MI-2: 指数情绪分, config index.extra 的每个指数一行。
+
+    健康基准 = 该指数自己的最新行情日(不是主力指数的): 评分没跟上自己的行情即 warn,
+    最后一个交易日没出分时把原因写进说明; 首个出分日之后有空洞(没出分的日子)时也标 warn 并写出天数。
+    表还没生成时逐行给出"未生成", 不拖垮整张卡。
+    """
+    out = []
+    for sp in (_core_cfg().get("index") or {}).get("extra") or []:
+        code, name = sp.get("code"), sp.get("name") or sp.get("code")
+        row = {"code": f"score:idx_{str(sp.get('ts_code') or code).split('.')[0]}",
+               "name": f"指数情绪分·{name}", "source": "score_index.py",
+               "rows": 0, "first": None, "last": None, "codes": None, "days": 0,
+               "health": "bad", "note": "未生成 — 更新链的「指数情绪评分」步骤生成"}
+        out.append(row)
+        try:
+            base = con.execute("SELECT MAX(date) FROM index_daily WHERE code=?", (code,)).fetchone()[0]
+        except sqlite3.Error:
+            continue
+        if not base:
+            row["note"] = "无该指数日线 — 先在数据管理页补全该指数的日线"
+            continue
+        try:
+            rows, first, last = con.execute(
+                "SELECT COUNT(score), MIN(date), MAX(date) FROM index_sentiment "
+                "WHERE index_code=? AND score IS NOT NULL", (code,)).fetchone()
+        except sqlite3.Error:
+            continue                                  # 评分表还没生成
+        row.update(rows=rows or 0, first=first, last=last, days=rows or 0)
+        if not last:
+            continue
+        bits = []
+        try:
+            tip = con.execute(
+                "SELECT date, note FROM index_sentiment WHERE index_code=? ORDER BY date DESC LIMIT 1",
+                (code,)).fetchone()
+            # 最后一个交易日之前没出分的日子(首个出分日之后的空洞): 多半是上游数据缺了一段。
+            # 最新出分日照常往前走, 不提示的话这种空洞在页面上看不出来
+            gaps = con.execute(
+                "SELECT COUNT(*) FROM index_sentiment WHERE index_code=? AND score IS NULL AND date<?",
+                (code, base)).fetchone()[0]
+        except sqlite3.Error:
+            tip, gaps = None, 0
+        health = "ok"
+        if last < base:
+            health = "warn"
+            bits.append(f"落后该指数行情 {_days_between(base, last)} 天")
+        else:
+            bits.append("与该指数行情同步")
+        if tip and tip[1]:
+            bits.append(f"{tip[0]} 未出分({tip[1]})")
+        if gaps:
+            health = "warn"
+            bits.append(f"此前另有 {gaps} 日未出分")
+        bits.append(f"评分自 {first}")
+        row.update(health=health, note="·".join(bits))
+    return out
+
+
+def _days_between(later: str, earlier: str) -> int:
+    """两个 ISO 日期相差的自然日; 解析不了返回 0"""
+    try:
+        from datetime import date
+        return (date(*map(int, later.split("-"))) - date(*map(int, earlier.split("-")))).days
+    except (ValueError, TypeError):
+        return 0
 
 
 # ---- D1-1: 数据资产注册表 (代码级清单; 第四阶段运维动态注册时再迁 app.db) ----

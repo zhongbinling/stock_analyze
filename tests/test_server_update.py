@@ -43,28 +43,31 @@ def _grow(base, **kw):
     return d
 
 
-def test_task_update_three_steps_in_order(app):
+def test_task_update_four_steps_in_order(app):
     lines = []
     rc = app["jobs"].task_update(lines.append)
     assert rc == 0
     scripts = [" ".join(c[2:]) for c in app["state"]["cmds"]]
-    assert scripts == ["fetch_daily.py", "score.py", "sector.py calc"]
+    assert scripts == ["fetch_daily.py", "score.py", "score_index.py", "sector.py calc"]
     joined = "\n".join(lines)
-    assert "[1/3] 抓取" in joined and "[2/3] 大盘评分" in joined and "[3/3] 板块温度" in joined
+    assert "[1/4] 抓取" in joined and "[2/4] 大盘评分" in joined
+    assert "[3/4] 指数情绪评分" in joined and "[4/4] 板块温度" in joined
     assert "━━━━" in joined
 
 
 def test_task_update_reports_row_growth(app):
-    # 三步各推进一步计数: stats_seq 依次为 初始→抓取后→评分后→温度后
+    # 四步各推进一步计数: stats_seq 依次为 初始→抓取后→大盘评分后→指数情绪评分后→温度后
     s0 = dict(STATS_EMPTY)
     s1 = _grow(s0, index=100, mood=50, sector_daily=900)
     s2 = _grow(s1, sentiment=10)
-    s3 = _grow(s2, bk=90, sw1=30, sw2=60)
-    app["state"]["stats_seq"][:] = [s0, s1, s2, s3]
+    s3 = _grow(s2, index_sentiment=3)
+    s4 = _grow(s3, bk=90, sw1=30, sw2=60)
+    app["state"]["stats_seq"][:] = [s0, s1, s2, s3, s4]
     lines = []
     app["jobs"].task_update(lines.append)
     joined = "\n".join(lines)
     assert "sentiment +10行" in joined
+    assert "index_sentiment +3行" in joined                 # 指数情绪评分这一步的增量(三个指数各多一天)
     assert "bk +90行" in joined and "sw1 +30行" in joined
 
 
@@ -77,12 +80,45 @@ def test_task_update_aborts_on_step_failure(app):
     assert "中止后续步骤" in "\n".join(lines)
 
 
+def test_task_update_index_score_failure_does_not_block(app):
+    """MI-2: 指数情绪评分只写自己的表 — 它失败了(比如三个指数都算不出)后面的板块温度照常跑"""
+    app["state"]["rcs"] = [0, 0, 1, 0]
+    lines = []
+    rc = app["jobs"].task_update(lines.append)
+    assert rc == 0
+    scripts = [" ".join(c[2:]) for c in app["state"]["cmds"]]
+    assert scripts == ["fetch_daily.py", "score.py", "score_index.py", "sector.py calc"]
+    joined = "\n".join(lines)
+    assert "指数情绪评分 ✗ 失败, 不阻断后续步骤" in joined and "中止后续步骤" not in joined
+    assert "[4/4] 板块温度 ✓" in joined
+
+
+def test_task_update_marks_partial_index_score(app):
+    """指数情绪评分只成了几个指数(退出码 3): 步骤行标"部分完成", 任务照样往下走、不算失败"""
+    app["state"]["rcs"] = [0, 0, 3, 0]
+    lines = []
+    assert app["jobs"].task_update(lines.append) == 0
+    assert len(app["state"]["cmds"]) == 4
+    joined = "\n".join(lines)
+    assert "指数情绪评分 ✗ 部分完成, 不阻断后续步骤" in joined and "失败" not in joined
+    assert "[4/4] 板块温度 ✓" in joined
+
+
+def test_task_update_hard_step_failure_still_aborts_after_soft_step(app):
+    """大盘评分(非 soft)失败照旧中止: soft 只作用于带了标记的那一步"""
+    app["state"]["rcs"] = [0, 1]
+    lines = []
+    rc = app["jobs"].task_update(lines.append)
+    assert rc == 1 and len(app["state"]["cmds"]) == 2
+    assert "中止后续步骤" in "\n".join(lines)
+
+
 def test_task_recalc_has_no_fetch(app):
     lines = []
     rc = app["jobs"].task_recalc(lines.append)
     assert rc == 0
     scripts = [" ".join(c[2:]) for c in app["state"]["cmds"]]
-    assert scripts == ["score.py", "sector.py calc"]
+    assert scripts == ["score.py", "score_index.py", "sector.py calc"]
 
 
 def _run_backfill_task(app, rows_written):
