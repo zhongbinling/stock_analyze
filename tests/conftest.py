@@ -250,6 +250,19 @@ def _isolate_stock_db(request, tmp_path, monkeypatch):
     monkeypatch.setattr(FS, "STOCK_DB", tmp_path / "_isolated_stock.db")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_views_store(tmp_path, monkeypatch):
+    """每个测试默认把生成类任务的输出目录(server.jobs.VIEWS_STORE)与它的"仓库根"(jobs.ROOT)指到临时目录 —
+    server_app 夹具只隔离了 app.db, 生成任务按这两个常量往仓库里写文件: 视图落在 views_store/,
+    生成规则的临时覆盖文件落在 data/。此前每跑一次全套就在生产的 views_store/ 里留下 3 个占位视图文件
+    (11-02 起累计 40 多个)。"""
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    import server.jobs as jobs
+    monkeypatch.setattr(jobs, "ROOT", tmp_path)
+    monkeypatch.setattr(jobs, "VIEWS_STORE", tmp_path / "views_store")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _real_stock_pool_canary():
     """守卫: 测试期间生产自选池成员不得变化 — 没有测试应该增删改池成员(页面上
