@@ -71,20 +71,13 @@ def test_html_aux_panels_wired():
     assert "D.etfSum" in h and "peBits" in h
 
 
-def test_html_js_syntax():
-    """主脚本块 node 语法门禁"""
-    import shutil
-    if not shutil.which("node"):
-        pytest.skip("node 不可用")
-    import viewer as VW
-    h = VW.HTML
+def test_html_js_syntax(js_syntax):
+    """主脚本块 node 语法门禁(脚本经临时文件交给 node: 情绪图多指数后主脚本超过 Windows 命令行上限)"""
     import re
-    blocks = re.findall(r"<script>([\s\S]*?)</script>", h)
-    main = max(blocks, key=len)                     # 主脚本(非echarts占位)
+    import viewer as VW
+    main = max(re.findall(r"<script>([\s\S]*?)</script>", VW.HTML), key=len)   # 主脚本(非echarts占位)
     assert "render" in main
-    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", main],
-                       capture_output=True, text=True, timeout=120)
-    assert r.returncode == 0, f"JS 语法错误: {r.stderr[:600]}"
+    js_syntax(main)
 
 
 def test_read_aux_partial_db(tmp_path, monkeypatch):

@@ -84,13 +84,18 @@ def benv(tmp_path, monkeypatch):
     monkeypatch.setattr("server.macro.list_events", _le)
     # viewer payload打桩: 分位小数→%(D1-30r口径); 5年条用的是alla_*_pct5
     stub_v = types.ModuleType("viewer")
-    stub_v.build_payload = lambda cfg: {
-        "dates": [_today(1), _today()],
-        "mval": {"alla_pe_pct": [0.5, 0.807],       # →81% 红
-                 "alla_pe_pct5": [0.5, 0.19],       # →19% 蓝
-                 "alla_pb_pct": [0.5, 0.62],        # →62% (简报增强PB分位条)
-                 "alla_pb_pct5": [0.5, 0.08],       # →8%
-                 "pe300_pct": [0.5, 0.50]}}         # →50% 灰
+    stub_v.calls = []                                      # 记录简报调 build_payload 时传的 tabs
+
+    def _bp(cfg, tabs=True):
+        stub_v.calls.append(tabs)
+        return {
+            "dates": [_today(1), _today()],
+            "mval": {"alla_pe_pct": [0.5, 0.807],   # →81% 红
+                     "alla_pe_pct5": [0.5, 0.19],   # →19% 蓝
+                     "alla_pb_pct": [0.5, 0.62],    # →62% (简报增强PB分位条)
+                     "alla_pb_pct5": [0.5, 0.08],   # →8%
+                     "pe300_pct": [0.5, 0.50]}}     # →50% 灰
+    stub_v.build_payload = _bp
     stub_s = types.ModuleType("score")
     stub_s.load_cfg = lambda: {}
     monkeypatch.setitem(sys.modules, "viewer", stub_v)
@@ -108,6 +113,13 @@ def test_mood_score_and_delta(benv):
     html = _gen(benv)
     assert "+12.5" in html and "偏热" in html
     assert "环比 +4.5" in html
+
+
+def test_briefing_does_not_build_index_tabs(benv):
+    """简报只向 viewer 要全A估值: 调 build_payload 时传 tabs=False — 情绪图多指数(MI-3)之后,
+    默认会连带把三个指数页签的评分也算一遍(多 0.5 ~ 0.9 秒), 简报用不上"""
+    _gen(benv)
+    assert sys.modules["viewer"].calls == [False]
 
 
 def test_sector_hot_cold_with_cn_names(benv):

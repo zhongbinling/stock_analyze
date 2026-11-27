@@ -62,7 +62,7 @@ def benv(tmp_path, monkeypatch):
         {"date": _d(), "level": 2, "title": "无AI分析事件"},
     ]})
     stub_v = types.ModuleType("viewer")
-    stub_v.build_payload = lambda cfg: {"dates": [_d(), _d()], "mval": {}}
+    stub_v.build_payload = lambda cfg, tabs=True: {"dates": [_d(), _d()], "mval": {}}
     stub_s = types.ModuleType("score")
     stub_s.load_cfg = lambda: {}
     monkeypatch.setitem(sys.modules, "viewer", stub_v)

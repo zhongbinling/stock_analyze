@@ -107,21 +107,16 @@ def test_frontend_ai_rendering():
 
 
 def test_payload_escapes_script_close():
-    """2026-11-10修复回归: 事件content含</script>(网页HTML污染)时,
-    build_payload注入前转义闭合标签 — 否则浏览器提前关闭script标签
-    → SyntaxError + %22碎片404(实测run 126)"""
+    """2026-11-10修复回归: 事件content含</script>(网页HTML污染)时, 写进页面的载荷里不能出现裸的
+    </script> — 否则浏览器提前关闭script标签 → SyntaxError + %22碎片404(实测run 126)。
+    这里测的是真正写进页面的那段文本(_payload_js)。原先的修复放在 build_payload 里且是空转的:
+    转义后立刻 json.loads 回原值, 写页面时又序列化成原样; 当时的回归测试只是把那段逻辑抄了一遍自测"""
     import json
-    ev = [{"date": "2026-11-07", "level": 3, "title": "t", "type": "x",
-           "source": "s", "content": '广告<div><script>x</script></div>正文'}]
-    _orig = VW._read_events
-    VW._read_events = lambda level_min=None: ev
-    VW._read_events = _orig                    # 立即还原(勿污染后续测试)
-    # 模拟payload尾段: build_payload不易直接调(需评分库) — 验证转义逻辑本身
-    payload = {"events": ev}
-    _pl = json.dumps(payload, ensure_ascii=False)
-    assert "</script" in _pl
-    _pl = _pl.replace("</script", "<\/script")
-    assert "</script" not in _pl and "<\/script" in _pl
-    # JSON仍合法且JS字符串语义等价
-    back = json.loads(_pl)
-    assert "</script>" in back["events"][0]["content"]
+    content = '广告<div><script>x</script></div>正文<!-- <script>'
+    ev = [{"date": "2026-11-07", "level": 3, "title": "t", "type": "x", "source": "s", "content": content}]
+    text = VW._payload_js({"events": ev})
+    assert "</script" not in text and "<script" not in text and "<!--" not in text
+    assert "\\u003c/script" in text and "\\u003c!--" in text
+    back = json.loads(text)                      # JSON 仍合法, 且字符串的值与原来相同
+    assert back["events"][0]["content"] == content
+    assert VW._payload_js({"a": "x z"}) == '{"a":"x\\u2028z"}'   # U+2028(JS 字符串里的行分隔符)也转义

@@ -132,21 +132,24 @@ def backfill(start: str = "20210101", path=None, pace_s: float = 6.0) -> int:
     return total
 
 
-def net_flow_series(path=None, n_days: int = 120) -> list:
-    """净流入/流出序列: 每日8只ETF份额差×收盘价 → 亿, [{date, net_yi, flows:{code:yi}}]
+def net_flow_series(path=None, n_days: int = 120, codes=ETF_CODES) -> list:
+    """净流入/流出序列: 每日ETF份额差×收盘价 → 亿, [{date, net_yi, flows:{code:yi}}]
 
     D1-38 review: 每只ETF各用自己的"截至当天已知的最新份额"与前一个交易日相减。
     原按"上一条有份额记录的日期"整体配对 — 份额表里有非交易日的行(季末报告日、个别
     周六), 且往往只有一两只ETF: 它成了下一个交易日的比较基准, 其余ETF当天的申赎
     被整段丢掉(实测 2026-01-19 显示-24.8亿, 8只合计实为净赎回379亿)。生产数据上
-    124个交易日的净额因此不对, 累计线虚高约200亿。没有这类行的日子结果与原来相同。"""
+    124个交易日的净额因此不对, 累计线虚高约200亿。没有这类行的日子结果与原来相同。
+
+    codes: 算哪几只ETF, 默认国家队口径的 8 只(回测与情绪图的"ETF净流入"用的就是它, 别改默认值)。
+    情绪图的指数页签传单只, 如 ("159903.SZ",), 取"挂钩ETF净流入"。"""
+    codes = tuple(codes) or ETF_CODES
     con = ensure_db(path)
-    # 只取国家队 8 只: 表里还有别的ETF(深成指ETF)时, 按 LIMIT n×8 截取的窗口会被它们
-    # 挤短, 序列起点随之上移
-    marks = ",".join("?" * len(ETF_CODES))
+    # 只取指定的这几只: 表里还有别的ETF时, 按 LIMIT n×只数 截取的窗口会被它们挤短, 序列起点随之上移
+    marks = ",".join("?" * len(codes))
     rows = con.execute(
         f"SELECT trade_date, code, fd_share FROM etf_share WHERE code IN ({marks}) "
-        "ORDER BY trade_date DESC, code LIMIT ?", (*ETF_CODES, n_days * len(ETF_CODES))).fetchall()
+        "ORDER BY trade_date DESC, code LIMIT ?", (*codes, n_days * len(codes))).fetchall()
     if not rows:
         con.close()
         return []
@@ -158,10 +161,10 @@ def net_flow_series(path=None, n_days: int = 120) -> list:
     dates = sorted(by_date.keys())
     # 需要etf_daily收盘价: 一次取齐(D1-38: 原每个交易日查一次, 5000个交易日要近3秒)
     prices_by_date = {}
-    marks = ",".join("?" * len(ETF_CODES))
+    marks = ",".join("?" * len(codes))
     for d, c, close in con.execute(
             f"SELECT date, code, close FROM etf_daily WHERE code IN ({marks}) "
-            "AND date>=? AND date<=?", (*ETF_CODES, dates[0], dates[-1])):
+            "AND date>=? AND date<=?", (*codes, dates[0], dates[-1])):
         prices_by_date.setdefault(d, {})[c] = close
     out = []
     asof = {}                      # 各ETF截至当天已知的最新份额
@@ -177,7 +180,7 @@ def net_flow_series(path=None, n_days: int = 120) -> list:
         if not prices:
             continue               # 当日没有收盘价: 份额变化留到该ETF下一个有收盘价的日子
         net_yi, flows = 0.0, {}
-        for c in ETF_CODES:
+        for c in codes:
             if c not in pending or c not in prices:
                 continue
             pending.discard(c)

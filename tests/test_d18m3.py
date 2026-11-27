@@ -64,13 +64,7 @@ def test_ev_mechanism_defined_before_use():
     assert h.index("const baseOption = {") > h.index("D.evIdx = (")
 
 
-def test_viewer_js_syntax_still_clean():
-    """既有 node 门禁自动覆盖新增脚本(单独跑一遍确保)"""
-    if not shutil.which("node"):
-        pytest.skip("node 不可用")
+def test_viewer_js_syntax_still_clean(js_syntax):
+    """既有 node 门禁自动覆盖新增脚本(单独跑一遍确保; 脚本经临时文件交给 node)"""
     import viewer as VW
-    blocks = re.findall(r"<script>([\s\S]*?)</script>", VW.HTML)
-    main = max(blocks, key=len)
-    r = subprocess.run([shutil.which("node"), "-e", "new Function(process.argv[1])", main],
-                       capture_output=True, text=True, timeout=120)
-    assert r.returncode == 0, f"JS 语法错误: {r.stderr[:400]}"
+    js_syntax.check_html(VW.HTML)

@@ -142,7 +142,7 @@ def generate_html(out=None) -> Path:
             import score as _S
             import viewer as _V
             cfg = _S.load_cfg()
-            vd = _V.build_payload(cfg)
+            vd = _V.build_payload(cfg, tabs=False)       # 只要全A估值: 不连带把三个指数页签也算一遍
             mval = vd.get("mval", {})
             i = len(vd["dates"]) - 1
             pe_pct = mval.get("alla_pe_pct", [None] * (i + 1))[i]

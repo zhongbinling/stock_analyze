@@ -10,10 +10,11 @@ index:
   # 深证成指、创业板指的量额是全市场/全板块合计, 所以这三个以 tushare 为主
   # (见 fetch_daily.fetch_index_extra)。start 比评分起点早一个滚动分位窗口(预热);
   # board = 板块日表(fetch_daily.BACKFILLS 的 board_daily)里对应的板块, 结构分量的输入
+  # etf = 情绪图该指数页签的"挂钩ETF"(成交额与净流入副图); 要在 fetch_etf.ETF_ALL 里有, 没写则不出这两块副图
   extra:
-    - {code: "0.399001", name: "深证成指", ts_code: "399001.SZ", board: "SZ",   start: "20040101"}
-    - {code: "0.399006", name: "创业板指", ts_code: "399006.SZ", board: "CYB", start: "20090101"}
-    - {code: "1.000688", name: "科创50",   ts_code: "000688.SH", board: "KCB", start: "20191201"}
+    - {code: "0.399001", name: "深证成指", ts_code: "399001.SZ", board: "SZ",   start: "20040101", etf: "159903.SZ"}
+    - {code: "0.399006", name: "创业板指", ts_code: "399006.SZ", board: "CYB", start: "20090101", etf: "159915.SZ"}
+    - {code: "1.000688", name: "科创50",   ts_code: "000688.SH", board: "KCB", start: "20191201", etf: "588000.SH"}
 
 # 口径说明: 涨停/跌停/炸板家数为主源同花顺涨停复盘(沪深主板+创业板+科创板),
 # 历史约一年滚动(当前起点2025-10); 东财专题(不含ST/科创板, 仅近月)作近月兜底。
