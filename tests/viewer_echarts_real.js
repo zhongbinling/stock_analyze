@@ -3,7 +3,8 @@
 // viewer_behavior.js 用的是手写的 ECharts 桩 — 它不校验传进去的配置, "真实 ECharts 会抛错"的这一类问题抓不到
 // (11-27 实测: 指数页签 K 线窗口外写成裸 null, 点页签整张图停住; 颜色占位符少写两个字符, 阴线全变红)。
 // 这里的页面是 generate_html 真正生成出来的(占位符已替换), 由 tests/test_mi3_viewer.py 调用:
-//     node viewer_echarts_real.js <全历史.html> <近两年.html>
+//     node viewer_echarts_real.js <全历史.html> <近两年.html> [带板块两融与成分股广度的页面.html]
+// 第三个参数(可选)由 tests/test_mi4_viewer.py 传入, 只在给了它时才跑文件末尾的 MI-4 那几条。
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -181,6 +182,88 @@ for (const [label, file] of [['全历史', process.argv[2]], ['近两年规则',
     assert(JSON.stringify(G('zoomDates()')) === JSON.stringify(z0), '窗口变成 ' + JSON.stringify(G('zoomDates()')));
     for (let round = 0; round < 5; round++) for (const key of G('TAB_ORDER')) G(`activate(${JSON.stringify(key)})`);
     assert(JSON.stringify(G('zoomDates()')) === JSON.stringify(z0), '五轮之后漂到 ' + JSON.stringify(G('zoomDates()')));
+  });
+}
+
+// ── MI-4(可选的第三个参数): 带板块两融余额与成分股广度的页面, 由 tests/test_mi4_viewer.py 生成 ──
+// 这两块副图是新加的序列与面板: 配置写得不对(轴的域、标题里图例的富文本层级、双轴)只有真实 ECharts 才看得出来
+if (process.argv[4]) {
+  const P = open(process.argv[4]);
+  const G = P.G;
+  const series = () => G('chart.getOption().series');
+  const names = () => series().map(s => s.name);
+  const AUX_IDS = ['ckPE', 'ckPB', 'ckMargin', 'ckEtf', 'ckEtfFlow', 'ckMf', 'ckPEPct', 'ckPBPct',
+                   'ckZb', 'ckJl', 'ckRsi', 'ckBias', 'ckVol'];
+  const setChecked = (id, on) => { P.els[id].checked = on; P.els[id].fire('change'); };
+  const n100 = s => (s.match(/>100%</g) || []).length;          // SVG 里"100%"刻度文字出现几处
+
+  test('MI-4 · 创业板指页签: 两融副图是板块口径的一条线; 成分股广度两条线在同一根 0 ~ 100 的轴上(不做双轴), 都真正画进了 SVG', () => {
+    G("activate('0.399006')");
+    G('setZoom(0)');                                            // 全史: 标的扩容日(第 300 天前)在窗口里
+    assert(G('D.t.margin') === '创业板两融余额', G('D.t.margin'));
+    const bm = series().find(s => s.name === '创业板两融余额(亿)');
+    assert(bm && bm.type === 'line', '两融序列 ' + names().join(' | '));
+    assert(bm.data.filter(v => v != null).length === 400, '有数的日子 ' + bm.data.filter(v => v != null).length);
+    assert(!names().some(x => x.includes('深市两融')), '交易所口径的线不该再画一条: ' + names().join(' | '));
+    // 标的扩容的日子: 竖虚线 + "标的 975 只"(余额只覆盖两融标的, 名单一扩余额就上一个台阶)
+    assert(bm.markLine && bm.markLine.data.length === 1 && bm.markLine.data[0].xAxis === G('D.dates[D.n - 300]')
+           && bm.markLine.data[0].label.formatter === '标的 500→975 只', '标的扩容的标注 ' + JSON.stringify(bm.markLine && bm.markLine.data));
+    assert(G('chart.renderToSVGString()').includes('标的 500→975 只'), '"标的 500→975 只"没画出来');
+    // 指数页签上定域 0 ~ 100 的轴(成分股广度 + 两块全A分位)都不画最高一档"100%": 它正好落在面板标题那一行
+    assert(n100(G('chart.renderToSVGString()')) === 0, '指数页签上不该出现"100%"刻度文字');
+    const up = series().find(s => s.name === '成分股上涨占比%'), ma = series().find(s => s.name === '站上20日线占比%');
+    assert(up && ma, '广度序列 ' + names().join(' | '));
+    assert(up.xAxisIndex === ma.xAxisIndex && up.yAxisIndex === ma.yAxisIndex, '两条线不在同一根轴上');
+    const y = G('chart.getOption().yAxis').find(a => a.gridIndex === up.xAxisIndex);
+    assert(y && y.min === 0 && y.max === 100, '纵轴 ' + JSON.stringify(y && [y.min, y.max]));
+    const title = G('chart.getOption().title').find(t => t.text.includes('成分股广度'));
+    assert(title && title.textStyle.rich && title.textStyle.rich.u && title.textStyle.rich.m,
+           '面板标题里的图例要挂在 textStyle.rich 下: ' + JSON.stringify(title && title.textStyle));
+    // 只留成分股广度一块副图: 两条线的颜色(页面里的红 / 估值副图的蓝)要真的出现在 SVG 里; 关掉之后蓝线一处不剩
+    AUX_IDS.forEach(id => setChecked(id, false));
+    const on = fills(G('chart.renderToSVGString()'));
+    assert(on['#2f5cd6'] > 0 && on[COLORS.red] > 0, '开着时的填色 ' + JSON.stringify(on));
+    const svg = G('chart.renderToSVGString()');
+    assert(new RegExp('<text[^>]*fill="' + COLORS.red + '"[^>]*>[^<]*上涨占比').test(svg), '标题里的"上涨占比"没按红色画出来');
+    assert(new RegExp('<text[^>]*fill="#2f5cd6"[^>]*>[^<]*站上20日线占比').test(svg), '标题里的"站上20日线占比"没按蓝色画出来');
+    setChecked('ckBreadth', false);
+    const off = fills(G('chart.renderToSVGString()'));
+    assert(!off['#2f5cd6'] && off[COLORS.red] < on[COLORS.red], '关掉之后 ' + JSON.stringify(off));
+    const svgOff = G('chart.renderToSVGString()');
+    assert(n100(svg) === n100(svgOff), `"100%" 刻度文字: 开着广度副图 ${n100(svg)} 处, 关掉 ${n100(svgOff)} 处`);
+    assert(/>(0|20|40|60|80)%</.test(svg), '其余刻度文字要有');
+    setChecked('ckBreadth', true);
+  });
+
+  test('MI-4 · 四个页签逐个切换、悬停框、右侧面板、开关 — 真实 ECharts 不抛错; 深证成指没有板块两融, 上证没有这两块', () => {
+    const tip = i => G('chart.getOption().tooltip[0].formatter')([{dataIndex: i}]);
+    for (const key of G('TAB_ORDER')) {
+      G(`activate(${JSON.stringify(key)})`);
+      for (const i of [0, G('D.n') - 400, G('D.n') - 1]) assert(typeof tip(i) === 'string', key + ' 悬停框');
+      G('render(D.n - 1)'); G('render(0)');
+    }
+    G("activate('0.399006')");
+    const i = G('D.n') - 1;
+    assert(tip(i).includes('创业板两融余额 4819亿 (标的 975 只)'), tip(i).slice(-400));
+    assert(tip(i).includes('成分股(等权): 上涨占比 35.7%(98 只) · 站上20日线 7.3%'), tip(i).slice(-400));   // 占比带分母
+    const panel = G("document.getElementById('panel').innerHTML");
+    assert(panel.includes('(标的 975 只 · 占深市 57%)'), '右侧面板的两融行: ' + panel.slice(-600));   // 4819 ÷ 8500
+    assert(panel.includes('<td>成分股上涨占比</td><td><b>35.7%'), '右侧面板的广度行: ' + panel.slice(-600));
+    G("activate('0.399001')");
+    assert(G('D.t.margin') === '深市两融余额' && G('D.bmargin') === null, '深证成指: 深市本来就是交易所口径');
+    assert(series().some(s => s.name === '成分股上涨占比%'), '深证成指应有成分股广度');
+    assert(!series().some(s => s.markLine && s.markLine.data && s.markLine.data.length && s.markLine.data[0].xAxis), '交易所口径的两融不标扩容');
+    G("activate('sh')");
+    assert(!G('D.breadth') && !G('D.bmargin'), '上证页签没有这两块');
+    assert(!names().some(x => x.includes('成分股') || x.includes('两融余额(亿·板块')), names().join(' | '));
+    assert(!P.els['ckBreadthWrap'] || P.els['ckBreadthWrap'].style.display === 'none', '上证页签上广度的控件应隐藏');
+    setChecked('ckPEPct', true); setChecked('ckPBPct', true);   // 前一条用例把它们关了(开关记忆各页签共用)
+    assert(n100(G('chart.renderToSVGString()')) === 2, '上证页签的两块分位副图原样: "100%"照画');
+    for (const key of G('TAB_ORDER').slice(1)) {                 // 每个指数页签上开关一遍
+      G(`activate(${JSON.stringify(key)})`);
+      setChecked('ckBreadth', false); setChecked('ckBreadth', true);
+      assert(G('chart.renderToSVGString()').length > 10000, key);
+    }
   });
 }
 

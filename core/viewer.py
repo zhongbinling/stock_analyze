@@ -13,6 +13,8 @@
 情绪图多指数(MI-3): 页面上方有四个页签 — 上证指数(现役大盘情绪, 内容与原来相同)、
 深证成指 / 创业板指 / 科创50(指数情绪分, 见 score_index)。上证的数据在载荷顶层、键名与含义不变;
 三个指数的数据在载荷的 tabs 里, 每个页签一份与上证同构的载荷, 页面脚本按同一套代码出图。
+MI-4: 指数页签另有两块副图 — 创业板 / 科创板的板块两融余额(core/board_margin.py, 有数据时代替交易所口径的
+那条线)、三个指数的成分股广度(core/index_breadth.py: 成分股上涨占比 / 站上 20 日线占比)。只作附图, 不进评分。
 """
 import argparse
 import json
@@ -248,10 +250,13 @@ def _aligned(m, dates, nd=2):
 
 def _index_aux(cfg, sp: dict, con, dates) -> dict:
     """一个指数页签的副图, 各序列对齐本页签的日期轴 dates(ISO): 本指数 PE·PB、挂钩 ETF 的成交额与净流入、
-    板块主力净流入、该交易所的两融余额(沪市 / 深市)。每一项各自容错: 缺了只少对应面板。
+    板块主力净流入、该交易所的两融余额(沪市 / 深市)、板块两融余额与成分股广度(MI-4)。
+    每一项各自容错: 缺了只少对应面板。
     (全A 估值与水位不在这里算: 它是全市场一个数, 各页签要一致, 见 _fill_mval)"""
+    from board_margin import BOARDS
     board = sp["board"]
-    out = {"val": {}, "margin": [], "etf": {}, "etf_flow": [], "mf": []}
+    out = {"val": {}, "margin": [], "etf": {}, "etf_flow": [], "mf": [],
+           "bmargin": [], "bn": [], "bm_marks": [], "breadth": None}
     try:
         ts = sp.get("ts_code")
         if ts:
@@ -270,6 +275,49 @@ def _index_aux(cfg, sp: dict, con, dates) -> dict:
     except Exception as e:  # noqa: BLE001
         print(f"[viewer] 页签 {sp.get('name')} 两融副图跳过: {type(e).__name__}: {e}")
         out["margin"] = []
+    try:
+        if board in BOARDS:                 # MI-4: 创业板 / 科创板有板块级两融(沪市 / 深市本来就是交易所口径)
+            rows = con.execute("SELECT date, rzrqye, n FROM board_margin WHERE board=?", (board,)).fetchall()   # 元
+            out["bmargin"] = _aligned({r[0]: (None if r[1] is None else r[1] / 1e8) for r in rows}, dates, 1)
+            n_of = {r[0]: r[2] for r in rows}
+            out["bn"] = [n_of.get(d) for d in dates]            # 当日板块内两融标的只数(悬停用)
+            # 标的扩容的日子 [日期, 扩容前只数, 扩容后只数]: 余额只覆盖两融标的, 名单一扩余额就上一个台阶(图上标出来)。
+            # 判定: 标的只数连续上升的一段里, 累计增加 ≥ 5 只且 ≥ 20%; 一段只标一次, 记这一段的最后一天与最终只数
+            # (实测创业板 4 次: 2013-09-16 / 2014-09-22 / 2019-08-19 / 2022-10-24; 科创板 2019-11-06 是连续两天 41 → 50)
+            items = [(d, k) for d, k in sorted(n_of.items()) if k]     # 没记只数的日子不参与
+            marks, run = [], None                  # run: 正在连续上升的那一段 [扩容前的只数]; None = 当前不在上升段里
+            for i, (d, k) in enumerate(items):
+                prev = items[i - 1][1] if i else None
+                if prev is not None and k > prev:
+                    if run is None:
+                        run = [prev]
+                else:
+                    run = None                     # 不再上升: 这一段结束
+                if run and k >= run[0] + 5 and k >= run[0] * 1.2:
+                    if marks and marks[-1][3] is run:
+                        marks[-1][0], marks[-1][2] = d, k      # 同一段还在涨: 并进上一条
+                    else:
+                        marks.append([d, run[0], k, run])
+            # 早于本页签第一天的扩容画不到这个页签的日期轴上(科创50 页签自 2019-12-31 起, 科创板 2019-11-06
+            # 那次扩容在它之前): 不带进载荷
+            out["bm_marks"] = [m[:3] for m in marks if m[0] >= dates[0]]
+    except Exception as e:  # noqa: BLE001
+        print(f"[viewer] 页签 {sp.get('name')} 板块两融副图跳过: {type(e).__name__}: {e}")
+        out["bmargin"], out["bn"], out["bm_marks"] = [], [], []
+    try:
+        rows = con.execute("SELECT date, n, up, n20, above20, nc FROM index_breadth WHERE code=? "
+                           "ORDER BY date", (sp["code"],)).fetchall()
+        got = {r[0]: r for r in rows}
+
+        def pct(a, b):
+            return None if not b else _r(a * 100.0 / b, 1)
+        out["breadth"] = {                   # MI-4: 成分股广度(等权, %)
+            "up": [pct(got[d][2], got[d][1]) if d in got else None for d in dates],     # 上涨占比 = 上涨只数 ÷ 有行情只数
+            "ma20": [pct(got[d][4], got[d][3]) if d in got else None for d in dates],   # 站上20日线占比 ÷ 有20日线的只数
+            "n": [got[d][1] if d in got else None for d in dates]}   # 当日有行情的只数(悬停 / 右侧面板显示分母)
+    except Exception as e:  # noqa: BLE001
+        print(f"[viewer] 页签 {sp.get('name')} 成分股广度副图跳过: {type(e).__name__}: {e}")
+        out["breadth"] = None
     try:
         from fetch_etf import ETF_ALL
         etf = sp.get("etf")
@@ -662,6 +710,7 @@ window.onerror = function(msg, src, line, col) {
   <label><input type="checkbox" id="ckEtf" checked> <span id="lbEtf">宽基ETF成交额</span></label>
   <label><input type="checkbox" id="ckEtfFlow" checked> <span id="lbEtfFlow">ETF净流入</span></label>
   <label id="ckMfWrap" style="display:none"><input type="checkbox" id="ckMf" checked> <span id="lbMf">板块主力净流入</span></label>
+  <label id="ckBreadthWrap" style="display:none"><input type="checkbox" id="ckBreadth" checked> <span id="lbBreadth">成分股广度</span></label>
   <label><input type="checkbox" id="ckPEPct" checked> 全A PE分位</label>
   <label><input type="checkbox" id="ckPBPct" checked> 全A PB分位</label>
   <span style="margin-left:10px">事件标注:</span>
@@ -717,20 +766,30 @@ function mkIdxView(t) {                                 // 指数视图: 情绪�
   for (const k in t.raw) { raw[k] = full(t.raw[k]); cs[k] = full(t.cs[k]); }
   // K 线窗口外的日子: 与上证一致, 写成四个空值组成的数组 — ECharts 的 K 线序列不接受裸 null(会抛错, 整张图停住)
   const k = t.k.map(x => nullish(x) ? [null, null, null, null] : x);
+  // MI-4: 板块两融余额(创业板 / 科创板: 板块内两融标的的合计)。有就代替交易所口径的那条线; 没有(沪市 / 深市
+  // 本来就是交易所口径, 或者还没回补)时照旧画交易所口径
+  const hasBM = (t.aux.bmargin || []).some(x => x != null);
+  const breadth = t.aux.breadth, brUp = (breadth && breadth.up) || [];
   const v = Object.assign({}, t, {
     isIdx: true, v1: null, raw, cs, k,
     stage: t.sc.map(c => nullish(c) ? "" : STAGES[c]),   // 档位号 → 档位名
     events: BASE.events,
-    val: t.aux.val, margin: t.aux.margin, etf: t.aux.etf, mval: mvalOf(t),
+    val: t.aux.val, margin: hasBM ? t.aux.bmargin : t.aux.margin, etf: t.aux.etf, mval: mvalOf(t),
     etf_flow: null, etf_flow_arr: t.aux.etf_flow,        // 挂钩ETF净流入: 对齐本页签日期轴的数组
     mf: t.aux.mf,
     valShow: Object.keys(t.aux.val || {}),
+    bmargin: hasBM ? t.aux.bmargin : null,              // 板块两融余额(与 margin 相同; 页面上据此换面板名)
+    exMargin: hasBM ? t.aux.margin : null,               // 该交易所的两融余额: 悬停时算板块在交易所里的占比
+    bn: hasBM ? (t.aux.bn || null) : null,               // 当日板块内两融标的只数
+    bmMarks: hasBM ? (t.aux.bm_marks || null) : null,    // 标的扩容的日子 [日期, 之前只数, 之后只数](图上标出来)
+    breadth: brUp.some(x => x != null) ? breadth : null, // 成分股广度: 上涨占比 / 站上20日线占比(%)
   });
   const shExchange = t.board === '沪市' || t.board === '科创板';       // 科创板在上海
   v.t = { idx: t.name, short: t.name, volSeries: '指数成交额(亿)', volShort: '成交额', volUnit: '亿', volLine: '成交额(亿)',
           ztSeries: '强势家数', dtSeries: '弱势家数', zbSeries: '冲高回落率%', jlSeries: '接力率%',
           zt: '强势', dt: '弱势', zb: '冲高回落率', jl: '接力率',
-          margin: shExchange ? '沪市两融余额' : '深市两融余额', etf: etfName,
+          margin: hasBM ? t.board + '两融余额' : (shExchange ? '沪市两融余额' : '深市两融余额'),
+          exch: shExchange ? '沪市' : '深市', etf: etfName,
           etfFlow: etfName + '净流入(亿)', scope: t.board + '板块', hint: '' };
   return v;
 }
@@ -893,12 +952,22 @@ function buildBase() {
           if (!nullish(pb)) bits.push(`PB ${pb.toFixed(2)}`);
           if (bits.length)
             h += `<br/><span style="color:#898781;font-size:11px">${bits.join('/')}</span>`;
-          if (D.margin && !nullish(D.margin[i]))
-            h += ` <span style="color:#898781;font-size:11px">· ${T.margin} ${Math.round(D.margin[i])}亿</span>`;
+          if (D.margin && !nullish(D.margin[i])) {
+            h += ` <span style="color:#898781;font-size:11px">· ${T.margin} ${Math.round(D.margin[i])}亿`;
+            if (D.bn && !nullish(D.bn[i])) h += ` (标的 ${D.bn[i]} 只)`;       // 板块级两融: 只覆盖两融标的
+            h += `</span>`;
+          }
           if (D.etfSum && !nullish(D.etfSum[i]))
             h += ` <span style="color:#898781;font-size:11px">· ${escE(T.etf)} ${D.etfSum[i].toFixed(1)}亿</span>`;
           if (D.mf && !nullish(D.mf[i]))
             h += ` <span style="color:${D.mf[i] >= 0 ? C.red : C.blue};font-size:11px">· ${T.scope}主力净流入 ${D.mf[i] >= 0 ? "+" : ""}${D.mf[i].toFixed(1)}亿</span>`;
+          if (D.breadth) {                       // MI-4: 成分股广度(占比固定写一位小数, 不随数值忽长忽短; 带上有行情的只数 —
+            const bb = [];                       // 停牌多的日子分母会小很多, 只看占比会误读)
+            if (!nullish(D.breadth.up[i]) && !nullish(D.breadth.n[i]))
+              bb.push(`上涨占比 ${D.breadth.up[i].toFixed(1)}%(${D.breadth.n[i]} 只)`);
+            if (!nullish(D.breadth.ma20[i])) bb.push(`站上20日线 ${D.breadth.ma20[i].toFixed(1)}%`);
+            if (bb.length) h += `<br/><span style="color:#898781;font-size:11px">成分股(等权): ${bb.join(' · ')}</span>`;
+          }
         } else {
           // D1-15 I2: 估值全套(自算整体法) + 两融/ETF
           const fmtPE = (k) => nullish(mv[k] && mv[k][i]) ? null : mv[k][i].toFixed(1);
@@ -1134,6 +1203,7 @@ function syncChrome() {                     // 随页签变化的部分: 页签�
   setText('lbEtf', D.isIdx ? T.etf + '成交额' : '宽基ETF成交额');
   setText('lbEtfFlow', D.isIdx ? '挂钩ETF净流入' : 'ETF净流入');
   show('ckMfWrap', D.isIdx);                // 板块主力净流入只有指数页签有
+  show('ckBreadthWrap', D.isIdx && !!D.breadth);   // 成分股广度: 指数页签有、且这个指数算出来了才有
   show('heroV1Wrap', !D.isIdx);             // V1 量价对照只有上证有
   document.title = D.isIdx ? `A股市场情绪 · ${T.idx} · 交互行情图` : 'A股市场情绪 · 交互行情图';
 }
@@ -1196,7 +1266,7 @@ function auxState() {
   // D1-16②: 新面板默认开 — 以默认键补齐存量记忆缺的key(用户已存偏好,
   // 含显式关掉新面板的 false, 不被覆盖)
   return Object.assign({ pe: true, pb: true, margin: true, etf: true,
-                         etfFlow: true, pePct: true, pbPct: true, mf: true }, st || {});
+                         etfFlow: true, pePct: true, pbPct: true, mf: true, breadth: true }, st || {});
 }
 function saveAuxState(st) {
   try { localStorage.setItem(AUX_STORE, JSON.stringify(st)); } catch (e) {}
@@ -1213,9 +1283,19 @@ function valSeries(gi, k) {          // k='pe'|'pb' — 上证页签: 4宽基多
   return out;
 }
 function marginSeries(gi) {
-  return [{ name: D.t.margin + '(亿)', type: 'line', xAxisIndex: gi, yAxisIndex: gi,
+  const s = { name: D.t.margin + '(亿)', type: 'line', xAxisIndex: gi, yAxisIndex: gi,
     data: D.margin, showSymbol: false, lineStyle: { width: 1.4, color: '#6250d6' },
-    itemStyle: { color: '#6250d6' }, areaStyle: { opacity: 0.08 } }];
+    itemStyle: { color: '#6250d6' }, areaStyle: { opacity: 0.08 } };
+  // 板块两融: 标的扩容的日子画一条竖虚线、标出"标的 a→b 只" — 余额只覆盖两融标的, 名单一扩余额就上一个台阶,
+  // 不标的话台阶会被读成情绪变化。文字比线的顶端再低 12px: 放在顶端那一行会紧挨着面板标题的末尾, 读起来像
+  // 标题的一部分(全史缩放下第一处标注离左边很近)
+  if (D.bmMarks && D.bmMarks.length)
+    s.markLine = { silent: true, symbol: 'none', animation: false,
+      lineStyle: { color: '#b9aef0', type: 'dashed', width: 1 },
+      label: { show: true, position: 'insideEndTop', offset: [0, 12], fontSize: 9, color: '#6250d6', rotate: 0 },
+      data: D.bmMarks.map(m => ({ xAxis: m[0], value: m[2],
+        label: { formatter: '标的 ' + m[1] + '→' + m[2] + ' 只' } })) };
+  return [s];
 }
 // C1: ETF净流入/流出柱(红=流入/绿=流出, 8只ETF日净申购×收盘价)
 function etfFlowSeries(gi) {
@@ -1256,6 +1336,11 @@ const PCT_ALL = '#2f5cd6', PCT_5Y = '#e34448';
 const pctAxis = (gi) => ({ type: 'value', gridIndex: gi, min: 0, max: 100,
   axisLabel: { color: C.muted, formatter: '{value}%' },
   splitLine: { lineStyle: { color: C.grid } } });
+// 指数页签上定域 0 ~ 100 的轴: 最高一档的刻度文字("100%")不画 — 它正好落在网格顶边那一线, 会压在面板标题开头
+// (上证页签沿用 pctAxis, 不动)
+const pctAxisIdx = (gi) => ({ type: 'value', gridIndex: gi, min: 0, max: 100,
+  axisLabel: { color: C.muted, formatter: '{value}%', showMaxLabel: false },
+  splitLine: { lineStyle: { color: C.grid } } });
 function pctSeries(gi, key, label) {
   const mv = D.mval || {};
   const pct = (arr) => (arr || []).map(v => v == null ? null : Math.round(v * 1000) / 10);
@@ -1291,16 +1376,34 @@ const PANELS = [
 // MI-3: 指数页签的副图 — 本指数 PE·PB / 该交易所两融 / 挂钩 ETF 成交额与净流入 / 板块主力净流入;
 // 全A 估值分位与上证页签共用同两个面板对象
 const MF_PANEL = { key: 'mf', id: 'ckMf', h: 84, build: gi => mfSeries(gi) };
+// MI-4: 成分股广度 — 成分股上涨占比 / 站上 20 日线占比(等权, %), 只有指数页签有。两条线共用一根 0 ~ 100 的轴
+// (不做双轴); 上涨占比用页面里"上涨 / 强势"的那个红, 另一条用估值副图的蓝 — 红蓝这一对对红绿色弱也分得开
+// (11-27 用配色校验脚本验过: 色弱可分辨度 ΔE 23.9); 页面没有图例框, 面板标题里用彩色名字当图例; 50% 虚线 = 涨跌各半
+const BR_COLORS = [C.red, P_COLORS[0]];
+function breadthSeries(gi) {
+  const b = D.breadth;
+  const line = (name, arr, color) => ({ name, type: 'line', xAxisIndex: gi, yAxisIndex: gi,
+    data: arr, showSymbol: false, lineStyle: { width: 1.4, color }, itemStyle: { color } });
+  const up = line('成分股上涨占比%', b.up, BR_COLORS[0]);
+  up.markLine = { silent: true, symbol: 'none', label: { show: false },
+    lineStyle: { color: C.axis, type: 'dashed', width: 1 }, data: [{ yAxis: 50 }] };
+  return [up, line('站上20日线占比%', b.ma20, BR_COLORS[1])];
+}
+const BREADTH_PANEL = { key: 'breadth', id: 'ckBreadth', h: 84, build: gi => breadthSeries(gi), yaxis: pctAxisIdx };
 function idxPanels() {
   const T = D.t;
   return [
     { key: 'pe',     id: 'ckPE',     name: `${T.idx} PE`,  h: 84, build: gi => valSeries(gi, 'pe') },
     { key: 'pb',     id: 'ckPB',     name: `${T.idx} PB`,  h: 84, build: gi => valSeries(gi, 'pb') },
-    { key: 'margin', id: 'ckMargin', name: `${T.margin}(亿)`, h: 84, build: gi => marginSeries(gi) },
+    // 两融: 这个板块有自己的两融余额(创业板 / 科创板)时画板块口径, 否则(沪市 / 深市)画交易所口径
+    { key: 'margin', id: 'ckMargin', name: `${T.margin}(亿${D.bmargin ? '·板块内两融标的合计' : ''})`, h: 84,
+      build: gi => marginSeries(gi) },
     { key: 'etf',    id: 'ckEtf',    name: `${T.etf}成交额(亿)`, h: 84, build: gi => etfSeries(gi) },
     { key: 'etfFlow', id: 'ckEtfFlow', name: `${T.etfFlow}·红进绿出`, h: 84, build: gi => etfFlowSeries(gi) },
     Object.assign({ name: `${T.scope}主力净流入(亿·板块内个股合计·红进绿出)` }, MF_PANEL),
-    PANELS[5], PANELS[6],
+    Object.assign({ name: `${T.idx} 成分股广度(%·等权)  {u|上涨占比}  {m|站上20日线占比}`,
+                    rich: { u: { color: BR_COLORS[0] }, m: { color: BR_COLORS[1] } } }, BREADTH_PANEL),
+    Object.assign({}, PANELS[5], { yaxis: pctAxisIdx }), Object.assign({}, PANELS[6], { yaxis: pctAxisIdx }),
   ];
 }
 function auxDataEmpty(p) {
@@ -1308,6 +1411,7 @@ function auxDataEmpty(p) {
   if (p.key === 'etf') return !D.etf || !Object.keys(D.etf).length;
   if (p.key === 'etfFlow') return !D.etfFlowMap || !Object.keys(D.etfFlowMap).length;
   if (p.key === 'mf') return !D.mf || !D.mf.some(v => v != null);
+  if (p.key === 'breadth') return !D.breadth;
   if (p.key === 'pePct') return !D.mval || !(D.mval.alla_pe_pct || []).some(v => v != null);
   if (p.key === 'pbPct') return !D.mval || !(D.mval.alla_pb_pct || []).some(v => v != null);
   return !D.val || !(D.valShow || VAL_SHOW).some(c => D.val[c]);
@@ -1335,8 +1439,11 @@ function renderAux() {
     opt.grid.push({ top, height: p.h, left: '3%', width: '95%', containLabel: true, right: 20 });
     opt.xAxis.push(p.xData ? catAxis(gi, p.xData) : catAxis(gi));
     opt.yAxis.push(p.yaxis ? p.yaxis(gi) : valAxis(gi));   // D1-16②: 分位轴定域覆盖
-    opt.title.push({ text: p.name, left: '3%', top: (top - 14) + 'px',
-                     textStyle: { fontSize: 10, color: C.muted } });
+    const ts = { fontSize: 10, color: C.muted };
+    if (p.rich) ts.rich = p.rich;     // p.rich: 标题里带彩色名字(图例), 要挂在 textStyle.rich 下
+    // 指数页签的面板标题比上证页签再抬 6px: 纵轴最高一档的刻度文字落在网格顶边那一线, 离得近会压在标题开头
+    // (定域 0 ~ 100 的轴上"100%"正好压住标题的前几个字)。上证页签保持原样
+    opt.title.push({ text: p.name, left: '3%', top: (top - (D.isIdx ? 20 : 14)) + 'px', textStyle: ts });
     opt.series.push(...p.build(gi));
     top += p.h + 28;
   });
@@ -1368,7 +1475,7 @@ function renderAux() {
 }
 function initAuxCtl() {
   const st = auxState();
-  PANELS.concat(MF_PANEL).forEach(p => {
+  PANELS.concat(MF_PANEL, BREADTH_PANEL).forEach(p => {
     const el = document.getElementById(p.id);
     if (el) { el.checked = !!st[p.key];
       el.addEventListener('change', () => {
@@ -1447,7 +1554,20 @@ function render(i) {
     let own = "";
     own += kv(`${T.idx} PE`, nullish(pe) ? null : pe.toFixed(1));
     own += kv(`${T.idx} PB`, nullish(pb) ? null : pb.toFixed(2));
-    own += kv(`${T.margin}(亿)`, nullish(D.margin[i]) ? null : D.margin[i].toFixed(0));
+    if (!nullish(D.margin[i])) {
+      let mv = D.margin[i].toFixed(0);
+      if (D.bn && !nullish(D.bn[i])) {       // MI-4: 板块级两融只覆盖两融标的 — 带上标的只数, 以及在该交易所里的占比
+        const ex = D.exMargin ? D.exMargin[i] : null;
+        mv += ` <span class="hint">(标的 ${D.bn[i]} 只${(!nullish(ex) && ex > 0) ? ` · 占${T.exch} ${(D.margin[i] / ex * 100).toFixed(0)}%` : ''})</span>`;
+      }
+      own += kv(`${T.margin}(亿)`, mv);
+    }
+    if (D.breadth) {                          // MI-4: 成分股广度(等权)
+      const b = D.breadth;
+      if (!nullish(b.up[i]))
+        own += kv('成分股上涨占比', `${b.up[i].toFixed(1)}% <span class="hint">(${b.n[i]} 只有行情)</span>`);
+      if (!nullish(b.ma20[i])) own += kv('站上20日线占比', `${b.ma20[i].toFixed(1)}%`);
+    }
     own += kv(`${T.etf}成交额(亿)`, !D.etfSum || nullish(D.etfSum[i]) ? null : D.etfSum[i].toFixed(1));
     if (!nullish(D.mf[i]))
       own += kv(`${T.scope}主力净流入(亿)`, `<span style="color:${D.mf[i] >= 0 ? C.red : C.blue}">${D.mf[i] >= 0 ? "+" : ""}${D.mf[i].toFixed(1)}</span>`);

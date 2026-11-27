@@ -749,5 +749,184 @@ test('点当前页签不重绘; 点不存在的页签不出错', () => {
   assert.equal(chart.calls, before);
 });
 
+// ════════════ MI-4: 板块两融余额 / 成分股广度 ════════════
+function mi4Tabs() {                                    // 创业板指有板块两融 + 成分股广度(都是第 3 天起才有数据);
+  const A = mkA(), B = mkB(), C = mkC();                // 科创50 有板块两融、没有广度; 深证成指 只有广度
+  A.aux.breadth = {up: A_DATES.map((_, i) => 40 + i), ma20: A_DATES.map((_, i) => (i < 3 ? null : 30 + i)),
+                   n: A_DATES.map(() => 498)};
+  B.aux.margin = B.dates.map(() => 10243);
+  B.aux.bmargin = [null, null, 4339.5, 4311.9, 4229.0];
+  B.aux.bn = [null, null, 975, 975, 975];
+  B.aux.bm_marks = [['2026-10-22', 500, 975]];          // 标的扩容: [日期, 之前只数, 之后只数]
+  B.aux.breadth = {up: [null, null, 38.0, 55.0, 62.0], ma20: [null, null, 41.0, 48.0, 51.0],
+                   n: [null, null, 100, 100, 100]};
+  C.aux.margin = C.dates.map(() => 11197.3);
+  C.aux.bmargin = [2790.5, 2702.5, 2646.7];
+  C.aux.bn = [70, 70, 607];
+  return [A, B, C];
+}
+const withMi4 = () => run({}, Object.assign(mkSh(), {tabs: mi4Tabs()}));
+const row = (name, val) => `<td>${name}</td><td><b>${val}</b></td>`;
+
+test('板块两融余额: 创业板指 / 科创50 有板块级数据时, 两融副图的线与名字换成板块口径(交易所口径的那份留作算占比的参照)', () => {
+  const R = withMi4();
+  tabBtn('B').onclick();
+  assert.equal(R.G('D.t.margin'), '创业板两融余额');
+  assert.equal($id('lbMargin').textContent, '创业板两融余额');
+  const line = chart.opt.series.find(s => s.name === '创业板两融余额(亿)');
+  assert.deepEqual(line.data, [null, null, 4339.5, 4311.9, 4229.0]);      // 对齐日期轴, 还没有数据的日子为空
+  assert.equal(line.type, 'line');
+  assert.ok(panelTitles().includes('创业板两融余额(亿·板块内两融标的合计)'), panelTitles().join(' | '));
+  assert.equal(panelTitles().some(t => t.includes('深市两融')), false);   // 交易所口径的线不再单独画(不做双轴)
+  assert.deepEqual(R.G('D.exMargin'), [10243, 10243, 10243, 10243, 10243]);
+  assert.deepEqual(R.G('D.bn'), [null, null, 975, 975, 975]);
+  // 标的扩容的日子: 竖虚线 + "标的 500→975 只" — 余额只覆盖两融标的, 名单一扩余额就上一个台阶。
+  // 文字比线的顶端低 12px: 放在顶端那一行会紧挨着面板标题的末尾, 读起来像标题的一部分
+  assert.deepEqual(line.markLine.data, [{ xAxis: '2026-10-22', value: 975, label: { formatter: '标的 500→975 只' } }]);
+  assert.equal(line.markLine.lineStyle.type, 'dashed');
+  assert.equal(line.markLine.label.position, 'insideEndTop');
+  assert.deepEqual(line.markLine.label.offset, [0, 12]);
+  tabBtn('C').onclick();
+  assert.equal(R.G('D.t.margin'), '科创板两融余额');
+  assert.equal($id('lbMargin').textContent, '科创板两融余额');
+  const kc = chart.opt.series.find(s => s.name === '科创板两融余额(亿)');
+  assert.deepEqual(kc.data, [2790.5, 2702.5, 2646.7]);
+  assert.equal(kc.markLine, undefined);                                 // 没有标的扩容的日子: 不标
+  tabBtn('A').onclick();                                           // 深证成指: 深市本来就是交易所口径, 一切不变
+  assert.equal(R.G('D.t.margin'), '深市两融余额');
+  assert.deepEqual(chart.opt.series.find(s => s.name === '深市两融余额(亿)').data, R.G('D.margin'));
+  assert.equal(chart.opt.series.find(s => s.name === '深市两融余额(亿)').markLine, undefined);   // 交易所口径的不标
+  assert.equal(R.G('D.bn'), null);
+  assert.equal(R.G('D.exMargin'), null);
+  assert.equal(R.G('D.bmMarks'), null);
+});
+
+test('没有板块级数据时(还没回补 / MI-4 之前的载荷): 两融副图照旧是交易所口径; 板块数据全是空值也按没有处理', () => {
+  const tabs = [mkA(), mkB(), mkC()];
+  tabs[1].aux.margin = tabs[1].dates.map(() => 8500);
+  tabs[1].aux.bmargin = [null, null, null, null, null];            // 表建了、还没有行
+  tabs[1].aux.bn = [null, null, null, null, null];
+  const R = run({}, Object.assign(mkSh(), {tabs}));
+  tabBtn('B').onclick();
+  assert.equal(R.G('D.t.margin'), '深市两融余额');
+  assert.deepEqual(chart.opt.series.find(s => s.name === '深市两融余额(亿)').data, tabs[1].aux.margin);
+  assert.equal(R.G('D.bmargin'), null);
+  assert.equal(R.G('D.bn'), null);
+  assert.equal(R.G('D.exMargin'), null);
+  assert.equal(panelTitles().some(t => t.includes('板块内两融标的')), false);
+  assert.equal(R.G("auxDataEmpty({key: 'breadth'})"), true);
+  const old = [mkA(), mkB(), mkC()];                               // MI-4 之前的载荷: aux 里根本没有这几个键
+  assert.deepEqual(Object.keys(old[1].aux).sort(), ['etf', 'etf_flow', 'margin', 'mf', 'mval_off', 'val']);
+  const R2 = run({}, Object.assign(mkSh(), {tabs: old}));
+  R2.G("activate('B')");
+  assert.equal(R2.G('D.bmargin'), null);
+  assert.equal(R2.G('D.breadth'), null);
+  assert.equal($id('ckBreadthWrap').style.display, 'none');
+});
+
+test('板块两融与成分股广度的悬停框 / 右侧面板: 余额带标的只数与占该交易所的比例, 广度两行; 没有数据的日子不出', () => {
+  const R = withMi4();
+  tabBtn('B').onclick();
+  const h = chart.opt.tooltip.formatter([{dataIndex: 4}]);
+  has(h, '· 创业板两融余额 4229亿 (标的 975 只)', '悬停框');
+  has(h, '成分股(等权): 上涨占比 62.0%(100 只) · 站上20日线 51.0%', '悬停框');   // 占比固定写一位小数, 带上有行情的只数(分母)
+  const p = $id('panel').innerHTML;
+  has(p, row('创业板两融余额(亿)', '4229 <span class="hint">(标的 975 只 · 占深市 41%)</span>'), '右侧面板');
+  has(p, row('成分股上涨占比', '62.0% <span class="hint">(100 只有行情)</span>'), '右侧面板');
+  has(p, row('站上20日线占比', '51.0%'), '右侧面板');
+  R.G('render(1)');                                                // 第 2 天: 板块两融与广度都还没有
+  assert.equal(/创业板两融余额|成分股上涨占比|站上20日线占比/.test($id('panel').innerHTML), false);
+  assert.equal(/创业板两融余额|成分股/.test(chart.opt.tooltip.formatter([{dataIndex: 1}])), false);
+  tabBtn('C').onclick();
+  has($id('panel').innerHTML, row('科创板两融余额(亿)', '2647 <span class="hint">(标的 607 只 · 占沪市 24%)</span>'));   // 面板里取整
+  assert.equal(/成分股上涨占比/.test($id('panel').innerHTML), false);
+  tabBtn('A').onclick();                                           // 交易所口径的两融: 行里的写法与 MI-4 之前相同
+  has($id('panel').innerHTML, row('深市两融余额(亿)', '11000'));
+  has($id('panel').innerHTML, row('成分股上涨占比', '53.0% <span class="hint">(498 只有行情)</span>'));
+  has($id('panel').innerHTML, row('站上20日线占比', '43.0%'));       // 第 14 天: 30 + 13
+});
+
+test('板块数据只有余额、没有交易所口径可参照时: 只写标的只数; 没有标的只数时只写余额', () => {
+  const tabs = mi4Tabs();
+  tabs[2].aux.margin = [];                                         // 科创50: 交易所口径的那份没有
+  tabs[0].aux.breadth = null;
+  const R = run({}, Object.assign(mkSh(), {tabs}));
+  tabBtn('C').onclick();
+  has($id('panel').innerHTML, row('科创板两融余额(亿)', '2647 <span class="hint">(标的 607 只)</span>'));
+  tabs[1].aux.bn = null;                                           // 创业板指: 载荷里没带标的只数
+  const R2 = run({}, Object.assign(mkSh(), {tabs}));
+  tabBtn('B').onclick();
+  has($id('panel').innerHTML, row('创业板两融余额(亿)', '4229'));
+  assert.equal(/标的/.test($id('panel').innerHTML), false);
+  has(chart.opt.tooltip.formatter([{dataIndex: 4}]), '· 创业板两融余额 4229亿</span>');
+  assert.equal(R2.G('D.bn'), null);
+});
+
+test('成分股广度副图: 两条线在同一根 0 ~ 100 的轴上、50% 参照线、标题里带彩色图例; 开关记在本浏览器; 上证没有', () => {
+  const R = withMi4();
+  assert.equal($id('ckBreadthWrap').style.display, 'none');        // 上证页签没有(也不在它的面板里)
+  assert.equal(panelTitles().some(t => t.includes('成分股广度')), false);
+  tabBtn('A').onclick();
+  assert.equal($id('ckBreadthWrap').style.display, '');
+  assert.equal(R.G("auxDataEmpty({key: 'breadth'})"), false);
+  const t = chart.opt.title.find(x => x.text.includes('成分股广度'));
+  assert.equal(t.text, '深证成指 成分股广度(%·等权)  {u|上涨占比}  {m|站上20日线占比}');   // 标题不带只数: 成分股数历史上变过
+  assert.deepEqual(t.textStyle.rich, {u: {color: R.G('C.red')}, m: {color: R.G('P_COLORS[0]')}});
+  assert.deepEqual([t.textStyle.fontSize, t.textStyle.color], [10, R.G('C.muted')]);
+  const up = chart.opt.series.find(s => s.name === '成分股上涨占比%');
+  const ma = chart.opt.series.find(s => s.name === '站上20日线占比%');
+  // 指数页签的面板标题比上证页签抬 6px(纵轴最高一档的刻度文字离标题太近, 会压住标题开头)
+  assert.equal(t.top, (chart.opt.grid[up.xAxisIndex].top - 20) + 'px');
+  assert.deepEqual(up.data, R.G('D.breadth.up'));
+  assert.deepEqual(ma.data, R.G('D.breadth.ma20'));                // 不满 20 个交易日的日子为空
+  assert.equal(up.lineStyle.color, R.G('C.red'));
+  assert.equal(ma.lineStyle.color, R.G('P_COLORS[0]'));
+  assert.notEqual(up.lineStyle.color, ma.lineStyle.color);
+  assert.deepEqual(up.markLine.data, [{yAxis: 50}]);
+  assert.equal(up.markLine.lineStyle.type, 'dashed');
+  assert.equal(ma.markLine, undefined);
+  assert.equal(up.xAxisIndex, ma.xAxisIndex);
+  assert.equal(up.yAxisIndex, ma.yAxisIndex);                      // 同一根轴, 不做双轴
+  const ax = chart.opt.yAxis.find(y => y.gridIndex === up.xAxisIndex);
+  assert.deepEqual([ax.min, ax.max], [0, 100]);
+  assert.equal(ax.axisLabel.showMaxLabel, false);                   // "100%"会压在面板标题上: 指数页签上定域 0 ~ 100 的轴不画最高一档
+  const pctAxes = chart.opt.yAxis.filter(y => y.min === 0 && y.max === 100 && y.gridIndex !== up.xAxisIndex);
+  assert.equal(pctAxes.length, 2);                                  // 两块全A分位副图(指数页签上)同理
+  assert.ok(pctAxes.every(y => y.axisLabel.showMaxLabel === false));
+  assert.equal(chart.opt.xAxis.find(x => x.gridIndex === up.xAxisIndex).data, R.G('D.dates'));   // 与主图共用日期轴
+  $id('ckBreadth').checked = false;
+  $id('ckBreadth').fire('change');
+  assert.equal(panelTitles().some(x => x.includes('成分股广度')), false);
+  assert.equal(chart.opt.series.some(s => s.name === '站上20日线占比%'), false);
+  assert.equal(JSON.parse(R.localStorage.getItem('auxPanels_v1')).breadth, false);
+  tabBtn('B').onclick();                                           // 开关记忆各页签共用; 没有广度的页签上控件不显示
+  assert.equal(panelTitles().some(x => x.includes('成分股广度')), false);
+  tabBtn('C').onclick();
+  assert.equal($id('ckBreadthWrap').style.display, 'none');
+  tabBtn('sh').onclick();                                          // 上证页签: 面板标题位置与分位轴都原样
+  const shPct = chart.opt.yAxis.filter(y => y.min === 0 && y.max === 100);
+  assert.equal(shPct.length, 2);
+  assert.ok(shPct.every(y => y.axisLabel.showMaxLabel === undefined));
+  assert.equal(chart.opt.title.find(x => x.text === '宽基指数PE(50/300/500/1000)').top, (chart.opt.grid[5].top - 14) + 'px');
+  assert.equal(chart.opt.series.find(s => s.name === '两融余额(亿)').markLine, undefined);
+});
+
+test('成分股广度的开关: 以前存的记忆里没有这一项 → 默认开; 存过"关" → 保持关; 广度全是空值按没有处理', () => {
+  const R = run({auxPanels_v1: JSON.stringify({pe: false})}, Object.assign(mkSh(), {tabs: mi4Tabs()}));
+  R.G("activate('A')");
+  assert.equal(panelTitles().some(x => x.includes('成分股广度')), true);
+  assert.equal(panelTitles().includes('深证成指 PB'), true);        // 存过的"关掉 PE"照旧生效
+  assert.equal(panelTitles().includes('深证成指 PE'), false);
+  const R2 = run({auxPanels_v1: JSON.stringify({breadth: false})}, Object.assign(mkSh(), {tabs: mi4Tabs()}));
+  R2.G("activate('A')");
+  assert.equal(panelTitles().some(x => x.includes('成分股广度')), false);
+  const tabs = mi4Tabs();
+  tabs[0].aux.breadth.up = tabs[0].dates.map(() => null);
+  const R3 = run({}, Object.assign(mkSh(), {tabs}));
+  R3.G("activate('A')");
+  assert.equal(R3.G('D.breadth'), null);
+  assert.equal($id('ckBreadthWrap').style.display, 'none');
+});
+
 console.log(bad ? `FAILED ${bad} of ${n}` : `ALL TESTS PASS passed ${n}`);
 process.exit(bad ? 1 : 0);
