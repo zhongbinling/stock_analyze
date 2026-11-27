@@ -829,6 +829,7 @@ function setEvents() {
 }
 function buildBase() {
   const T = D.t, color = TAB_COLOR[D.key];
+  const zoomStart = Math.max(0, 100 - (250 / D.n) * 100);   // 默认窗口: 最近 250 个交易日
   const baseOption = {
     animation: false,
     backgroundColor: "transparent",
@@ -950,11 +951,13 @@ function buildBase() {
       valAxis(4),                                   // 4 %
     ],
     dataZoom: [
-      { type: "inside", xAxisIndex: [0, 1, 2, 3, 4] },
+      // S2.2-A: 默认近~1年窗口。滚轮缩放与滑块是两个组件、共用一组横轴, 两个都要写上起点 —
+      // 只给滑块写的话, 两者初始化时以滚轮那个的 0 ~ 100% 为准, 打开就是全史(2026-11-27 修)
+      { type: "inside", xAxisIndex: [0, 1, 2, 3, 4], start: zoomStart },
       { type: "slider", xAxisIndex: [0, 1, 2, 3, 4], bottom: 4, height: 20,
         borderColor: C.grid, fillerColor: "rgba(42,120,214,0.10)",
         handleStyle: { color: C.blue }, textStyle: { color: C.muted },
-        start: Math.max(0, 100 - (250 / D.n) * 100) },  // S2.2-A: 默认近~1年窗口
+        start: zoomStart },
     ],
     series: [
       { name: T.idx, type: "candlestick", xAxisIndex: 0, yAxisIndex: 0,
@@ -1164,13 +1167,13 @@ function zoomDates() {                      // 当前缩放窗口覆盖的日期
 }
 function applyZoom(z) {                     // 把日期区间换算到当前页签的日期轴上
   let s = baseOption.dataZoom[1].start, e = 100;      // 默认: 本页签自己的默认窗口(近一年)
-  if (z && z[1] >= D.dates[0]) {            // 原窗口与本页签有重叠: 区间早于本页签起点的部分从头算
+  if (z && z[1] >= D.dates[0] && z[0] <= D.dates[D.n - 1]) {   // 原窗口与本页签的日期范围有重叠: 早于本页签起点的部分从头算
     let i0 = 0;
     while (i0 < D.n - 1 && D.dates[i0] < z[0]) i0++;
     let i1 = D.n - 1;
     while (i1 > 0 && D.dates[i1] > z[1]) i1--;
     if (i1 >= i0) { s = i0 / D.n * 100; e = Math.min(100, (i1 + 1) / D.n * 100); }
-  }                                         // 原窗口整个落在本页签起点之前: 没法"保持", 用默认窗口
+  }                                         // 原窗口整个落在本页签的日期范围之外(更早或更晚): 用本页签的默认窗口
   chart.dispatchAction({ type: 'dataZoom', start: s, end: e });
 }
 function activate(key) {                    // 切换页签: 缩放窗口按日期保持

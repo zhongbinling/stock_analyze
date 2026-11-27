@@ -716,6 +716,30 @@ test('事件标注按各页签自己的日期轴吸附; 没行情 / 没出分的
                    ['2026-10-12', '2026-10-13', '2026-10-15', '2026-10-16']);
 });
 
+test('默认缩放窗口是最近 250 个交易日: 滚轮与滑块两个组件都带起点, 每个页签按自己的交易日数算', () => {
+  // 真实 ECharts 里两个组件共用一组横轴, 只给滑块写起点的话以滚轮那个的 0 ~ 100% 为准 — 打开就是全史
+  const big = mkSh(), tabs = [mkA(), mkB(), mkC()];
+  const resize = (t, n) => { t.n = n; t.dates = Array.from({length: n}, (_, i) => 'D' + String(i).padStart(5, '0')); };
+  resize(big, 1000);
+  [1000, 600, 300].forEach((n, i) => resize(tabs[i], n));
+  const R = run({}, Object.assign(big, {tabs}));
+  const near = (a, b) => Math.abs(a - b) < 1e-9;
+  const end = x => (x.end == null ? 100 : x.end);              // 不写 end = 到末尾
+  const check = (want, what) => {
+    const z = chart.opt.dataZoom;
+    assert.equal(z.length, 2, '缩放组件 ' + z.length + ' 个');
+    assert.equal([z[0].type, z[1].type].join(), 'inside,slider');
+    assert.ok(z.every(x => near(x.start, want) && near(end(x), 100)), what + ': ' + JSON.stringify(z.map(x => [x.start, x.end])));
+  };
+  check(75, '上证 1000 日');                                   // (1 − 250 / 1000) × 100
+  tabBtn('A').onclick();
+  check(75, '深证成指: 与上证同一段日期');
+  tabBtn('B').onclick();
+  check(100 - 250 / 600 * 100, '创业板指 600 日: 原窗口与它没有重叠 → 它自己的默认窗口');
+  tabBtn('C').onclick();
+  check(100 - 250 / 300 * 100, '科创50 300 日');
+});
+
 test('点当前页签不重绘; 点不存在的页签不出错', () => {
   const R = run({}, PAYLOAD);
   const before = chart.calls;

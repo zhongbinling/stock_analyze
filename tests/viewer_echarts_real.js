@@ -109,6 +109,18 @@ for (const [label, file] of [['全历史', process.argv[2]], ['近两年规则',
     assert(kIsSafe(kData()), '上证的 K 线');
   });
 
+  function near(a, b) { return Math.abs(a - b) < 1e-6; }
+
+  test(`${label} · 默认缩放窗口是最近 250 个交易日(滚轮与滑块两个组件都带起点; 只给滑块写的话真实 ECharts 以滚轮的 0 ~ 100% 为准)`, () => {
+    const z = G('chart.getOption().dataZoom.map(z => [z.type, z.start, z.end])');
+    const n = G('D.n'), dates = G('D.dates');
+    assert(z.length === 2 && near(z[0][1], z[1][1]) && near(z[0][2], 100) && near(z[1][2], 100), JSON.stringify(z));
+    assert(near(z[0][1], 100 - 250 / n * 100), JSON.stringify(z) + ' n=' + n);
+    const win = G('zoomDates()');                                 // 图上实际可见的那一段
+    assert(win[0] === dates[n - 250] && win[1] === dates[n - 1],
+           JSON.stringify(win) + ' 应为 ' + dates[n - 250] + ' ~ ' + dates[n - 1]);
+  });
+
   test(`${label} · 上证页签的 K 线有涨有跌两种颜色(占位符没替换时阴线会全红)`, () => {
     G('setZoom(60)');
     const f = fills(G('chart.renderToSVGString()'));

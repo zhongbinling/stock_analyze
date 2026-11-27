@@ -508,14 +508,14 @@ def test_viewer_page_behavior(tmp_path):
     """页面脚本放进 node 沙箱实跑(tests/viewer_behavior.js, 手写的 ECharts 桩): 上证页签与改动前逐字一致
     (悬停框 / 右侧面板 / 没出分提示三条守卫拿改动前的模板跑也通过)、指数页签取数、缩放窗口按日期保持且
     来回切换不漂移、叠加、对比条、页签记忆、副图开关、事件标注、没出分与窗口外日子的提示。
-    用例对没有页签的旧页面 31 条里 28 条失败。"""
+    用例对没有页签的旧页面 32 条里 29 条失败。"""
     tpl = tmp_path / "viewer.html"
     tpl.write_text(VW.HTML, encoding="utf-8")
     r, out = _node("viewer_behavior.js", tpl)
     assert r.returncode == 0, "页面行为测试失败:\n" + out[-2500:]
     js = (REPO / "tests" / "viewer_behavior.js").read_text(encoding="utf-8")
     n_cases = len(re.findall(r"^test\(", js, flags=re.M))
-    assert n_cases >= 31 and f"ALL TESTS PASS passed {n_cases}" in out, out[-600:]
+    assert n_cases >= 32 and f"ALL TESTS PASS passed {n_cases}" in out, out[-600:]
 
 
 def test_viewer_page_on_real_echarts(env, tmp_path, monkeypatch):
@@ -538,7 +538,7 @@ def test_viewer_page_on_real_echarts(env, tmp_path, monkeypatch):
     two = VW.generate_html(CFG, years=2, out=tmp_path / "y2.html")
     r, out = _node("viewer_echarts_real.js", full, two)
     assert r.returncode == 0, "真实 ECharts 下的页面测试失败:\n" + out[-3000:]
-    assert len(re.findall(r"(?m)^ok   ", out)) == 8 and "ALL TESTS PASS passed 8" in out, out[-600:]
+    assert len(re.findall(r"(?m)^ok   ", out)) == 10 and "ALL TESTS PASS passed 10" in out, out[-600:]
 
 
 # ════════════ ⑥ ETF 净流入的 codes 参数 ════════════
