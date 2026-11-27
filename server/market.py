@@ -106,6 +106,9 @@ def pipeline_stats() -> dict:
         q("index_extra", "SELECT COUNT(*), MAX(date) FROM index_daily "
                          "WHERE code IN ('0.399001','0.399006','1.000688')")
         q("board_daily", "SELECT COUNT(*), MAX(date) FROM board_daily")
+        # MI-4: 情绪图副图的两份数据(板块两融余额、成分股广度)
+        q("board_margin", "SELECT COUNT(*), MAX(date) FROM board_margin")
+        q("index_breadth", "SELECT COUNT(*), MAX(date) FROM index_breadth")
         q("mood", "SELECT COUNT(*), MAX(date) FROM mood_raw")
         q("sentiment", "SELECT COUNT(*), MAX(date) FROM sentiment")
         # MI-2: 指数情绪分(没出分的日子也存、score 为空 — 只数出了分的)
@@ -266,6 +269,19 @@ _ASSET_DATE_TABLES = [
     # MI-1: 板块级日表 — 指数情绪分的结构分量(沪/深/创业板/科创板的强弱势家数)
     ("board_daily", "板块广度与结构(沪/深/创业板/科创板)", "board_daily", None,
      "个股日线聚合", 4, "强势/弱势=涨跌幅≥±9.8%·资金流2007起"),
+    # MI-4: 板块两融余额(创业板 / 科创板)与成分股广度 — 情绪图副图, 不进评分。
+    # 每个板块 / 每个指数各一行: 完成度与缺口按各自算, 只缺创业板或只缺科创50 的那些日子体检才看得出
+    # (同 MI-1 对三个指数日线的做法)。月度成分股快照 index_weight 不是日频数据, 不在本表: 在补全清单里
+    ("board_margin_cyb", "板块两融余额·创业板", "board_margin", "board='CYB'", "tushare", 7,
+     "个股两融明细按板块合计·2013-01-31起(首批6只成为标的)·只含两融标的"),
+    ("board_margin_kcb", "板块两融余额·科创板", "board_margin", "board='KCB'", "tushare", 7,
+     "个股两融明细按板块合计·2019-07-22起(开板首日25只)·只含两融标的"),
+    ("index_breadth_399001", "成分股广度·深证成指", "index_breadth", "code='0.399001'", "个股日线聚合", 4,
+     "月度成分股·上涨占比/站上20日线占比·等权·2010-01起"),
+    ("index_breadth_399006", "成分股广度·创业板指", "index_breadth", "code='0.399006'", "个股日线聚合", 4,
+     "月度成分股·上涨占比/站上20日线占比·等权·2010-06起"),
+    ("index_breadth_000688", "成分股广度·科创50", "index_breadth", "code='1.000688'", "个股日线聚合", 4,
+     "月度成分股·上涨占比/站上20日线占比·等权·2020-07起"),
     ("pool", "涨停复盘池(同花顺口径)", "mood_raw", "zt_count IS NOT NULL", "同花顺", 4,
      "源历史约一年滚动·2012-2019为估算回补"),
     ("breadth", "当日涨跌家数", "mood_raw", "up_count IS NOT NULL", "乐咕(可选)", 4,
@@ -351,7 +367,8 @@ def _today() -> str:
 #   etf_flow: fund_share 份额 D+1 才发布(实测 D+1 00:42 仍未出数)
 #   sector_pool: tushare 涨停名单盘后晚间才发布, 16:35 定时链恒查空,
 #                由次日的更新链回看补上(见 fetch_tushare_mood_today)
-_SOURCE_LAG = {"margin": 1, "etf_flow": 1, "sector_pool": 1}
+#   board_margin(MI-4): 与 margin 同源同节奏 — D 日数据次日才发布
+_SOURCE_LAG = {"margin": 1, "etf_flow": 1, "sector_pool": 1, "board_margin_cyb": 1, "board_margin_kcb": 1}
 # D1-24b/c: 资产code→定向补全数据集(镜像data.html BF_ROWS的asset映射;
 # 24e已立项: SCAN_DS应迁移服务端单点维护, 此为过渡)
 _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
@@ -364,7 +381,12 @@ _REPAIR_DS = {"sw_breadth": "sw_breadth", "sw_pool": "sw_pool",
               "mkt_val": "mkt_val", "calendar": "calendar",
               # MI-1: 情绪图多指数的底座(三个指数日线共用一个补全数据集)
               "index_399001": "index_extra", "index_399006": "index_extra",
-              "index_000688": "index_extra", "board_daily": "board_daily"}
+              "index_000688": "index_extra", "board_daily": "board_daily",
+              # MI-4: 板块两融余额、成分股广度(后者由本地的成分股快照 + 个股日线重算, 不调接口);
+              # 各板块 / 各指数一行资产, 映射到同一个补全数据集
+              "board_margin_cyb": "board_margin", "board_margin_kcb": "board_margin",
+              "index_breadth_399001": "index_breadth", "index_breadth_399006": "index_breadth",
+              "index_breadth_000688": "index_breadth"}
 # 注: raw_daily/raw_mf 无定向补全通道(纯链路内自愈), 不入本表 —
 # 否则修复诊断会误报"回补零写入"
 # 兼容别名(D1-19期名称)

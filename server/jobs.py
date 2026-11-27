@@ -450,7 +450,8 @@ def task_update(append):
     """增量更新四步链(D2-1): 抓取 → 大盘评分 → 指数情绪评分 → 板块温度(含SW聚合)"""
     return _run_steps(append, [
         ("抓取", ["fetch_daily.py"],
-         ("index", "index_extra", "board_daily", "mood", "sector_daily")),
+         ("index", "index_extra", "board_daily", "board_margin", "index_breadth",
+          "mood", "sector_daily")),
         ("大盘评分", ["score.py"], ("sentiment",)),
         _INDEX_SCORE,
         ("板块温度", ["sector.py", "calc"], ("bk", "sw1", "sw2")),
@@ -781,6 +782,9 @@ BACKFILL_DATASETS = _LazySpecMap(0)      # dataset → 标签(路由校验/任�
 # 让 zt_est(2012-2019)/breadth(2018起) 静默漏掉目标区间
 BACKFILL_DEFAULT_START = _LazySpecMap(3)  # dataset → 默认YYYYMMDD
 
+# 补全之后不连带重算评分的数据集: 它们不是评分的输入(MI-4: 板块两融余额、指数成分股快照、成分股广度, 只作情绪图副图)
+NO_RECALC_DATASETS = {"board_margin", "index_weight", "index_breadth"}
+
 
 def task_backfill(dataset: str, start: str, trigger: str = "manual",
                   norecalc: bool = False):
@@ -829,7 +833,9 @@ def task_backfill(dataset: str, start: str, trigger: str = "manual",
         log.finished_at = _now()
         db.session.commit()
         # D2-3: 有实际写入且开关开 → 自动入队评分重算(独立job, 历史清晰)
+        # 不进评分的数据集(情绪图副图用的): 补全之后不必连带重算评分 — 每次白占 15 ~ 20 分钟队列
         if (log.status == "done" and (log.rows_written or 0) > 0
+                and dataset not in NO_RECALC_DATASETS
                 and get_setting("backfill_recalc", "1") == "1"
                 and not norecalc):   # D1-13r: 批处理补全由收尾更新链统一重算
             ok2, msg2 = enqueue("recalc", task_recalc, target="评分重算", trigger="schedule")

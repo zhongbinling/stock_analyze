@@ -874,6 +874,16 @@ BACKFILLS = {
     "board_daily": ("板块广度与结构·沪/深/创业板/科创板(2005起)",
                     [("board_daily", None, "date")],
                     lambda start: __import__("boards").build(start), "20050101"),
+    # MI-4: 情绪图副图的两份数据 — 板块两融余额(创业板 / 科创板)、指数成分股快照与由它算出的成分股广度
+    "board_margin": ("板块两融余额·创业板/科创板(2013起, tushare个股明细聚合)",
+                     [("board_margin", None, "date")],
+                     lambda start: __import__("board_margin").backfill(start), "20130131"),
+    "index_weight": ("指数成分股·月度快照(深证成指/创业板指/科创50, tushare)",
+                     [("index_weight", None, "trade_date")],
+                     lambda start: __import__("index_breadth").fetch_run(start), "20100101"),
+    "index_breadth": ("成分股广度·上涨占比/站上20日线占比(2010起, 个股日线聚合)",
+                      [("index_breadth", None, "date")],
+                      lambda start: __import__("index_breadth").build_run(start), "20100101"),
     "margin_hist": ("两融余额历史回补(2010-03起)",
                     [("margin_daily", None, "date")],
                     lambda start: backfill_margin(start), "20100331"),
@@ -1074,6 +1084,16 @@ def main():
         print(f"[news] 挂载异常(跳过): {type(e).__name__}: {e}")
     fetch_tushare_mood_today()
     fetch_sw_daily()
+    try:                                  # MI-4: 板块两融余额(创业板 / 科创板, 情绪图副图; 不进评分)
+        import board_margin
+        board_margin.refresh()
+    except Exception as e:  # noqa: BLE001
+        print(f"[board-margin] 挂载异常(跳过): {type(e).__name__}: {e}")
+    try:                                  # MI-4: 指数成分股快照 + 成分股广度(个股日线入库之后再算)
+        import index_breadth
+        index_breadth.refresh()
+    except Exception as e:  # noqa: BLE001
+        print(f"[index-breadth] 挂载异常(跳过): {type(e).__name__}: {e}")
     if args.ts_backfill:
         backfill_tushare(args.ts_backfill)
     if args.breadth_backfill:

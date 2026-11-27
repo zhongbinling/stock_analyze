@@ -63,7 +63,8 @@ def test_chain_wires_bars():
 def test_source_lag_config():
     from server import market
     assert market._DELAY_LAG is market._SOURCE_LAG        # 兼容别名同源
-    assert market._SOURCE_LAG == {"margin": 1, "etf_flow": 1, "sector_pool": 1}
+    assert market._SOURCE_LAG == {"margin": 1, "etf_flow": 1, "sector_pool": 1,
+                                  "board_margin_cyb": 1, "board_margin_kcb": 1}
 
 
 # ── 24d: 资产表落后提示 ──

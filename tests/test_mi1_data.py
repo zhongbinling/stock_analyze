@@ -462,7 +462,9 @@ def test_update_chain_mounts_new_steps(monkeypatch):
     monkeypatch.setattr(jobs, "_run_steps", lambda append, steps: seen.append(steps) or 0)
     for task in (jobs.task_update, jobs.task_recalc):
         task(lambda line: None)
-    assert seen[0][0][2] == ("index", "index_extra", "board_daily", "mood", "sector_daily")
+    # MI-4 加了两个数据集(板块两融余额、成分股广度), 也在"抓取"这一步里增量
+    assert seen[0][0][2] == ("index", "index_extra", "board_daily", "board_margin", "index_breadth",
+                             "mood", "sector_daily")
     assert seen[1][0][2] == ("sentiment",)                  # 评分重算不抓数据
 
 
